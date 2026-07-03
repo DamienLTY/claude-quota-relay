@@ -7,10 +7,28 @@
   },
   "scripts": {
     "install-relay": "node src/install.js",
-    "uninstall-relay": "node src/uninstall.js"
+    "uninstall-relay": "node src/uninstall.js",
+    "test": "node test/run.js"
   },
-  "keywords": ["claude", "claude-code", "anthropic", "proxy", "rate-limit", "quota", "failover", "token-rotation"],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "anthropic",
+    "proxy",
+    "rate-limit",
+    "quota",
+    "failover",
+    "token-rotation"
+  ],
   "license": "MIT",
-  "engines": { "node": ">=18" },
-  "files": ["src/", "config/", "commands/", "README.md", "LICENSE"]
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "src/",
+    "config/",
+    "commands/",
+    "README.md",
+    "LICENSE"
+  ]
 }

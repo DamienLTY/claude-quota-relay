@@ -39,9 +39,12 @@ function findClaude() {
 // Run `claude setup-token` interactively, tee its output so the user sees the browser
 // prompts, and capture the printed token. Falls back to asking the user to paste it if
 // the token can't be scraped from the output. Returns the token string, or null.
-function captureSetupToken() {
+function captureSetupToken(opts) {
+  opts = opts || {};
   return new Promise((resolve) => {
-    const bin = findClaude();
+    // opts.spawnCmd/spawnArgs : couture de test (permet de rejouer un faux setup-token).
+    const bin = opts.spawnCmd || findClaude();
+    const args = opts.spawnArgs || ["setup-token"];
     console.log("\n  Opening `claude setup-token` — follow the browser login for THIS account...\n");
     let buf = "";
     let child;
@@ -53,7 +56,7 @@ function captureSetupToken() {
     delete childEnv.ANTHROPIC_AUTH_TOKEN;
     delete childEnv.CLAUDE_CODE_OAUTH_TOKEN;
     try {
-      child = cp.spawn(bin, ["setup-token"], { stdio: ["inherit", "pipe", "pipe"], env: childEnv });
+      child = cp.spawn(bin, args, { stdio: ["inherit", "pipe", "pipe"], env: childEnv });
     } catch (e) {
       console.log("  ! Could not launch `claude setup-token` (" + e.message + ").");
       return resolve(null);
