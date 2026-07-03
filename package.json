@@ -1,0 +1,16 @@
+{
+  "name": "claude-quota-relay",
+  "version": "0.1.0",
+  "description": "Local failover proxy for Claude Code: rotate between multiple Claude subscription tokens and transparently WAIT for the 5h quota to reset instead of failing — so long tasks and subagents never stop.",
+  "bin": {
+    "cqr": "src/cli.js"
+  },
+  "scripts": {
+    "install-relay": "node src/install.js",
+    "uninstall-relay": "node src/uninstall.js"
+  },
+  "keywords": ["claude", "claude-code", "anthropic", "proxy", "rate-limit", "quota", "failover", "token-rotation"],
+  "license": "MIT",
+  "engines": { "node": ">=18" },
+  "files": ["src/", "config/", "commands/", "README.md", "LICENSE"]
+}

@@ -1,0 +1,12 @@
+{
+  "port": 8787,
+  "switchAtPercent": 94,
+  "sevenDayBlockPercent": 99,
+  "waitAtSoftPercent": null,
+  "maxWaitMs": 604800000,
+  "pollMs": 15000,
+  "tokens": [
+    { "name": "account-1", "token": "PASTE_TOKEN_FROM_claude_setup-token", "enabled": true },
+    { "name": "account-2", "token": "PASTE_TOKEN_FROM_claude_setup-token", "enabled": true }
+  ]
+}

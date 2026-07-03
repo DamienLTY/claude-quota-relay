@@ -1,0 +1,13 @@
+# Secrets & runtime — NEVER commit
+tokens.json
+state.json
+*.pid
+*.log
+
+# Node
+node_modules/
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
