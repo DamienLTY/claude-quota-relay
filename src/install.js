@@ -21,11 +21,12 @@ const fs = require("fs");
 const os = require("os");
 const p = require("path");
 const readline = require("readline");
+const lib = require("./lib.js");
 
 const SRC_DIR = __dirname; // repo/src
 const REPO_ROOT = p.dirname(SRC_DIR);
 const EXAMPLE_TOKENS = p.join(REPO_ROOT, "config", "tokens.example.json");
-const COPY_FILES = ["proxy.js", "cli.js", "ensure-proxy.js"];
+const COPY_FILES = ["proxy.js", "cli.js", "ensure-proxy.js", "lib.js"];
 
 // Timeouts injected into settings.json env. These are what let a held request survive until a 5h
 // window resets instead of being cut. CLAUDE_STREAM_IDLE_TIMEOUT_MS is the critical one (the CLI's
@@ -50,30 +51,39 @@ const SETTINGS = p.join(CONFIG_DIR, "settings.json");
 function log(...a) { console.log(...a); }
 function ok(s) { log("  ✓ " + s); }
 
-function ask(rl, q) { return new Promise((res) => rl.question(q, (a) => res(a.trim()))); }
+// One-shot prompt (open+ask+close) so it never conflicts with captureSetupToken's own readline.
+function prompt1(q) {
+  return new Promise((res) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(q, (a) => { rl.close(); res((a || "").trim()); });
+  });
+}
 
 async function collectTokens() {
   const example = JSON.parse(fs.readFileSync(EXAMPLE_TOKENS, "utf8"));
   example.port = Number(PORT);
   if (NO_INTERACTIVE) {
-    log("\nNon-interactive: writing tokens.json with placeholders. Fill them in, then re-run or use `cqr set`.");
+    log("\nNon-interactive: writing tokens.json with placeholders.");
+    log("Fill them in later with:  cqr login <name>   (guided) or  cqr set <name> <token>.");
     return example;
   }
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  log("\nGet each token with:  claude setup-token   (log into a different account first for each one)\n");
-  let n = parseInt(await ask(rl, "How many accounts do you want to rotate? [2] "), 10);
+  log("\n=== Accounts setup ===");
+  log("You can rotate as many Claude accounts as you like (2, 3, 5...). For each one you'll log in");
+  log("through your browser; the token is captured automatically. You DON'T need to copy-paste it.\n");
+  let n = parseInt(await prompt1("How many accounts do you want to rotate? [2] "), 10);
   if (!Number.isFinite(n) || n < 1) n = 2;
+
   const tokens = [];
   for (let i = 0; i < n; i++) {
-    const name = (await ask(rl, `  Account #${i + 1} name [account-${i + 1}]: `)) || `account-${i + 1}`;
-    let tok = "";
-    while (!tok) {
-      tok = await ask(rl, `  Paste token for "${name}" (sk-ant-oat01-...): `);
-      if (tok && !/^sk-ant-/.test(tok)) { log("    ! that doesn't look like a token (expected sk-ant-...). Try again or leave empty to skip."); if (tok) tok = ""; else break; }
+    log("\n--- Account " + (i + 1) + " / " + n + " ---");
+    if (i > 0) {
+      await prompt1("  IMPORTANT: log OUT of the previous account in your browser first, then press Enter to continue... ");
     }
-    tokens.push({ name, token: tok || "PASTE_TOKEN_FROM_claude_setup-token", enabled: true });
+    const name = (await prompt1(`  Name for account #${i + 1} [account-${i + 1}]: `)) || `account-${i + 1}`;
+    const tok = await lib.captureSetupToken(); // runs `claude setup-token`, captures the token (paste fallback)
+    if (tok) { log("  ✓ captured token for '" + name + "' (" + lib.mask(tok) + ")"); tokens.push({ name, token: tok, enabled: true }); }
+    else { log("  ! skipped '" + name + "' (no token) — add it later with `cqr login " + name + "`."); tokens.push({ name, token: "PASTE_TOKEN_FROM_claude_setup-token", enabled: true }); }
   }
-  rl.close();
   example.tokens = tokens;
   return example;
 }

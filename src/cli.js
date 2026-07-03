@@ -15,9 +15,11 @@
  */
 const fs = require("fs"), os = require("os"), p = require("path"), http = require("http");
 const cp = require("child_process");
+const lib = require("./lib.js");
 
 // Repertoire d'installation = dossier de ce script (proxy.js, tokens.json, state.json sont a cote).
 const DIR = __dirname;
+const SETTINGS = p.join(p.dirname(DIR), "settings.json"); // install dir = <config>/claude-quota-relay
 const CONF = p.join(DIR, "tokens.json");
 const STATE = p.join(DIR, "state.json");
 const PROXY = p.join(DIR, "proxy.js");
@@ -123,6 +125,39 @@ switch (cmd) {
     if (s.exhausted) delete s.exhausted[c.tokens[idx].name];
     writeState(s);
     console.log("PINNED -> " + c.tokens[idx].name + " (forced, effective immediately). Run `cqr auto` to return to automatic mode.");
+    break;
+  }
+  case "login": case "add": {
+    // login <name|index> : (re)capture a token for an existing account via `claude setup-token`.
+    // add [name]         : capture a token for a NEW account and append it.
+    (async () => {
+      const c = readConf();
+      const tok = await lib.captureSetupToken();
+      if (!tok) { console.error("\nNo token captured."); process.exit(1); }
+      let name;
+      if (cmd === "add") {
+        name = a1 || ("account-" + (c.tokens.length + 1));
+        let t = c.tokens.find((x) => x.name === name);
+        if (t) { t.token = tok; t.enabled = true; } else c.tokens.push({ name, token: tok, enabled: true });
+      } else {
+        let idx = c.tokens.findIndex((t) => t.name === a1);
+        if (idx < 0 && /^\d+$/.test(a1 || "")) idx = Number(a1);
+        if (idx < 0) idx = 0;
+        if (!c.tokens[idx]) { console.error("Account not found:", a1); process.exit(1); }
+        c.tokens[idx].token = tok; c.tokens[idx].enabled = true; name = c.tokens[idx].name;
+      }
+      writeConf(c);
+      const synced = lib.syncAuthToken(c, SETTINGS);
+      console.log("\n✓ token saved for '" + name + "' (" + mask(tok) + ")" + (synced ? " and synced into settings.json" : "") + ".");
+      console.log("Run `cqr restart` then restart Claude Code for it to take effect.");
+      process.exit(0);
+    })();
+    break;
+  }
+  case "sync-env": {
+    const c = readConf();
+    const okk = lib.syncAuthToken(c, SETTINGS);
+    console.log(okk ? "Synced first token into settings.json (ANTHROPIC_AUTH_TOKEN)." : "No usable token or no settings.json found.");
     break;
   }
   case "auto": { const s = readState(); delete s.forceIndex; writeState(s); console.log("Automatic mode re-enabled (failover + waiting per policy)."); break; }

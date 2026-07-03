@@ -1,42 +1,43 @@
 # claude-quota-relay
 
-**A tiny local proxy that lets Claude Code rotate between several Claude subscription accounts — and, when everything is rate-limited, transparently _waits_ for the 5‑hour window to reset instead of failing.** Your long tasks, subagents and workflows keep going. You never have to type "continue" again.
+**Un petit proxy local qui permet à Claude Code de basculer entre plusieurs comptes Claude — et, quand tous les comptes sont à court de quota, de *patienter* automatiquement jusqu'à la réinitialisation de la fenêtre 5 h au lieu d'échouer.** Vos longues tâches, vos sous-agents et vos workflows continuent tout seuls. Vous n'avez plus jamais à taper « continue ».
 
-- 🔁 **Failover** across 2+ Claude accounts (per-request, automatic).
-- ⏳ **Wait-and-resume** when all accounts are throttled — the request is _held_ until a quota window resets, then completes on its own.
-- 🧠 **Quota-aware** — reads Anthropic's real rate-limit headers (`5h` / `7d` utilization) and prefers the freshest account.
-- 🖥️ **Cross-platform**, zero dependencies (pure Node), ~400 lines you can read.
-- 🔒 Your tokens stay **local**. Nothing is sent anywhere except `api.anthropic.com`.
+- 🔁 **Bascule automatique** entre 2, 3 comptes Claude ou plus (par requête).
+- ⏳ **Attente puis reprise** quand tout est saturé — la requête est *retenue* jusqu'au reset d'une fenêtre de quota, puis se termine seule.
+- 🧠 **Conscient du quota** — lit les vrais en-têtes de limite d'Anthropic (`5h` / `7j`) et préfère le compte le plus frais.
+- 🔐 **Login automatisé** — récupère le token de chaque compte pour vous via `claude setup-token` (aucun copier-coller).
+- 🖥️ **Multiplateforme** (macOS / Linux / Windows), **zéro dépendance** (Node pur), ~400 lignes lisibles.
+- 🔒 Vos tokens restent **en local**. Rien n'est envoyé ailleurs que vers `api.anthropic.com`.
 
-> Not affiliated with Anthropic. Use accounts you own, within Anthropic's terms.
+> Projet indépendant, non affilié à Anthropic. Utilisez uniquement des comptes qui vous appartiennent, dans le respect des conditions d'Anthropic.
 
 ---
 
-## Why
+## Pourquoi
 
-Claude Code authenticates from a single `ANTHROPIC_AUTH_TOKEN` read **once at startup**. If you have two subscriptions, you can't hot-swap between them, and when you hit the 5‑hour limit your task just dies with:
+Claude Code s'authentifie avec un seul `ANTHROPIC_AUTH_TOKEN`, lu **une fois au démarrage**. Si vous avez plusieurs abonnements, impossible d'en changer à chaud, et quand vous atteignez la limite des 5 h votre tâche meurt avec :
 
 ```
 API Error: Request rejected (429) · This request would exceed your account's rate limit.
 ```
 
-`apiKeyHelper` doesn't help (subscription `sk-ant-oat01-*` tokens are rejected when sent as `x-api-key`). The only thing that works is a **local proxy** that rewrites the `Authorization: Bearer` header per request. That's this project.
+`apiKeyHelper` n'aide pas (les tokens d'abonnement `sk-ant-oat01-*` envoyés en `x-api-key` sont rejetés). La seule solution qui marche : un **proxy local** qui réécrit l'en-tête `Authorization: Bearer` à chaque requête. C'est ce projet.
 
-## How it works
+## Comment ça marche
 
-Claude Code → `ANTHROPIC_BASE_URL=http://127.0.0.1:8787` (the proxy) → `api.anthropic.com`.
+Claude Code → `ANTHROPIC_BASE_URL=http://127.0.0.1:8787` (le proxy) → `api.anthropic.com`.
 
-For every request the proxy:
-1. Picks the best account (lowest 5h utilization, with hysteresis to avoid flapping) and rewrites the `Authorization` header with that account's token.
-2. Reads the response's `anthropic-ratelimit-unified-*` headers to track each account's real 5h/7d usage.
-3. On a `429`/reject, replays the request on another fresh account.
-4. If **everything** is throttled, it **holds the connection open** (sending SSE keepalive comments so Claude Code doesn't give up) until the nearest window resets, then forwards — Claude Code just thinks the server was slow and resumes.
+À chaque requête, le proxy :
+1. Choisit le meilleur compte (utilisation 5 h la plus basse, avec une hystérésis pour éviter les allers-retours) et réécrit l'en-tête `Authorization` avec le token de ce compte.
+2. Lit les en-têtes `anthropic-ratelimit-unified-*` de la réponse pour suivre l'usage réel 5 h / 7 j de chaque compte.
+3. Sur un `429` / rejet, rejoue la requête sur un autre compte frais.
+4. Si **tout** est saturé, il **retient la connexion ouverte** (en envoyant des commentaires SSE keepalive pour que Claude Code ne coupe pas) jusqu'au reset le plus proche, puis relaie — Claude Code croit simplement que le serveur était lent, et reprend.
 
-Claude Code sessions see none of this.
+Les sessions Claude Code ne voient rien de tout ça.
 
-## Install
+## Installation
 
-Requirements: **Node ≥ 18** and **Claude Code CLI** already installed.
+Prérequis : **Node ≥ 18** et le **CLI Claude Code** déjà installé.
 
 ```bash
 git clone https://github.com/DamienLTY/claude-quota-relay.git
@@ -44,91 +45,97 @@ cd claude-quota-relay
 node src/install.js
 ```
 
-The installer will:
-- copy the proxy into `~/.claude/claude-quota-relay/`,
-- ask for your account tokens (see below),
-- patch `~/.claude/settings.json` (with a backup) to route Claude Code through the proxy, set the timeouts that make "wait-and-resume" work, and add a `SessionStart` hook that auto-starts the proxy.
+L'installeur va, pas à pas :
+- copier le proxy dans `~/.claude/claude-quota-relay/` ;
+- vous demander **combien de comptes** vous voulez faire tourner (2, 3, 5…) ;
+- pour **chaque compte**, ouvrir le login navigateur (`claude setup-token`) et **récupérer le token automatiquement** — aucun copier-coller. Entre deux comptes, il vous rappelle de vous **déconnecter** du précédent ;
+- modifier `~/.claude/settings.json` (avec une sauvegarde) pour router Claude Code via le proxy, poser les *timeouts* qui rendent l'« attente puis reprise » possible, et ajouter un hook `SessionStart` qui démarre le proxy tout seul.
 
-Then **restart Claude Code**. That's it.
+Puis **redémarrez Claude Code**. C'est tout.
 
-### Getting your tokens
+> Installation non interactive (CI, script) : `node src/install.js --no-interactive` crée un `tokens.json` avec des emplacements vides ; renseignez-les ensuite avec `cqr login <nom>`.
 
-Run this **once per account** (log into a different Claude account between each run):
-
-```bash
-claude setup-token
-```
-
-It prints a long-lived `sk-ant-oat01-…` token. Give one per account to the installer (or add them later with `cqr set <name> <token>`).
-
-## Usage
-
-The installer prints an `alias cqr=…` line — add it to your shell profile so `cqr` works anywhere. Then:
+### Ajouter / rafraîchir un compte plus tard
 
 ```bash
-cqr status                 # proxy state, per-account quota (5h/7d), resets, current wait
-cqr list                   # list accounts (tokens masked)
-cqr use <name|index>       # PIN an account (force it, ignore rules+wait)
-cqr auto                   # back to automatic failover
-cqr set <name> <token>     # add/replace an account's token
-cqr policy                 # show routing policy
-cqr policy waitsoft 85     # start waiting at 85% instead of consuming up to 100%
-cqr start | stop | restart # manage the proxy process
+cqr login <nom>     # (re)connecte un compte existant et capture son token
+cqr add [nom]       # ajoute un NOUVEAU compte (login + token capturé)
 ```
 
-## The timeouts (why the wait actually works)
+Chaque token longue durée provient de `claude setup-token` (abonnement Claude requis) — l'outil le lance et le lit pour vous.
 
-Holding a request for minutes/hours only works because the installer sets these in `settings.json` → `env`. If you ever see `Request timed out · attempt N/10`, one of these is missing:
+## Utilisation
 
-| Variable | Value | Why |
+L'installeur affiche une ligne `alias cqr=…` : ajoutez-la à votre profil shell pour utiliser `cqr` partout. Ensuite :
+
+```bash
+cqr status                 # état du proxy, quota par compte (5h/7j), resets, attente en cours
+cqr list                   # liste les comptes (tokens masqués)
+cqr login <nom|index>      # (re)capture le token d'un compte via le login navigateur
+cqr add [nom]              # ajoute un nouveau compte (login + capture)
+cqr use <nom|index>        # ÉPINGLE un compte (forcé, ignore règles + attente)
+cqr auto                   # revient au mode automatique (bascule + attente)
+cqr set <nom> <token>      # renseigne/écrase un token manuellement
+cqr sync-env               # recopie le 1er token dans settings.json (ANTHROPIC_AUTH_TOKEN)
+cqr policy                 # affiche la politique de routage
+cqr policy waitsoft 85     # attendre dès 85 % au lieu de consommer jusqu'à 100 %
+cqr start | stop | restart # gère le process proxy
+```
+
+## Les timeouts (pourquoi l'attente marche vraiment)
+
+Retenir une requête plusieurs minutes/heures ne fonctionne que parce que l'installeur pose ces variables dans `settings.json` → `env`. Si vous voyez un jour `Request timed out · attempt N/10`, c'est que l'une d'elles manque :
+
+| Variable | Valeur | Rôle |
 |---|---|---|
-| `ANTHROPIC_BASE_URL` | `http://127.0.0.1:8787` | routes Claude Code through the proxy |
-| `API_TIMEOUT_MS` | 7 days | overall request timeout |
-| `CLAUDE_STREAM_IDLE_TIMEOUT_MS` | 7 days | **the important one** — the CLI's *semantic* stream-idle watchdog defaults to a hard **5‑minute** floor that SSE keepalive does **not** reset. Left at default, any held request dies at 5 min. |
-| `CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS` | 7 days | lets **subagents** wait too (defaults to 3 min) |
-| `CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS` | 2 min | byte-level dead-connection guard; the proxy's 20 s keepalive keeps it satisfied |
+| `ANTHROPIC_BASE_URL` | `http://127.0.0.1:8787` | route Claude Code via le proxy |
+| `API_TIMEOUT_MS` | 7 jours | timeout global de la requête |
+| `CLAUDE_STREAM_IDLE_TIMEOUT_MS` | 7 jours | **la plus importante** — le watchdog *sémantique* du CLI a un plancher **codé à 5 minutes** que le keepalive SSE **ne réarme PAS**. Sans cette variable, toute requête retenue meurt à 5 min. |
+| `CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS` | 7 jours | permet aux **sous-agents** d'attendre aussi (défaut 3 min) |
+| `CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS` | 2 min | garde-fou « connexion morte » au niveau octets ; le keepalive du proxy (20 s) le satisfait |
 
 ## Configuration
 
-`~/.claude/claude-quota-relay/tokens.json`:
+`~/.claude/claude-quota-relay/tokens.json` (autant de comptes que voulu) :
 
 ```jsonc
 {
   "port": 8787,
-  "switchAtPercent": 94,       // prefer an account below this 5h %
-  "sevenDayBlockPercent": 99,  // never route to an account above this 7d %
-  "waitAtSoftPercent": null,   // null = use the 90–100% margin before waiting; a number = wait from that %
-  "maxWaitMs": 604800000,      // cap on how long a request may be held (7 days)
-  "pollMs": 15000,             // re-evaluation cadence while waiting
+  "switchAtPercent": 94,       // préférer un compte sous ce % (5h)
+  "sevenDayBlockPercent": 99,  // ne jamais router vers un compte au-delà (7j)
+  "waitAtSoftPercent": null,   // null = consommer la marge 90–100 % avant d'attendre ; un nombre = attendre dès ce %
+  "maxWaitMs": 604800000,      // plafond de rétention d'une requête (7 jours)
+  "pollMs": 15000,             // fréquence de ré-évaluation pendant l'attente
   "tokens": [
     { "name": "account-1", "token": "sk-ant-oat01-…", "enabled": true },
-    { "name": "account-2", "token": "sk-ant-oat01-…", "enabled": true }
+    { "name": "account-2", "token": "sk-ant-oat01-…", "enabled": true },
+    { "name": "account-3", "token": "sk-ant-oat01-…", "enabled": true }
   ]
 }
 ```
 
-## Security
+## Sécurité
 
-- `tokens.json`, `state.json` and logs are **git-ignored** — never commit them.
-- Tokens live only on your machine; the proxy listens on `127.0.0.1` only.
-- Logs redact tokens.
+- `tokens.json`, `state.json` et les logs sont **ignorés par git** — ne les committez jamais.
+- Les tokens ne quittent pas votre machine ; le proxy n'écoute que sur `127.0.0.1`.
+- Les logs masquent les tokens.
 
-## Limitations (honest)
+## Limites honnêtes
 
-- **Rare non-streaming requests** can't get keepalive; if they land mid-outage they may be cut and retried.
-- If the **machine sleeps** during a long wait, the socket can drop; Claude Code retries on wake.
-- The 7‑day guard for an account only arms **after** the proxy has seen one response from it.
-- The proxy holds requests on **one** connection; extremely long waits (hours) work but are best smoothed with `cqr policy waitsoft 85`.
+- Les rares requêtes **non-streaming** ne peuvent pas recevoir de keepalive ; si elles tombent en pleine saturation, elles peuvent être coupées puis rejouées.
+- Si le **PC se met en veille** pendant une longue attente, le socket peut tomber ; Claude Code réessaie au réveil.
+- Le garde-fou 7 j d'un compte ne s'arme qu'**après** la première réponse vue de ce compte.
+- Le proxy retient la requête sur **une** connexion ; les attentes très longues (heures) marchent mais se lissent mieux avec `cqr policy waitsoft 85`.
 
-## Uninstall
+## Désinstallation
 
 ```bash
-node src/uninstall.js          # removes env vars + hook (keeps a settings.json backup), keeps tokens.json
-node src/uninstall.js --purge  # also delete the install dir + tokens.json
+node src/uninstall.js          # retire les variables d'env + le hook (garde une sauvegarde de settings.json), conserve tokens.json
+node src/uninstall.js --purge  # supprime en plus le dossier d'installation + tokens.json
 ```
 
-Restart Claude Code afterwards.
+Redémarrez Claude Code ensuite.
 
-## License
+## Licence
 
-MIT — see [LICENSE](LICENSE).
+MIT — voir [LICENSE](LICENSE).
