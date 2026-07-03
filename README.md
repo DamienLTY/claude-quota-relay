@@ -39,7 +39,7 @@ Claude Code sessions see none of this.
 Requirements: **Node ≥ 18** and **Claude Code CLI** already installed.
 
 ```bash
-git clone https://github.com/<you>/claude-quota-relay.git
+git clone https://github.com/DamienLTY/claude-quota-relay.git
 cd claude-quota-relay
 node src/install.js
 ```
