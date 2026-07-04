@@ -5,6 +5,23 @@
   "waitAtSoftPercent": null,
   "maxWaitMs": 604800000,
   "pollMs": 15000,
+  "compaction": {
+    "enabled": false,
+    "dryRun": true,
+    "mode": "native",
+    "thresholds": { "fable": 85, "opus": 89, "sonnet": 90, "haiku": 95, "default": 88 },
+    "keepToolUses": 10,
+    "triggerTokens": 2000,
+    "compactBeforeResume": true,
+    "memoryFile": ".cqr-memory.md",
+    "memoryMaxLines": 400,
+    "archiveDir": ".cqr-archive"
+  },
+  "workflowGuard": {
+    "enabled": true,
+    "mode": "ask",
+    "percent": 50
+  },
   "tokens": [
     { "name": "account-1", "token": "PASTE_TOKEN_FROM_claude_setup-token", "enabled": true },
     { "name": "account-2", "token": "PASTE_TOKEN_FROM_claude_setup-token", "enabled": true },

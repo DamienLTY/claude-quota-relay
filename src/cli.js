@@ -16,6 +16,7 @@
 const fs = require("fs"), os = require("os"), p = require("path"), http = require("http");
 const cp = require("child_process");
 const lib = require("./lib.js");
+const comp = require("./compaction.js");
 
 // Repertoire d'installation = dossier de ce script (proxy.js, tokens.json, state.json sont a cote).
 const DIR = __dirname;
@@ -187,6 +188,54 @@ switch (cmd) {
     else if (a1 === "maxwait") c.maxWaitMs = Number(v) * 60000;
     else { console.error("Unknown key:", a1); process.exit(1); }
     writeConf(c); console.log("Policy updated:", a1, "=", v);
+    break;
+  }
+  case "compact": {
+    const c = readConf(); c.compaction = c.compaction || {};
+    const cc = c.compaction;
+    if (a1 === "on") { cc.enabled = true; cc.dryRun = false; writeConf(c); console.log("Compaction ON (native clear_tool_uses + per-project memory). Restart the proxy: cqr restart"); }
+    else if (a1 === "off") { cc.enabled = false; cc.dryRun = false; writeConf(c); console.log("Compaction OFF."); }
+    else if (a1 === "dry-run" || a1 === "dryrun") { cc.enabled = false; cc.dryRun = true; writeConf(c); console.log("Compaction DRY-RUN: proxy only LOGS what it would compact (no request change); memory still builds. Watch: proxy.log"); }
+    else if (a1 === "mode") { cc.mode = a2 === "strip" ? "strip" : "native"; writeConf(c); console.log("Compaction mode = " + cc.mode + (cc.mode === "strip" ? " (proxy stubs old tool results; use if Claude Code chokes on native)" : " (Anthropic context-editing, 0 token)")); }
+    else if (a1 === "keep") { cc.keepToolUses = Number(a2) || 10; writeConf(c); console.log("Keep last " + cc.keepToolUses + " tool results raw."); }
+    else if (a1 === "memory") {
+      const mf = p.join(process.cwd(), cc.memoryFile || ".cqr-memory.md");
+      if (fs.existsSync(mf)) console.log(fs.readFileSync(mf, "utf8")); else console.log("(no memory file yet in " + process.cwd() + ")");
+    }
+    else if (a1 === "status" || !a1) {
+      console.log("enabled  :", !!cc.enabled);
+      console.log("dryRun   :", !!cc.dryRun);
+      console.log("mode     :", cc.mode || "native");
+      console.log("keep     :", cc.keepToolUses || 10, "tool results");
+      console.log("resume   :", cc.compactBeforeResume !== false ? "compact before resuming after a wait" : "off");
+      console.log("thresholds:", JSON.stringify(Object.assign({}, comp.DEFAULT_THRESHOLDS, cc.thresholds || {})));
+      console.log("memory   :", cc.memoryFile || ".cqr-memory.md", "(per project, max " + (cc.memoryMaxLines || 400) + " lines)");
+    }
+    else console.error("Usage: cqr compact [status|on|off|dry-run|mode native|strip|keep <n>|memory]");
+    break;
+  }
+  case "preflight": {
+    // Is it safe to launch a big Workflow? Exit 0 if a fresh-enough account exists, else 1.
+    const c = readConf(); const s = readState();
+    const g = c.workflowGuard || {}; const percent = g.percent == null ? 50 : g.percent;
+    lib.accounts(c, s).forEach((a) => console.log("API-" + (a.idx + 1) + " " + a.name + ": 5h " + (a.h5 == null ? "?" : a.h5 + "%") + " (reset " + lib.fmtDur(a.reset5) + ")  |  7j " + (a.d7 == null ? "?" : a.d7 + "%") + " (reset " + lib.fmtDur(a.reset7) + ")"));
+    const best = lib.bestHeadroom(c, s);
+    const good = best != null && best < percent;
+    console.log(good
+      ? "\nOK — freshest account " + best + "% < " + percent + "%. Safe to fan out a workflow."
+      : "\nRISKY — freshest account " + (best == null ? "unknown" : best + "%") + " (need < " + percent + "%). Prefer inline work or wait for a reset.");
+    process.exit(good ? 0 : 1);
+  }
+  case "guard": {
+    const c = readConf(); c.workflowGuard = Object.assign({ enabled: true, mode: "ask", percent: 50 }, c.workflowGuard || {});
+    const wg = c.workflowGuard;
+    if (a1 === "on") wg.enabled = true;
+    else if (a1 === "off") wg.enabled = false;
+    else if (a1 === "ask" || a1 === "deny") { wg.enabled = true; wg.mode = a1; }
+    else if (a1 && /^\d+$/.test(a1)) { wg.enabled = true; wg.percent = Number(a1); }
+    else if (a1 && a1 !== "status") { console.error("Usage: cqr guard [status|on|off|ask|deny|<percent>]"); process.exit(1); }
+    if (a1 && a1 !== "status") writeConf(c);
+    console.log("workflowGuard:", JSON.stringify(wg));
     break;
   }
   case "start": health((h) => { if (h) console.log("Already running."); else { startProxy(); console.log("Proxy started."); } }); break;

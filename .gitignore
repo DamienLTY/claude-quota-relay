@@ -1,8 +1,13 @@
 # Secrets & runtime — NEVER commit
 tokens.json
 state.json
+statusline.json
 *.pid
 *.log
+
+# Per-project memory produced at runtime (in the user's cwd)
+.cqr-memory.md
+.cqr-archive/
 
 # Node
 node_modules/

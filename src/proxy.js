@@ -26,12 +26,17 @@ const http = require("http");
 const https = require("https");
 const fs = require("fs");
 const path = require("path");
+const comp = require("./compaction.js");
 
 const DIR = __dirname;
 const CONF = path.join(DIR, "tokens.json");
 const STATE = path.join(DIR, "state.json");
 const LOG = path.join(DIR, "proxy.log");
-const UPSTREAM_HOST = "api.anthropic.com";
+// Upstream is api.anthropic.com over https. Overridable via env for tests / gateways.
+// ponytail: env seam, only touched when CQR_UPSTREAM_* is set; default unchanged.
+const UPSTREAM_HOST = process.env.CQR_UPSTREAM_HOST || "api.anthropic.com";
+const UPSTREAM_PORT = Number(process.env.CQR_UPSTREAM_PORT) || 443;
+const UPSTREAM = process.env.CQR_UPSTREAM_HTTP ? require("http") : https;
 const FIVE_H_MS = 5 * 60 * 60 * 1000;
 const AUTH_COOLDOWN_MS = 5 * 60 * 1000; // 401 -> petit cooldown
 const TRANSIENT_COOLDOWN_MS = 90 * 1000; // 429 sans aucune info de fenetre -> transitoire, pas un epuisement
@@ -152,8 +157,8 @@ function probeToken(conf, idx, done) {
   const tok = conf.tokens[idx];
   if (!tok || isPlaceholder(tok)) { if (done) done(false); return; }
   lastProbeAt[tok.name] = now();
-  const req = https.request({
-    hostname: UPSTREAM_HOST, port: 443, path: "/v1/messages", method: "POST",
+  const req = UPSTREAM.request({
+    hostname: UPSTREAM_HOST, port: UPSTREAM_PORT, path: "/v1/messages", method: "POST",
     headers: {
       "authorization": "Bearer " + tok.token,
       "anthropic-version": "2023-06-01",
@@ -209,6 +214,26 @@ function logRate(headers, statusCode, name) {
   if (Object.keys(rl).length || statusCode >= 400) log("RESP", statusCode, "token=" + name, "rl=", rl);
 }
 
+// ----- decision d'auto-compaction -----
+// Compacte la requete sortante quand on bascule vers un autre compte parce que le
+// compte quitte a atteint son seuil (par modele), OU quand on relache une requete
+// apres une attente de quota. Ne fait rien si compaction desactivee.
+function decideCompaction(conf, state, bodyObj, prevActive, newIdx, ctx, switching) {
+  const cc = conf.compaction || {};
+  if (!cc.enabled && !cc.dryRun) return null;
+  // only compact requests that actually carry a conversation (not count_tokens, etc.)
+  if (!bodyObj || !Array.isArray(bodyObj.messages) || !bodyObj.messages.length) return null;
+  const model = bodyObj && bodyObj.model;
+  const thr = comp.modelThreshold(model, cc.thresholds);
+  const prevName = (conf.tokens[prevActive] || {}).name;
+  const prevU5 = prevName && state.pct && state.pct[prevName] ? state.pct[prevName].h5 : null;
+  let compact = false, reason = "";
+  if (ctx.resumed) { compact = true; reason = "resume"; ctx.resumed = false; }
+  else if (switching && prevU5 != null && prevU5 >= thr) { compact = true; reason = "switch@" + prevU5 + ">=" + thr + "%"; }
+  if (!compact) return null;
+  return { compact: true, reason, dryRun: !cc.enabled && !!cc.dryRun, mode: cc.mode === "strip" ? "strip" : "native", keepToolUses: num(cc.keepToolUses, 10), triggerTokens: num(cc.triggerTokens, 2000) };
+}
+
 // ----- coeur : route puis (forward | wait->forward), avec rejeu sur rejet -----
 function serve(creq, cres) {
   if (creq.url === "/__proxy_health") {
@@ -225,9 +250,10 @@ function serve(creq, cres) {
   cres.on("close", () => { if (!cres.writableFinished) { clientGone = true; log("CLIENT close (writableFinished=false)", "elapsedMs=" + (now() - reqStart)); } });
   creq.on("end", () => {
     const body = Buffer.concat(chunks);
-    let isStream = false;
-    try { isStream = JSON.parse(body.toString("utf8")).stream === true; } catch (e) {}
-    const ctx = { tried: new Set(), waitStart: 0, polls: 0, sse: false, ka: null, netRetries: 0 };
+    let bodyObj = null;
+    try { bodyObj = JSON.parse(body.toString("utf8")); } catch (e) {}
+    const isStream = !!(bodyObj && bodyObj.stream === true);
+    const ctx = { tried: new Set(), waitStart: 0, polls: 0, sse: false, ka: null, netRetries: 0, resumed: false };
     function stopKeepalive() { if (ctx.ka) { clearInterval(ctx.ka); ctx.ka = null; } }
     function sseError(msg) {
       try {
@@ -249,11 +275,21 @@ function serve(creq, cres) {
       if (route.wait) return enterWait(conf, state, route);
 
       // route immediate
-      if (state.waiting) { delete state.waiting; writeState(state); }
-      if ((state.activeIndex || 0) !== route.idx) { state.activeIndex = route.idx; writeState(state); }
+      const prevActive = state.activeIndex || 0;
+      const switching = prevActive !== route.idx;
+      if (state.waiting) { delete state.waiting; }
+      if (switching) { state.activeIndex = route.idx; }
+      // decide compaction BEFORE overwriting the "previous account" utilization view.
+      // Only for the real /v1/messages endpoint (never count_tokens or other JSON paths).
+      const isMsgs = String(creq.url || "").split("?")[0] === "/v1/messages";
+      const compactInfo = isMsgs ? decideCompaction(conf, state, bodyObj, prevActive, route.idx, ctx, switching) : null;
+      if (compactInfo && compactInfo.compact && !compactInfo.dryRun) {
+        state.compaction = { at: now(), from: (conf.tokens[prevActive] || {}).name, to: (conf.tokens[route.idx] || {}).name, model: bodyObj && bodyObj.model, reason: compactInfo.reason };
+      }
+      writeState(state);
       stopKeepalive();
       // forced (pin manuel) -> pas de failover/attente, on rend le resultat brut
-      forward(conf, route.idx, route.forced === true);
+      forward(conf, route.idx, route.forced === true, compactInfo);
     }
 
     function enterWait(conf, state, route) {
@@ -298,13 +334,15 @@ function serve(creq, cres) {
         // half-open : au reveil (reset atteint) ou toutes les 5 min, sonder le token
         // cible (8 tokens haiku) pour verifier/corriger l'etat AVANT de relacher la requete
         const wakeReached = now() >= route.untilMs;
+        // reprise apres attente de quota -> on compacte la requete qu'on relache
+        if (wakeReached && conf.compaction && (conf.compaction.enabled || conf.compaction.dryRun) && conf.compaction.compactBeforeResume !== false) ctx.resumed = true;
         const probeDue = wakeReached || (now() - (lastProbeAt[tName] || 0)) >= PROBE_REFRESH_MS;
         if (probeDue) probeToken(conf, route.idx, () => { if (!clientGone) attempt(); });
         else attempt();
       }, sleep);
     }
 
-    function forward(conf, idx, lastResort) {
+    function forward(conf, idx, lastResort, compactInfo) {
       if (clientGone) return;
       const state = readState();
       const tok = conf.tokens[idx];
@@ -315,12 +353,37 @@ function serve(creq, cres) {
       headers["host"] = UPSTREAM_HOST;
       headers["authorization"] = "Bearer " + tok.token;
       delete headers["x-api-key"];
-      if (body.length) headers["content-length"] = Buffer.byteLength(body);
+      // we always send with an explicit content-length -> drop any chunked encoding from the client
+      delete headers["transfer-encoding"];
+
+      // --- auto-compaction : reduit les tokens envoyes au compte cible (0 token) ---
+      let sendBody = body;
+      if (compactInfo && compactInfo.compact && bodyObj) {
+        if (compactInfo.dryRun) {
+          log("COMPACT dry-run", compactInfo.reason, "model=" + (bodyObj.model || "?"), "token=" + tok.name, "(aucune modif)");
+        } else {
+          try {
+            const clone = JSON.parse(JSON.stringify(bodyObj));
+            if (compactInfo.mode === "strip") {
+              const r = comp.stripOldToolResults(clone, compactInfo.keepToolUses);
+              sendBody = Buffer.from(JSON.stringify(r.body));
+              log("COMPACT strip", compactInfo.reason, "stubbed=" + r.stubbed, "token=" + tok.name);
+            } else {
+              const r = comp.injectNative(clone, compactInfo.keepToolUses, compactInfo.triggerTokens);
+              comp.mergeBeta(headers);
+              sendBody = Buffer.from(JSON.stringify(r.body));
+              log("COMPACT native", compactInfo.reason, r.added ? "clear_tool_uses(keep " + compactInfo.keepToolUses + ")" : "deja present", "token=" + tok.name);
+            }
+          } catch (e) { log("COMPACT err", e.message, "-> body inchange"); sendBody = body; }
+        }
+      }
+
+      if (sendBody.length) headers["content-length"] = Buffer.byteLength(sendBody);
       // en mode keepalive SSE on a deja envoye nos en-tetes sans content-encoding :
       // on force une reponse upstream non compressee pour pouvoir la relayer telle quelle
       if (ctx.sse) delete headers["accept-encoding"];
 
-      const preq = https.request({ hostname: UPSTREAM_HOST, port: 443, path: creq.url, method: creq.method, headers }, (pres) => {
+      const preq = UPSTREAM.request({ hostname: UPSTREAM_HOST, port: UPSTREAM_PORT, path: creq.url, method: creq.method, headers }, (pres) => {
         ctx.netRetries = 0; // une reponse (meme un rejet HTTP) prouve que le reseau fonctionne
         logRate(pres.headers, pres.statusCode, tok.name);
         const q = readQuotaHeaders(pres.headers);
@@ -386,7 +449,7 @@ function serve(creq, cres) {
             if (clientGone) { stopKeepalive(); return; }
             try { cres.write(": keepalive\n\n"); } catch (x) {}
           }, 20000);
-          setTimeout(() => { if (!clientGone) forward(conf, idx, lastResort); }, delay);
+          setTimeout(() => { if (!clientGone) forward(conf, idx, lastResort, compactInfo); }, delay);
           return;
         }
         log("UPSTREAM err", e.message, "token=" + tok.name, ctx.netRetries ? ("apres " + ctx.netRetries + " tentatives") : "");
@@ -395,35 +458,40 @@ function serve(creq, cres) {
         if (!cres.headersSent) { try { cres.writeHead(502, { "content-type": "text/plain" }); } catch (x) {} }
         try { cres.end("proxy: erreur upstream: " + e.message); } catch (x) {}
       });
-      if (body.length) preq.write(body);
+      if (sendBody.length) preq.write(sendBody);
       preq.end();
     }
   });
 }
 
-const conf0 = readConf();
-const server = http.createServer(serve);
-// pas de timeout : on doit pouvoir retenir une requete longtemps
-server.requestTimeout = 0;
-server.headersTimeout = 0;
-server.timeout = 0;
-server.keepAliveTimeout = 75_000;
-server.on("connection", (s) => { try { s.setKeepAlive(true, 30_000); } catch (e) {} });
-server.on("error", (e) => { log("SERVER err", e.message); process.exit(1); });
-// PID file : permet un arret portable (sans netstat/taskkill/lsof) depuis le CLI.
-const PIDFILE = path.join(DIR, "proxy.pid");
-try { fs.writeFileSync(PIDFILE, String(process.pid)); } catch (e) {}
-function cleanupPid() { try { if (fs.readFileSync(PIDFILE, "utf8").trim() === String(process.pid)) fs.unlinkSync(PIDFILE); } catch (e) {} }
-process.on("exit", cleanupPid);
-process.on("SIGINT", () => process.exit(0));
-process.on("SIGTERM", () => process.exit(0));
+// Pure decision helpers are exported for tests; the server only boots when run directly.
+module.exports = { pickRoute, decideCompaction, readQuotaHeaders };
 
-server.listen(conf0.port, "127.0.0.1", () => {
-  log("PROXY v3 up http://127.0.0.1:" + conf0.port,
-    "switch=" + conf0.switchAtPercent + "% bloc7j=" + conf0.sevenDayBlockPercent + "% softWait=" + conf0.waitAtSoftPercent + " maxWait=" + Math.round(conf0.maxWaitMs / 60000) + "min",
-    "tokens=" + conf0.tokens.map((t) => t.name + (isPlaceholder(t) ? "(vide)" : "")).join(","));
-  // sonde de demarrage : etat reel des quotas sans attendre la 1re vraie reponse
-  conf0.tokens.forEach((t, i) => {
-    if (t.enabled && !isPlaceholder(t)) setTimeout(() => probeToken(conf0, i), 500 + i * 2000);
+if (require.main === module) {
+  const conf0 = readConf();
+  const server = http.createServer(serve);
+  // pas de timeout : on doit pouvoir retenir une requete longtemps
+  server.requestTimeout = 0;
+  server.headersTimeout = 0;
+  server.timeout = 0;
+  server.keepAliveTimeout = 75_000;
+  server.on("connection", (s) => { try { s.setKeepAlive(true, 30_000); } catch (e) {} });
+  server.on("error", (e) => { log("SERVER err", e.message); process.exit(1); });
+  // PID file : permet un arret portable (sans netstat/taskkill/lsof) depuis le CLI.
+  const PIDFILE = path.join(DIR, "proxy.pid");
+  try { fs.writeFileSync(PIDFILE, String(process.pid)); } catch (e) {}
+  function cleanupPid() { try { if (fs.readFileSync(PIDFILE, "utf8").trim() === String(process.pid)) fs.unlinkSync(PIDFILE); } catch (e) {} }
+  process.on("exit", cleanupPid);
+  process.on("SIGINT", () => process.exit(0));
+  process.on("SIGTERM", () => process.exit(0));
+
+  server.listen(conf0.port, "127.0.0.1", () => {
+    log("PROXY v3 up http://127.0.0.1:" + conf0.port,
+      "switch=" + conf0.switchAtPercent + "% bloc7j=" + conf0.sevenDayBlockPercent + "% softWait=" + conf0.waitAtSoftPercent + " maxWait=" + Math.round(conf0.maxWaitMs / 60000) + "min",
+      "tokens=" + conf0.tokens.map((t) => t.name + (isPlaceholder(t) ? "(vide)" : "")).join(","));
+    // sonde de demarrage : etat reel des quotas sans attendre la 1re vraie reponse
+    conf0.tokens.forEach((t, i) => {
+      if (t.enabled && !isPlaceholder(t)) setTimeout(() => probeToken(conf0, i), 500 + i * 2000);
+    });
   });
-});
+}

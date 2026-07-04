@@ -26,7 +26,19 @@ const lib = require("./lib.js");
 const SRC_DIR = __dirname; // repo/src
 const REPO_ROOT = p.dirname(SRC_DIR);
 const EXAMPLE_TOKENS = p.join(REPO_ROOT, "config", "tokens.example.json");
-const COPY_FILES = ["proxy.js", "cli.js", "ensure-proxy.js", "lib.js"];
+const COPY_FILES = ["proxy.js", "cli.js", "ensure-proxy.js", "lib.js", "compaction.js", "memory-hook.js", "cqr-statusline.js", "cqr-workflow-guard.js"];
+
+// Default workflow guard: warn (ask) before a Workflow when the freshest account is >=50% (5h),
+// because the Workflow tool's per-agent stall can't be extended by the relay.
+const WORKFLOW_GUARD_DEFAULT = { enabled: true, mode: "ask", percent: 50 };
+
+// Default auto-compaction config: OFF + dry-run so the user opts in after observing.
+const COMPACTION_DEFAULT = {
+  enabled: false, dryRun: true, mode: "native",
+  thresholds: { fable: 85, opus: 89, sonnet: 90, haiku: 95, default: 88 },
+  keepToolUses: 10, triggerTokens: 2000, compactBeforeResume: true,
+  memoryFile: ".cqr-memory.md", memoryMaxLines: 400, archiveDir: ".cqr-archive",
+};
 
 // Timeouts injected into settings.json env. These are what let a held request survive until a 5h
 // window resets instead of being cut. CLAUDE_STREAM_IDLE_TIMEOUT_MS is the critical one (the CLI's
@@ -44,7 +56,8 @@ function arg(name, def) {
 }
 const NO_INTERACTIVE = process.argv.includes("--no-interactive") || !process.stdin.isTTY;
 const CONFIG_DIR = arg("--config-dir", process.env.CLAUDE_CONFIG_DIR || p.join(os.homedir(), ".claude"));
-const PORT = String(arg("--port", "8787"));
+const PORT_EXPLICIT = process.argv.includes("--port");
+let PORT = String(arg("--port", "8787"));
 const INSTALL_DIR = p.join(CONFIG_DIR, "claude-quota-relay");
 const SETTINGS = p.join(CONFIG_DIR, "settings.json");
 
@@ -108,19 +121,42 @@ function patchSettings(conf) {
   const tok = firstRealToken(conf);
   if (tok) settings.env.ANTHROPIC_AUTH_TOKEN = tok;
 
-  // SessionStart hook (idempotent): start the proxy on every session.
-  const hookCmd = 'node "' + p.join(INSTALL_DIR, "ensure-proxy.js") + '"';
   settings.hooks = settings.hooks || {};
-  settings.hooks.SessionStart = settings.hooks.SessionStart || [];
-  const already = JSON.stringify(settings.hooks.SessionStart).includes("ensure-proxy.js");
-  if (!already) {
-    settings.hooks.SessionStart.push({ matcher: "startup|resume|clear", hooks: [{ type: "command", command: hookCmd }] });
-    ok("added SessionStart autostart hook");
-  } else {
-    ok("SessionStart autostart hook already present");
+  // Register a command hook once (keyed by the script filename in its command).
+  function registerHook(event, matcher, script, label) {
+    settings.hooks[event] = settings.hooks[event] || [];
+    if (JSON.stringify(settings.hooks[event]).includes(script)) { ok(label + " already present"); return; }
+    const entry = { hooks: [{ type: "command", command: 'node "' + p.join(INSTALL_DIR, script) + '"' }] };
+    if (matcher) entry.matcher = matcher;
+    settings.hooks[event].push(entry);
+    ok("added " + label);
   }
+  // Proxy autostart.
+  registerHook("SessionStart", "startup|resume|clear", "ensure-proxy.js", "SessionStart autostart hook");
+  // Memory hook: inject the per-project memory + refresh it on switch / on manual /compact.
+  registerHook("SessionStart", "startup|resume|clear", "memory-hook.js", "SessionStart memory hook");
+  registerHook("UserPromptSubmit", null, "memory-hook.js", "UserPromptSubmit memory hook");
+  registerHook("PreCompact", null, "memory-hook.js", "PreCompact memory hook");
+  // Workflow quota guard (PreToolUse on the Workflow tool).
+  registerHook("PreToolUse", "Workflow", "cqr-workflow-guard.js", "Workflow quota guard hook");
+
+  setupStatusline(settings);
+
   fs.writeFileSync(SETTINGS, JSON.stringify(settings, null, 2));
   return !!tok;
+}
+
+// Add our quota status line. If the user already has one, WRAP it (save the original so our
+// wrapper can call it + uninstall can restore it). Idempotent: never wraps twice.
+function setupStatusline(settings) {
+  const slPath = p.join(INSTALL_DIR, "statusline.json");
+  const cur = settings.statusLine;
+  const curCmd = (cur && (typeof cur === "string" ? cur : cur.command)) || "";
+  if (curCmd.includes("cqr-statusline.js")) { ok("statusline already wrapped (kept)"); return; }
+  const original = cur ? (typeof cur === "string" ? { type: "command", command: cur } : cur) : null;
+  fs.writeFileSync(slPath, JSON.stringify({ original }, null, 2));
+  settings.statusLine = { type: "command", command: 'node "' + p.join(INSTALL_DIR, "cqr-statusline.js") + '"' };
+  ok(original ? "wrapped your existing statusline (kept + appended quota)" : "added quota statusline");
 }
 
 (async () => {
@@ -137,10 +173,17 @@ function patchSettings(conf) {
   let conf;
   if (fs.existsSync(tokensPath)) {
     conf = JSON.parse(fs.readFileSync(tokensPath, "utf8"));
-    conf.port = Number(PORT);
-    ok("kept existing tokens.json (" + (conf.tokens || []).length + " tokens)");
+    // keep the user's custom port unless --port was explicitly passed
+    if (PORT_EXPLICIT) conf.port = Number(PORT); else if (conf.port) PORT = String(conf.port); else conf.port = Number(PORT);
+    // backfill any missing compaction/guard defaults (older configs gain new keys)
+    conf.compaction = Object.assign({}, COMPACTION_DEFAULT, conf.compaction || {});
+    conf.workflowGuard = Object.assign({}, WORKFLOW_GUARD_DEFAULT, conf.workflowGuard || {});
+    fs.writeFileSync(tokensPath, JSON.stringify(conf, null, 2));
+    ok("kept existing tokens.json (" + (conf.tokens || []).length + " tokens, port " + conf.port + ")");
   } else {
     conf = await collectTokens();
+    conf.compaction = Object.assign({}, COMPACTION_DEFAULT, conf.compaction || {});
+    conf.workflowGuard = Object.assign({}, WORKFLOW_GUARD_DEFAULT, conf.workflowGuard || {});
     fs.writeFileSync(tokensPath, JSON.stringify(conf, null, 2));
     ok("wrote tokens.json");
   }
@@ -160,4 +203,7 @@ function patchSettings(conf) {
   }
   log("\nTip: add an alias so `cqr` works from anywhere, e.g.:");
   log("  alias cqr='node \"" + p.join(INSTALL_DIR, "cli.js") + "\"'");
+  log("\nAuto-compaction (optional, saves tokens on the 2nd account) ships OFF in dry-run.");
+  log("  cqr compact dry-run   # watch what it WOULD compact (proxy.log), no request change");
+  log("  cqr compact on        # enable it, then: cqr restart");
 })().catch((e) => { console.error("\nInstall failed: " + e.message); process.exit(1); });

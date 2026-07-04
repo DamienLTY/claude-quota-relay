@@ -6,6 +6,9 @@
 - ⏳ **Attente puis reprise** quand tout est saturé — la requête est *retenue* jusqu'au reset d'une fenêtre de quota, puis se termine seule.
 - 🧠 **Conscient du quota** — lit les vrais en-têtes de limite d'Anthropic (`5h` / `7j`) et préfère le compte le plus frais.
 - 🔐 **Login automatisé** — récupère le token de chaque compte pour vous via `claude setup-token` (aucun copier-coller).
+- ⚡ **Auto-compaction au changement de compte** (opt-in) — allège la requête envoyée au compte frais (**0 token**, jusqu'à -98 %) et tient une **mémoire de projet** générée par Haiku, sans perte de données.
+- 📊 **Statusline quota** — le quota 5h/7j + reset de **chaque** compte, en direct ; s'ajoute proprement à une statusline existante sans la casser.
+- 🛡️ **Garde-fou workflow** — prévient avant un gros workflow s'il n'y a plus assez de quota (les sous-agents de workflow ont un stall que le relais ne peut pas rattraper).
 - 🖥️ **Multiplateforme** (macOS / Linux / Windows), **zéro dépendance** (Node pur), ~400 lignes lisibles.
 - 🔒 Vos tokens restent **en local**. Rien n'est envoyé ailleurs que vers `api.anthropic.com`.
 
@@ -64,6 +67,25 @@ cqr add [nom]       # ajoute un NOUVEAU compte (login + token capturé)
 
 Chaque token longue durée provient de `claude setup-token` (abonnement Claude requis) — l'outil le lance et le lit pour vous.
 
+## Mettre à jour (vous aviez déjà installé une version ?)
+
+La mise à jour est **sans risque** : l'installeur préserve vos tokens, votre port et vos réglages, et n'ajoute **jamais deux fois** ses hooks ni sa statusline.
+
+```bash
+cd claude-quota-relay
+git pull
+node src/install.js        # non interactif si tokens.json existe déjà
+```
+
+Puis **redémarrez Claude Code**. Ce que fait la mise à jour :
+- recopie les fichiers du proxy (nouvelles fonctions incluses) ;
+- complète `tokens.json` avec les nouveaux réglages par défaut (`compaction`, `workflowGuard`) **sans toucher** aux vôtres ni à vos tokens ;
+- ajoute les nouveaux hooks (mémoire, garde-fou workflow) **une seule fois** ;
+- ajoute/rafraîchit la **statusline** quota (en gardant la vôtre si vous en aviez une) ;
+- **sauvegarde** `settings.json` avant toute modif.
+
+Rien à réactiver : l'auto-compaction reste **opt-in** (`cqr compact on` quand vous voulez), le reste s'active tout seul. (Config perso ailleurs que `~/.claude` : ajoutez `--config-dir <chemin>`.)
+
 ## Utilisation
 
 L'installeur affiche une ligne `alias cqr=…` : ajoutez-la à votre profil shell pour utiliser `cqr` partout. Ensuite :
@@ -79,6 +101,11 @@ cqr set <nom> <token>      # renseigne/écrase un token manuellement
 cqr sync-env               # recopie le 1er token dans settings.json (ANTHROPIC_AUTH_TOKEN)
 cqr policy                 # affiche la politique de routage
 cqr policy waitsoft 85     # attendre dès 85 % au lieu de consommer jusqu'à 100 %
+cqr compact status         # état de l'auto-compaction (voir la section dédiée)
+cqr compact dry-run|on|off # simule / active / désactive l'auto-compaction au changement de compte
+cqr compact memory         # affiche la mémoire de projet du dossier courant
+cqr preflight              # quota par compte + si c'est sûr de lancer un gros workflow (exit 0/1)
+cqr guard status|on|off|ask|deny|<%>  # garde-fou anti-stall des workflows
 cqr start | stop | restart # gère le process proxy
 ```
 
@@ -93,6 +120,50 @@ Retenir une requête plusieurs minutes/heures ne fonctionne que parce que l'inst
 | `CLAUDE_STREAM_IDLE_TIMEOUT_MS` | 7 jours | **la plus importante** — le watchdog *sémantique* du CLI a un plancher **codé à 5 minutes** que le keepalive SSE **ne réarme PAS**. Sans cette variable, toute requête retenue meurt à 5 min. |
 | `CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS` | 7 jours | permet aux **sous-agents** d'attendre aussi (défaut 3 min) |
 | `CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS` | 2 min | garde-fou « connexion morte » au niveau octets ; le keepalive du proxy (20 s) le satisfait |
+
+## Auto-compaction (réduire les tokens sur le compte suivant)
+
+Quand le proxy bascule vers un autre compte parce que le premier arrive au bout de sa fenêtre 5 h, la nouvelle requête envoyée au **compte frais** peut être **allégée automatiquement** — sans le moindre token de résumé, et sans perte de données. Deux mécanismes complémentaires, **désactivés par défaut** (opt-in) :
+
+1. **Réduction des tokens (proxy, 0 token).** Le proxy injecte l'effacement natif d'Anthropic (`clear_tool_uses`, *context editing*) dans la requête sortante : les **vieux résultats d'outils** sont effacés côté serveur, en gardant les **10 derniers** intacts. Mesuré : jusqu'à **-98 %** de tokens d'entrée. Rien n'est perdu — Claude Code conserve son historique local complet ; on n'allège que ce qui est *transmis*.
+2. **Mémoire de projet (Haiku).** Un hook maintient un fichier `.cqr-memory.md` **par projet** (tâches faites / en cours / prévues + notes), mis à jour par **Haiku** (le modèle le moins cher) au moment de la bascule, ré-injecté dans le contexte du compte frais, et **enrichissable** par l'agent lui-même. Il s'auto-condense quand il dépasse `memoryMaxLines`. Un `/compact` **manuel** l'enrichit aussi (hook `PreCompact`), **sans** forcer de changement de compte.
+
+**Déclencheurs** : juste avant une bascule quand le compte quitté atteint son seuil (par modèle, voir config), et juste avant la reprise après une attente de quota.
+
+**Activation prudente** (elle modifie de vraies requêtes) :
+
+```bash
+cqr compact dry-run   # le proxy LOGUE seulement ce qu'il compacterait (proxy.log), sans rien changer ; la mémoire se construit quand même
+cqr compact on        # active pour de bon, puis :  cqr restart
+cqr compact off       # revient en arrière à tout moment
+cqr compact mode strip  # repli : le proxy tronque lui-même les vieux résultats (forme de réponse inchangée), si jamais le mode natif pose souci
+```
+
+Réglages (dans `tokens.json` → `compaction`) : `thresholds` par modèle (`fable` 85 / `opus` 89 / `sonnet` 90 / `haiku` 95 / `default` 88 %), `keepToolUses` (10), `triggerTokens` (2000), `memoryFile`, `memoryMaxLines` (400), `mode` (`native`|`strip`). Le fichier mémoire et le dossier `.cqr-archive/` restent **dans votre projet** et sont ignorés par git.
+
+## Statusline (quota en direct)
+
+L'installeur ajoute une **ligne d'état** qui montre le quota de **chaque** compte, mise à jour en continu :
+
+```
+API-1 | 5h 36% - Reset à 4h16min | 7j 81% - Reset à 4j09h || API-2 | 5h 77% - Reset à 2h56min | 7j 99% - Reset à 2j09h
+```
+
+- Si vous **n'aviez pas** de statusline, on ajoute la nôtre.
+- Si vous en **aviez déjà une**, on la **garde** et on ajoute la nôtre à la suite (`votre ligne || API-1 | …`). Votre statusline d'origine continue de tourner (on lui repasse la même entrée).
+- **Jamais de doublon** : à la réinstallation on ne l'ajoute pas deux fois. Comme `settings.json` pointe vers notre script, une mise à jour du paquet met la statusline à jour toute seule. La désinstallation **restaure** votre statusline d'origine.
+
+## Garde-fou workflow (anti-stall)
+
+L'outil **Workflow** de Claude Code tue ses sous-agents après ~18 min d'inactivité — non contournable (voir « Limites »). Un hook `PreToolUse` prévient donc **avant** de lancer un workflow : si même le compte le plus frais est déjà ≥ `percent` % (5h, défaut 50), il demande confirmation (`ask`) ou bloque (`deny`), avec le quota et un conseil (travailler inline / attendre un reset).
+
+```bash
+cqr preflight        # affiche le quota et dit si c'est sûr de fan-out (exit 0 = ok, 1 = risqué)
+cqr guard ask        # mode par défaut : demande confirmation quand c'est risqué
+cqr guard deny       # bloque carrément (Claude bascule alors en inline)
+cqr guard 30         # ne prévient que si le meilleur compte est ≥ 30 %
+cqr guard off        # désactive le garde-fou
+```
 
 ## Configuration
 
@@ -126,6 +197,7 @@ Retenir une requête plusieurs minutes/heures ne fonctionne que parce que l'inst
 - Si le **PC se met en veille** pendant une longue attente, le socket peut tomber ; Claude Code réessaie au réveil.
 - Le garde-fou 7 j d'un compte ne s'arme qu'**après** la première réponse vue de ce compte.
 - Le proxy retient la requête sur **une** connexion ; les attentes très longues (heures) marchent mais se lissent mieux avec `cqr policy waitsoft 85`.
+- L'**outil Workflow** de Claude Code (fan-out de sous-agents parallèles) impose son propre garde-fou d'inactivité *par sous-agent* (~3 min × quelques tentatives) que le relais **ne peut pas** allonger — ni par variable d'env, ni par keepalive (Claude Code ignore volontairement les trames `ping`/commentaires comme « non-progrès »). Concrètement : si **tous** vos comptes sont à sec pendant qu'un gros workflow tourne, ses sous-agents peuvent abandonner au bout de ~18 min. Le relais couvre en revanche parfaitement la **boucle principale** et les sous-agents classiques (Task) grâce aux timeouts 7 jours. Conseil : lancez un workflow lourd quand **au moins un compte** a encore du quota.
 
 ## Désinstallation
 

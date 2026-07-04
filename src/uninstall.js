@@ -26,20 +26,36 @@ function ok(s) { console.log("  ✓ " + s); }
 // Stop the proxy if running.
 try { cp.execFileSync(process.execPath, [p.join(INSTALL_DIR, "cli.js"), "stop"], { stdio: "ignore" }); ok("stopped proxy"); } catch (e) {}
 
+let s = null;
 if (fs.existsSync(SETTINGS)) {
   const raw = fs.readFileSync(SETTINGS, "utf8").replace(/^﻿/, "");
   fs.writeFileSync(SETTINGS + ".bak-" + Date.now(), raw);
-  const s = JSON.parse(raw);
+  try { s = JSON.parse(raw); } catch (e) { console.error("  ! settings.json is not valid JSON — left untouched (backup kept)."); }
+}
+if (s) {
   if (s.env) {
     for (const k of OUR_ENV) delete s.env[k];
     // Note: we intentionally KEEP ANTHROPIC_AUTH_TOKEN (removing it could log you out of the CLI).
   }
-  if (s.hooks && Array.isArray(s.hooks.SessionStart)) {
-    s.hooks.SessionStart = s.hooks.SessionStart.filter((g) => !JSON.stringify(g).includes("ensure-proxy.js"));
-    if (!s.hooks.SessionStart.length) delete s.hooks.SessionStart;
+  // Remove all our hooks (proxy autostart + memory hook) from every event they touch.
+  if (s.hooks && typeof s.hooks === "object") {
+    for (const event of Object.keys(s.hooks)) {
+      if (!Array.isArray(s.hooks[event])) continue;
+      s.hooks[event] = s.hooks[event].filter((g) => { const j = JSON.stringify(g); return !j.includes("ensure-proxy.js") && !j.includes("memory-hook.js") && !j.includes("cqr-workflow-guard.js"); });
+      if (!s.hooks[event].length) delete s.hooks[event];
+    }
   }
+  // restore the user's original status line if we wrapped it
+  try {
+    const curCmd = (s.statusLine && (typeof s.statusLine === "string" ? s.statusLine : s.statusLine.command)) || "";
+    if (curCmd.includes("cqr-statusline.js")) {
+      let orig = null; try { orig = JSON.parse(fs.readFileSync(p.join(INSTALL_DIR, "statusline.json"), "utf8")).original; } catch (e) {}
+      if (orig) s.statusLine = orig; else delete s.statusLine;
+      ok("restored your original status line");
+    }
+  } catch (e) {}
   fs.writeFileSync(SETTINGS, JSON.stringify(s, null, 2));
-  ok("removed env vars + autostart hook from settings.json (backup kept)");
+  ok("removed env vars + autostart/memory/guard hooks from settings.json (backup kept)");
 }
 
 if (PURGE) {
