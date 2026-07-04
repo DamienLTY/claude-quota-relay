@@ -143,15 +143,17 @@ Réglages (dans `tokens.json` → `compaction`) : `thresholds` par modèle (`fab
 
 ## Statusline (quota en direct)
 
-L'installeur ajoute une **ligne d'état** qui montre le quota de **chaque** compte, mise à jour en continu :
+L'installeur ajoute une **ligne d'état** compacte et colorée :
 
 ```
-API-1 | 5h 36% - Reset à 4h16min | 7j 81% - Reset à 4j09h || API-2 | 5h 77% - Reset à 2h56min | 7j 99% - Reset à 2j09h
+5h █████████░ 84% ↻19h30  7j ①███░86% ②████99%
 ```
 
-- Si vous **n'aviez pas** de statusline, on ajoute la nôtre.
-- Si vous en **aviez déjà une**, on la **garde** et on ajoute la nôtre à la suite (`votre ligne || API-1 | …`). Votre statusline d'origine continue de tourner (on lui repasse la même entrée).
-- **Jamais de doublon** : à la réinstallation on ne l'ajoute pas deux fois. Comme `settings.json` pointe vers notre script, une mise à jour du paquet met la statusline à jour toute seule. La désinstallation **restaure** votre statusline d'origine.
+- **5h** : une **seule** barre cumulée pour toute la flotte — chaque compte occupe 1/N de la barre (2 comptes → 50/50, 3 → 33 %…) et la remplit avec son propre usage 5h ; la barre entière = le 5h consommé au total. Suivent la moyenne et l'**heure réelle** du prochain compte à se réinitialiser (`↻HHhMM` — l'heure d'arrivée, pas un compte à rebours, car une statusline ne se rafraîchit pas toute seule).
+- **7j** : une petite barre **par compte** (①②③…) avec son %.
+- Couleurs : vert < 60 %, jaune 60-85 %, rouge > 85 % d'usage (désactivables via `NO_COLOR`).
+
+Si vous **aviez déjà** une statusline, on la **garde** et on ajoute la nôtre après un `│` (la vôtre continue de tourner, on lui repasse la même entrée). **Jamais de doublon** à la réinstallation ; comme `settings.json` pointe vers notre script, une mise à jour du paquet met la ligne à jour toute seule ; la désinstallation **restaure** la vôtre.
 
 ## Garde-fou workflow (anti-stall)
 
