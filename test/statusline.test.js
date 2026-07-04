@@ -35,7 +35,7 @@ function run(DIR) {
   const out = strip(run(setup({ original: null })));
   assert.ok(out.startsWith("5h "), "starts with 5h: " + out);
   assert.ok(out.includes("7j "), "has 7j section");
-  assert.ok(/↻\d\dh\d\d/.test(out), "next reset shown as a clock time (↻HHhMM)");
+  assert.ok(/↻ \d\dh\d\d/.test(out), "next reset shown as a clock time (↻ HHhMM)");
   assert.ok(out.includes("①") && out.includes("②"), "one 7j bar per account, numbered");
   assert.ok(out.includes("█"), "has progress bars");
   assert.ok(out.includes("57%"), "5h mean of 40 and 73 = 57%"); // cumulative fleet %

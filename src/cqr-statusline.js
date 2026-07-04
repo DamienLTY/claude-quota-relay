@@ -59,8 +59,8 @@ if (accts.length) {
   const mean = h5s.length ? Math.round(h5s.reduce((x, y) => x + y, 0) / h5s.length) : null;
   const resets = accts.map((a) => a.reset5).filter((v) => v != null).sort((x, y) => x - y);
   const nextReset = resets.length ? resets[0] : null;
-  const seg7 = accts.map((a) => tag(a.idx) + bar(a.d7, 4) + col(hcol(a.d7), (a.d7 == null ? "?" : a.d7) + "%")).join(" ");
-  ours = "5h " + bar5 + " " + col(hcol(mean), (mean == null ? "?" : mean) + "%") + " " + col(90, "↻") + clock(nextReset) + "  7j " + seg7;
+  const seg7 = accts.map((a) => tag(a.idx) + " " + bar(a.d7, 4) + col(hcol(a.d7), (a.d7 == null ? "?" : a.d7) + "%")).join("  ");
+  ours = "5h " + bar5 + " " + col(hcol(mean), (mean == null ? "?" : mean) + "%") + " " + col(90, "↻") + " " + clock(nextReset) + "  7j " + seg7;
 }
 
 const line = prefix ? (ours ? prefix + " │ " + ours : prefix) : ours;
