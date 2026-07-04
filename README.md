@@ -146,7 +146,7 @@ Réglages (dans `tokens.json` → `compaction`) : `thresholds` par modèle (`fab
 L'installeur ajoute une **ligne d'état** compacte et colorée :
 
 ```
-5h █████████░ 84% ↻ 19h30  7j ① ███░86%  ② ████99%
+5h █████████░ 84% ↻ 19h30 │ 7j ① ███░ 86% │ ② ████ 99%
 ```
 
 - **5h** : une **seule** barre cumulée pour toute la flotte — chaque compte occupe 1/N de la barre (2 comptes → 50/50, 3 → 33 %…) et la remplit avec son propre usage 5h ; la barre entière = le 5h consommé au total. Suivent la moyenne et l'**heure réelle** du prochain compte à se réinitialiser (`↻HHhMM` — l'heure d'arrivée, pas un compte à rebours, car une statusline ne se rafraîchit pas toute seule).
