@@ -84,23 +84,31 @@ async function collectTokens() {
   example.port = Number(PORT);
   if (NO_INTERACTIVE) {
     info("non-interactive: tokens.json written with placeholders");
-    info("fill them in later with: cqr login <name>");
+    info("fill them in later with: cqr login <name> (browser) or cqr set <name> <token> (paste)");
+    info("or hand-edit " + p.join(INSTALL_DIR, "tokens.json") + " directly, then: cqr sync-env");
     return example;
   }
   section("Accounts");
-  console.log("  You can rotate as many Claude accounts as you like (2, 3, 5...). For each one, log in");
-  console.log("  through your browser — the token is captured automatically, no copy-paste needed.\n");
+  console.log("  You can rotate as many Claude accounts as you like (2, 3, 5...). For each one, you'll");
+  console.log("  either log in through your browser (token captured automatically) or paste a token you");
+  console.log("  already have — your choice, per account.\n");
   let n = parseInt(await prompt1("  How many accounts do you want to rotate? [2] "), 10);
   if (!Number.isFinite(n) || n < 1) n = 2;
 
   const tokens = [];
   for (let i = 0; i < n; i++) {
     console.log("\n  " + bold("Account " + (i + 1) + "/" + n));
-    if (i > 0) await prompt1("  Log OUT of the previous account in your browser, then press Enter to continue... ");
     const name = (await prompt1(`  Name [account-${i + 1}]: `)) || `account-${i + 1}`;
-    const tok = await lib.captureSetupToken(); // runs `claude setup-token`, captures the token (paste fallback)
+    const how = (await prompt1("  Log in automatically via browser, or paste a token yourself? [auto/paste] [auto]: ")).toLowerCase();
+    let tok;
+    if (how.startsWith("p")) {
+      tok = await lib.pasteTokenManually("  Paste the token for '" + name + "' (get one with: claude setup-token) — sk-ant-oat01-...: ");
+    } else {
+      if (i > 0) await prompt1("  Log OUT of the previous account in your browser, then press Enter to continue... ");
+      tok = await lib.captureSetupToken(); // runs `claude setup-token`, captures the token (paste fallback)
+    }
     if (tok) { ok("captured token for '" + name + "' (" + lib.mask(tok) + ")"); tokens.push({ name, token: tok, enabled: true }); }
-    else { warn("skipped '" + name + "' — add it later with: cqr login " + name); tokens.push({ name, token: "PASTE_TOKEN_FROM_claude_setup-token", enabled: true }); }
+    else { warn("skipped '" + name + "' — add it later with: cqr login " + name + " (or cqr set " + name + " <token>)"); tokens.push({ name, token: "PASTE_TOKEN_FROM_claude_setup-token", enabled: true }); }
   }
   example.tokens = tokens;
   return example;

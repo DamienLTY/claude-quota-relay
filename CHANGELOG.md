@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.0
+
+- **Login manuel, en plus de l'automatique** : à chaque compte, l'installeur demande maintenant « navigateur ou coller un token ? ». Nouveau `lib.pasteTokenManually`, réutilisé par l'installeur et par `cqr login/add --paste`. Le README documente aussi explicitement le chemin « éditer `tokens.json` à la main + `cqr sync-env` » pour ceux qui ne veulent aucun flux interactif.
+- **Statusline vraiment "live"** : avant, les chiffres de quota ne bougeaient que quand une vraie requête passait par le compte actif — figés pour l'autre compte, et figés en cas d'attente pure. Le proxy sonde maintenant TOUS les comptes activés toutes les **45 s par défaut** (réglable, `cqr live <secondes>|off`), avec une requête quasi gratuite (0 token de sortie). Prouvé par un test e2e réel (aucune requête client envoyée, les deux comptes se rafraîchissent quand même, de façon répétée).
+- **README réécrit en entier** : démarrage en 3 étapes en tête, sommaire, jargon expliqué en langage simple, sections regroupées (fonctionnalités avancées séparées du cœur toujours actif).
+- Nouvelle suite de tests (`paste-token.test.js`) + extension de `proxy-e2e.test.js` (poll live). 13 suites au total, toutes vertes.
+
+## 0.4.0
+
+- **Fix — la compaction consommait le compte frais** : l'appel Haiku qui rafraîchit la mémoire utilisait toujours le compte le plus frais (`healthiestToken`), jamais l'ancien qu'on venait de quitter — exactement le bug rapporté par un utilisateur (« ça a bien patienté puis repris sur la clé fraîche, mais ça consomme des tokens dessus »). Ajout de `lib.preferredCompactionToken` : dépense la marge restante du compte **qu'on quitte** en priorité (il va de toute façon se réinitialiser dans quelques heures), ne bascule sur le frais que si l'ancien est réellement bloqué.
+- **Fix — désalignement seuils** : `switchAtPercent` (global, pilotait le vrai switch) et les seuils de compaction par modèle (85-95 %) étaient deux réglages indépendants. Pour Haiku (seuil 95 % > switchAtPercent 94 %), la compaction ne se déclenchait **jamais**. `pickRoute` utilise maintenant le seuil effectif par modèle quand la compaction est active (comportement inchangé si elle est désactivée).
+- **Seuil dynamique tenant compte du contexte** : calibré sur une mesure réelle (~148 000 tokens Haiku ≈ +1 point d'utilisation 5h) et le tarif relatif de chaque modèle (Haiku 1×, Sonnet 3×, Opus 5×, Fable 10×) pour calculer, à chaque requête, le seuil de sécurité le plus bas entre le réglage statique et ce qui est sûr compte tenu de la taille déjà connue de la conversation — ne peut que faire switcher plus tôt, jamais plus tard. `cqr compact buffer <points>`.
+- 3 nouvelles suites de tests (`lib.test.js`, + extensions de `compaction.test.js`/`proxy-decide.test.js`/`memory-hook.test.js`), 11 suites au total, toutes vertes.
+
 ## 0.3.0
 
 - **Fix — recompaction storm** : une fois tous les comptes au-dessus de `switchAtPercent`, le routage continue (volontairement) d'alterner sur le compte le plus frais — sans garde-fou, ça recompactait (et rappelait Haiku) à **chaque requête**. Ajout d'un cooldown (`compactionCooldownMs`, 10 min par défaut, `cqr compact cooldown <min>`) qui limite ça à une compaction par fenêtre, prouvé par simulation (30 compactions → 1).

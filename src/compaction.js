@@ -34,6 +34,64 @@ function modelThreshold(model, thr) {
   return t.default;
 }
 
+// ----- seuil dynamique, tenant compte du contexte deja rempli -----
+// Mesure reelle (labo, juil-2026, vraie API) : ~148 000 tokens d'entree Haiku ont fait
+// bouger l'utilisation unifiee 5h de +1 point (11% -> 12%). Le quota "unifie" est partage
+// entre tous les modeles d'un compte ; on n'a pas la formule exacte de ponderation
+// d'Anthropic, mais le tarif publie par modele (voir skill claude-api) est un proxy
+// raisonnable de son "cout" relatif dans ce quota partage.
+const HAIKU_TOKENS_PER_POINT = 148000; // mesure reelle : ~148k tokens haiku = +1 point de 5h
+// Poids = ratio de prix vs Haiku (Opus $5/$25, Sonnet $3/$15, Haiku $1/$5, Fable $10/$50 par MTok).
+const MODEL_WEIGHT = { haiku: 1, sonnet: 3, opus: 5, fable: 10, default: 3 };
+
+function modelWeight(model) {
+  const m = String(model || "").toLowerCase();
+  if (m.includes("haiku")) return MODEL_WEIGHT.haiku;
+  if (m.includes("opus")) return MODEL_WEIGHT.opus;
+  if (m.includes("sonnet")) return MODEL_WEIGHT.sonnet;
+  if (m.includes("fable")) return MODEL_WEIGHT.fable;
+  return MODEL_WEIGHT.default;
+}
+
+// Estimation rapide (sans appel API, doit rester dans le chemin synchrone de la requete)
+// du nombre de tokens du corps de la conversation. ~3.5 caracteres/token : legerement
+// PESSIMISTE (surestimer la taille ne fait que rendre le seuil calcule plus prudent).
+function estimateTokens(bodyObj) {
+  try {
+    const json = JSON.stringify((bodyObj && bodyObj.messages) || []);
+    return Math.ceil(json.length / 3.5);
+  } catch (e) { return 0; }
+}
+
+// Seuil de securite dynamique : jusqu'a quel % de 5h peut-on rester sur le compte ACTUEL
+// avant qu'il faille imperativement switcher/compacter, etant donne le modele en cours et
+// la taille DEJA connue de la conversation (donc de la PROCHAINE requete, puisque Claude
+// Code renvoie tout l'historique a chaque fois) ? Plus le contexte est deja rempli, plus le
+// saut d'utilisation que provoquerait un futur gros message est important -> il faut
+// switcher plus tot. safetyBufferPoints couvre l'appel Haiku de compaction lui-meme
+// (negligeable, ~1000 tokens) + l'imprecision de mesure (polling non temps-reel).
+function dynamicThreshold(model, bodyObj, opts) {
+  const o = opts || {};
+  const weight = modelWeight(model);
+  const contextTokens = estimateTokens(bodyObj);
+  const pointsPerToken = weight / (o.haikuTokensPerPoint || HAIKU_TOKENS_PER_POINT);
+  const projectedJump = contextTokens * pointsPerToken;
+  const buffer = o.safetyBufferPoints == null ? 4 : o.safetyBufferPoints;
+  const t = 100 - projectedJump - buffer;
+  return Math.max(50, Math.min(99, Math.round(t)));
+}
+
+// Seuil EFFECTIF utilise a la fois par le routage (pickRoute) et la compaction : le plus
+// prudent (le plus bas) entre le seuil statique configure par modele et le seuil dynamique
+// calcule pour CETTE requete precise. Ne peut donc que switcher/compacter PLUS TOT que le
+// seuil statique seul, jamais plus tard -> narrows the exact "quota epuise pendant la
+// compaction" incident sans changer le comportement pour qui n'utilise pas la compaction.
+function effectiveSwitchThreshold(cc, model, bodyObj, opts) {
+  const stat = modelThreshold(model, cc && cc.thresholds);
+  const dyn = dynamicThreshold(model, bodyObj, Object.assign({ safetyBufferPoints: cc && cc.dynamicSafetyBufferPoints }, opts));
+  return Math.min(stat, dyn);
+}
+
 // The context-editing edit that clears old tool results, keeping the N most recent.
 // An explicit low `trigger` is important: the API's DEFAULT trigger only fires around
 // ~100k input tokens, so a switch below that would clear nothing. We inject this ONLY
@@ -84,4 +142,4 @@ function stripOldToolResults(bodyObj, keep) {
   return { body: bodyObj, stubbed };
 }
 
-module.exports = { BETA, EDIT_TYPE, DEFAULT_THRESHOLDS, modelThreshold, buildEdit, injectNative, mergeBeta, stripOldToolResults };
+module.exports = { BETA, EDIT_TYPE, DEFAULT_THRESHOLDS, MODEL_WEIGHT, HAIKU_TOKENS_PER_POINT, modelThreshold, modelWeight, estimateTokens, dynamicThreshold, effectiveSwitchThreshold, buildEdit, injectNative, mergeBeta, stripOldToolResults };

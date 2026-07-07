@@ -88,10 +88,18 @@ function parseEpochMs(v) {
 
 // ----- selection du token -----
 // renvoie {idx} pour router maintenant, ou {wait:true, idx, untilMs, reason}
-function pickRoute(conf, state) {
+function pickRoute(conf, state, bodyObj) {
   const t0 = now();
   state.exhausted = state.exhausted || {}; state.reset5h = state.reset5h || {}; state.reset7d = state.reset7d || {}; state.pct = state.pct || {};
-  const SW = conf.switchAtPercent, BLOCK = conf.sevenDayBlockPercent, SOFT = conf.waitAtSoftPercent;
+  // Si la compaction est active et qu'on connait le modele, on switche au seuil EFFECTIF
+  // (statique par modele ET dynamique selon le contexte deja rempli) plutot qu'au seuil
+  // global fixe -- evite (1) qu'un modele au seuil de compaction > switchAtPercent (ex.
+  // haiku 95% > 94%) ne bascule jamais assez tard pour que la compaction se declenche, et
+  // (2) qu'un modele risque (fable) attende trop avant de switcher. Ne change RIEN pour les
+  // installs qui n'utilisent pas la compaction (comportement historique inchange).
+  const compActive = conf.compaction && (conf.compaction.enabled || conf.compaction.dryRun);
+  const SW = (compActive && bodyObj && bodyObj.model) ? comp.effectiveSwitchThreshold(conf.compaction, bodyObj.model, bodyObj) : conf.switchAtPercent;
+  const BLOCK = conf.sevenDayBlockPercent, SOFT = conf.waitAtSoftPercent;
 
   // override manuel (claude-auth use) : on force ce token, sans regle ni attente
   if (state.forceIndex != null) {
@@ -193,6 +201,32 @@ function probeToken(conf, idx, done) {
   req.end();
 }
 
+// ----- rafraichissement en arriere-plan (statusline "live") -----
+// Sans ca, l'utilisation d'un compte dans state.json ne bouge QUE quand une vraie requete
+// passe par lui (ou lors d'une attente active sur LUI). Si les deux comptes sont a sec et
+// que Claude Code est juste ouvert en attente d'un reset, les chiffres affiches restent
+// figes. On sonde PERIODIQUEMENT tous les comptes actives (probeToken = ~8 tokens d'entree,
+// 0 sortie -> quasi gratuit) pour que la statusline reste vivante sans jamais depenser de
+// vrais tokens. Gate sur state.pct[name].at (rempli aussi bien par une vraie requete que par
+// une sonde) pour ne jamais re-sonder un compte deja rafraichi tres recemment.
+const LIVE_POLL_DEFAULT_MS = 45000; // 45s (entre les 30s et 1min demandes)
+
+function startLivePolling(confInitial) {
+  const ms = num(confInitial.livePollMs, LIVE_POLL_DEFAULT_MS);
+  if (!ms || ms <= 0) return null;
+  return setInterval(() => {
+    let conf; try { conf = readConf(); } catch (e) { return; }
+    let state; try { state = readState(); } catch (e) { state = {}; }
+    const pct = state.pct || {};
+    conf.tokens.forEach((t, i) => {
+      if (!t.enabled || isPlaceholder(t)) return;
+      const lastAt = Date.parse((pct[t.name] || {}).at || 0) || 0;
+      if (now() - lastAt < ms * 0.9) return; // deja frais (vraie requete ou sonde recente)
+      probeToken(conf, i);
+    });
+  }, ms);
+}
+
 function readQuotaHeaders(headers) {
   const u5 = Number(headers["anthropic-ratelimit-unified-5h-utilization"]);
   const u7 = Number(headers["anthropic-ratelimit-unified-7d-utilization"]);
@@ -278,7 +312,7 @@ function serve(creq, cres) {
       try { conf = readConf(); state = readState(); }
       catch (e) { try { cres.writeHead(500); cres.end("proxy: conf illisible: " + e.message); } catch (x) {} return; }
 
-      const route = pickRoute(conf, state);
+      const route = pickRoute(conf, state, bodyObj);
       if (route.none) { try { cres.writeHead(502); cres.end("proxy: aucun token configuré"); } catch (x) {} return; }
 
       if (route.wait) return enterWait(conf, state, route);
@@ -479,7 +513,7 @@ function serve(creq, cres) {
 }
 
 // Pure decision helpers are exported for tests; the server only boots when run directly.
-module.exports = { pickRoute, decideCompaction, readQuotaHeaders };
+module.exports = { pickRoute, decideCompaction, readQuotaHeaders, startLivePolling, probeToken, LIVE_POLL_DEFAULT_MS };
 
 if (require.main === module) {
   const conf0 = readConf();
@@ -507,5 +541,8 @@ if (require.main === module) {
     conf0.tokens.forEach((t, i) => {
       if (t.enabled && !isPlaceholder(t)) setTimeout(() => probeToken(conf0, i), 500 + i * 2000);
     });
+    // rafraichissement periodique pour TOUS les comptes -> statusline "live" (voir plus haut)
+    const livePollTimer = startLivePolling(conf0);
+    if (livePollTimer) log("LIVE POLL actif toutes les " + Math.round((conf0.livePollMs || LIVE_POLL_DEFAULT_MS) / 1000) + "s");
   });
 }

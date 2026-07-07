@@ -90,4 +90,54 @@ const enabled = { enabled: true, dryRun: false, memoryFile: ".cqr-memory.md", ar
   assert.ok(!fs.existsSync(p.join(PROJ, ".cqr-memory.md")), "inactive: creates no memory file");
 }
 
-console.log("PASS — memory-hook.js: refresh+inject, dedup, archive, SessionStart inject, inactive no-op");
+// --- Case 6: compaction Haiku call spends the OLD (just-abandoned) account's margin,
+// NOT the fresh one's -- this is the fix for the user-reported bug (compaction always
+// consumed tokens on the fresh key even though the old one still had headroom left) ---
+{
+  const T = fs.mkdtempSync(p.join(os.tmpdir(), "cqr-mem-"));
+  const INSTALL = p.join(T, "install"); fs.mkdirSync(INSTALL);
+  const PROJ = p.join(T, "project"); fs.mkdirSync(PROJ);
+  const TOK_OLD = "sk-ant-oat01-FAKE-OLD-ACCOUNT-still-has-margin-00";
+  const TOK_FRESH = "sk-ant-oat01-FAKE-FRESH-ACCOUNT-pristine-quota-00";
+  fs.writeFileSync(p.join(INSTALL, "tokens.json"), JSON.stringify({
+    tokens: [{ name: "old", token: TOK_OLD, enabled: true }, { name: "fresh", token: TOK_FRESH, enabled: true }],
+    compaction: enabled,
+  }));
+  // old (just switched away from) still has plenty of margin (90% < block); fresh is much fresher (20%).
+  // Naive "pick freshest" would wrongly choose "fresh"; the fix must choose "old" (marker.from).
+  fs.writeFileSync(p.join(INSTALL, "state.json"), JSON.stringify({
+    pct: { old: { h5: 90 }, fresh: { h5: 20 } }, exhausted: {},
+    compaction: { at: 2000, from: "old", to: "fresh", reason: "switch" },
+  }));
+  const TR = p.join(T, "t.jsonl");
+  fs.writeFileSync(TR, JSON.stringify({ type: "user", message: { role: "user", content: "continue" } }));
+  const recordFile = p.join(T, "recorded-token.txt");
+  run({ CQR_RECORD_TOKEN_TO: recordFile }, INSTALL, PROJ, TR, "UserPromptSubmit", "MEM");
+  const usedToken = fs.readFileSync(recordFile, "utf8");
+  assert.strictEqual(usedToken, TOK_OLD, "compaction Haiku call uses the OLD account's token, not the fresh one's");
+}
+
+// --- Case 7: if the old account is genuinely exhausted (blocked), fall back to the freshest ---
+{
+  const T = fs.mkdtempSync(p.join(os.tmpdir(), "cqr-mem-"));
+  const INSTALL = p.join(T, "install"); fs.mkdirSync(INSTALL);
+  const PROJ = p.join(T, "project"); fs.mkdirSync(PROJ);
+  const TOK_OLD = "sk-ant-oat01-FAKE-OLD-ACCOUNT-blocked-000000000";
+  const TOK_FRESH = "sk-ant-oat01-FAKE-FRESH-ACCOUNT-fallback-0000000";
+  fs.writeFileSync(p.join(INSTALL, "tokens.json"), JSON.stringify({
+    tokens: [{ name: "old", token: TOK_OLD, enabled: true }, { name: "fresh", token: TOK_FRESH, enabled: true }],
+    compaction: enabled,
+  }));
+  fs.writeFileSync(p.join(INSTALL, "state.json"), JSON.stringify({
+    pct: { old: { h5: 99 }, fresh: { h5: 20 } }, exhausted: { old: Date.now() + 3600000 },
+    compaction: { at: 3000, from: "old", to: "fresh", reason: "switch" },
+  }));
+  const TR = p.join(T, "t.jsonl");
+  fs.writeFileSync(TR, JSON.stringify({ type: "user", message: { role: "user", content: "continue" } }));
+  const recordFile = p.join(T, "recorded-token.txt");
+  run({ CQR_RECORD_TOKEN_TO: recordFile }, INSTALL, PROJ, TR, "UserPromptSubmit", "MEM");
+  const usedToken = fs.readFileSync(recordFile, "utf8");
+  assert.strictEqual(usedToken, TOK_FRESH, "old account genuinely blocked -> falls back to the freshest account");
+}
+
+console.log("PASS — memory-hook.js: refresh+inject, dedup, archive, SessionStart inject, inactive no-op, old-account-preferred-for-compaction");

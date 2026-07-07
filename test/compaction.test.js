@@ -73,4 +73,64 @@ assert.strictEqual(comp.modelThreshold(undefined, null), 88, "no model -> defaul
   assert.strictEqual(body.messages[1].content[0].tool_use_id, "t0", "tool_use_id preserved");
 }
 
-console.log("PASS — compaction.js unit tests (threshold, injectNative, mergeBeta, stripOldToolResults)");
+// --- modelWeight (relative price vs Haiku -- see claude-api pricing table) ---
+assert.strictEqual(comp.modelWeight("claude-haiku-4-5"), 1, "haiku weight 1");
+assert.strictEqual(comp.modelWeight("claude-sonnet-5"), 3, "sonnet weight 3");
+assert.strictEqual(comp.modelWeight("claude-opus-4-8"), 5, "opus weight 5");
+assert.strictEqual(comp.modelWeight("claude-fable-5"), 10, "fable weight 10");
+assert.strictEqual(comp.modelWeight("unknown-model"), 3, "unknown -> default weight 3");
+
+// --- estimateTokens (rough, allocation-free; used synchronously in the request path) ---
+{
+  const empty = comp.estimateTokens({ messages: [] });
+  assert.ok(empty <= 1, "no messages -> ~0 tokens: " + empty);
+  const small = comp.estimateTokens({ messages: [{ role: "user", content: "hi" }] });
+  assert.ok(small > 0 && small < 20, "small message -> small estimate: " + small);
+  const bigMsgs = { messages: [{ role: "user", content: "x".repeat(148000 * 3.5) }] };
+  const big = comp.estimateTokens(bigMsgs);
+  assert.ok(Math.abs(big - 148000) < 2000, "~148000-char content -> ~148000 tokens (3.5 chars/token): " + big);
+  assert.ok(comp.estimateTokens(null) <= 1, "null bodyObj -> ~0 (never throws)");
+}
+
+// --- dynamicThreshold (grounded in the real calibration: ~148000 haiku tokens = 1 point) ---
+{
+  const tiny = { messages: [{ role: "user", content: "hi" }] };
+  const t = comp.dynamicThreshold("claude-haiku-4-5", tiny);
+  assert.ok(t >= 95, "near-empty context -> dynamic threshold near the ceiling (haiku): " + t);
+}
+{
+  // ~148000 haiku tokens -> ~1 point projected jump -> threshold ~= 100 - 1 - 4(buffer) = 95
+  const bodyObj = { messages: [{ role: "user", content: "x".repeat(148000 * 3.5) }] };
+  const t = comp.dynamicThreshold("claude-haiku-4-5", bodyObj);
+  assert.ok(t >= 93 && t <= 96, "full haiku context -> threshold ~95 (measured calibration): " + t);
+}
+{
+  // same context size, but fable weighs 10x haiku -> ~10x the projected jump -> much lower threshold
+  const bodyObj = { messages: [{ role: "user", content: "x".repeat(148000 * 3.5) }] };
+  const tFable = comp.dynamicThreshold("claude-fable-5", bodyObj);
+  const tHaiku = comp.dynamicThreshold("claude-haiku-4-5", bodyObj);
+  assert.ok(tFable < tHaiku, "fable (10x weight) needs a lower/earlier threshold than haiku for the same context size");
+}
+{
+  // clamped to a sane range even for a pathologically huge context
+  const huge = { messages: [{ role: "user", content: "x".repeat(50_000_000) }] };
+  const t = comp.dynamicThreshold("claude-fable-5", huge);
+  assert.ok(t >= 50 && t <= 99, "clamped into [50,99]: " + t);
+}
+
+// --- effectiveSwitchThreshold : min(static per-model default, dynamic) ---
+{
+  // small context -> dynamic is high -> static default wins (unchanged from today's behavior)
+  const tiny = { messages: [{ role: "user", content: "hi" }] };
+  const t = comp.effectiveSwitchThreshold({ thresholds: {} }, "claude-haiku-4-5", tiny);
+  assert.strictEqual(t, 95, "small context: static default (95) is the binding constraint");
+}
+{
+  // huge context -> dynamic is lower than static -> dynamic wins (this is the fix: switches EARLIER, never later)
+  const huge = { messages: [{ role: "user", content: "x".repeat(50_000_000) }] };
+  const stat = comp.modelThreshold("claude-fable-5", {});
+  const t = comp.effectiveSwitchThreshold({ thresholds: {} }, "claude-fable-5", huge);
+  assert.ok(t <= stat, "huge context: effective threshold never exceeds the static default: " + t + " <= " + stat);
+}
+
+console.log("PASS — compaction.js unit tests (threshold, weight, estimate, dynamic, injectNative, mergeBeta, stripOldToolResults)");

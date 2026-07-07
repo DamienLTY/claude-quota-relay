@@ -25,9 +25,11 @@ const lib = require("./lib.js");
 
 // Install dir (proxy tokens.json/state.json live here). CQR_DIR override = test seam.
 const DIR = process.env.CQR_DIR || __dirname;
-// Test seam: replace the Haiku call with a canned summary (no network in tests).
+// Test seam: replace the Haiku call with a canned summary (no network in tests). If
+// CQR_RECORD_TOKEN_TO is also set, the token it was called with is recorded there so tests
+// can assert WHICH account was used (e.g. old-account preference for the compaction call).
 const summarize = process.env.CQR_FAKE_SUMMARY !== undefined
-  ? async () => ({ text: process.env.CQR_FAKE_SUMMARY })
+  ? async (token) => { if (process.env.CQR_RECORD_TOKEN_TO) { try { fs.writeFileSync(process.env.CQR_RECORD_TOKEN_TO, token); } catch (e) {} } return { text: process.env.CQR_FAKE_SUMMARY }; }
   : lib.haikuSummarize;
 
 const MASTER_SYSTEM = (maxLines) => "Tu es le gestionnaire de memoire d'un tres long projet pilote par IA. " +
@@ -101,10 +103,13 @@ function transcriptTail(transcriptPath, maxLines, maxChars) {
 
 // Rebuild/merge the memory file from (existing memory + recent conversation) via Haiku.
 // allowCondense: run the extra size-condensation pass (only off the latency path).
-async function updateMemory(cc, cwd, transcriptPath, memFile, archiveDir, markerAt, allowCondense) {
+// markerFrom: the account the proxy just switched AWAY from (state.compaction.from) -- spend
+// ITS last sliver of margin on this admin call instead of the fresh account's pristine quota;
+// falls back to the freshest account if the old one turns out to be genuinely exhausted.
+async function updateMemory(cc, cwd, transcriptPath, memFile, archiveDir, markerAt, allowCondense, markerFrom) {
   const conf = readJson(p.join(DIR, "tokens.json"), {});
   const state = readJson(p.join(DIR, "state.json"), {});
-  const token = lib.healthiestToken(conf, state);
+  const token = lib.preferredCompactionToken(conf, state, markerFrom);
   if (!token) return { err: "no token" };
   const maxLines = cc.memoryMaxLines || 400;
   const existing = fs.existsSync(memFile) ? fs.readFileSync(memFile, "utf8") : "";
@@ -169,7 +174,7 @@ function emitInject(event, memFile) {
         catch (e) { try { if (Date.now() - fs.statSync(lockFile).mtimeMs > 90000) { fs.writeFileSync(lockFile, String(marker.at)); locked = true; } } catch (e2) {} } // ponytail: steal a stale (>90s) lock
         if (locked) {
           try {
-            const res = await updateMemory(cc, cwd, transcriptPath, memFile, archiveDir, marker.at, false);
+            const res = await updateMemory(cc, cwd, transcriptPath, memFile, archiveDir, marker.at, false, marker.from);
             // only consume the marker on success -> a failed (offline/no-token) refresh retries next prompt.
             if (res.ok) fs.writeFileSync(lastFile, JSON.stringify({ at: marker.at }));
           } finally { try { fs.unlinkSync(lockFile); } catch (e) {} }

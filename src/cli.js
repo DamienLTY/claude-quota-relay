@@ -7,7 +7,9 @@
  *   cqr use <nom|index>        EPINGLE le token actif (effet immediat, ignore regles+attente)
  *   cqr auto                   revient au mode automatique (failover + waiting)
  *   cqr reset                  oublie l'etat "epuise" (re-essaie tous les tokens)
- *   cqr set <nom> <token>      renseigne/ecrase le token d'un compte
+ *   cqr set <nom> <token>      renseigne/ecrase le token d'un compte (script/manuel, sans prompt)
+ *   cqr login <nom> [--paste]  recapture un token (navigateur, ou --paste pour le coller soi-meme)
+ *   cqr add [nom] [--paste]    ajoute un compte (navigateur, ou --paste pour le coller soi-meme)
  *   cqr policy [<cle> <val>]   affiche/modifie la politique (switch|block7d|waitsoft|maxwait)
  *   cqr start|stop|restart     gere le process proxy (portable, via PID file)
  *
@@ -71,7 +73,9 @@ function stopProxy(cb) {
   }, 1000);
 }
 
-const [cmd, a1, a2] = process.argv.slice(2);
+// strip known bare flags before positional destructuring, so `cqr add --paste` doesn't
+// treat "--paste" as the account name.
+const [cmd, a1, a2] = process.argv.slice(2).filter((x) => x !== "--paste");
 
 function fmtPct(pctObj) {
   if (!pctObj) return "?";
@@ -129,12 +133,14 @@ switch (cmd) {
     break;
   }
   case "login": case "add": {
-    // login <name|index> : (re)capture a token for an existing account via `claude setup-token`.
-    // add [name]         : capture a token for a NEW account and append it.
+    // login <name|index> [--paste] : (re)capture a token for an existing account, via
+    //   `claude setup-token` (default) or by pasting one yourself (--paste, no browser).
+    // add [name] [--paste]         : capture a token for a NEW account and append it.
     (async () => {
       const c = readConf();
-      const tok = await lib.captureSetupToken();
-      if (!tok) { console.error("\nNo token captured."); process.exit(1); }
+      const paste = process.argv.includes("--paste");
+      const tok = paste ? await lib.pasteTokenManually() : await lib.captureSetupToken();
+      if (!tok) { console.error("\nNo token captured. Don't want the browser flow? Try: cqr " + cmd + " " + (a1 || "") + " --paste  (or: cqr set <name> <token>)"); process.exit(1); }
       let name;
       if (cmd === "add") {
         name = a1 || ("account-" + (c.tokens.length + 1));
@@ -190,6 +196,15 @@ switch (cmd) {
     writeConf(c); console.log("Policy updated:", a1, "=", v);
     break;
   }
+  case "live": {
+    // Background quota poll (statusline "live" refresh) -- see src/proxy.js startLivePolling.
+    const c = readConf();
+    if (a1 === "off") { c.livePollMs = 0; writeConf(c); console.log("Live poll OFF (quota numbers only update on real requests). Restart the proxy: cqr restart"); }
+    else if (a1 && /^\d+$/.test(a1)) { c.livePollMs = Number(a1) * 1000; writeConf(c); console.log("Live poll every " + a1 + "s. Restart the proxy: cqr restart"); }
+    else if (!a1 || a1 === "status") { console.log("livePollMs:", c.livePollMs == null ? "45000 (default)" : c.livePollMs, "-- background probe (near-free: ~8 input tokens, 0 output) that keeps BOTH accounts' quota numbers fresh for the statusline even when idle"); }
+    else console.error("Usage: cqr live [status|<seconds>|off]");
+    break;
+  }
   case "compact": {
     const c = readConf(); c.compaction = c.compaction || {};
     const cc = c.compaction;
@@ -199,6 +214,7 @@ switch (cmd) {
     else if (a1 === "mode") { cc.mode = a2 === "strip" ? "strip" : "native"; writeConf(c); console.log("Compaction mode = " + cc.mode + (cc.mode === "strip" ? " (proxy stubs old tool results; use if Claude Code chokes on native)" : " (Anthropic context-editing, 0 token)")); }
     else if (a1 === "keep") { cc.keepToolUses = Number(a2) || 10; writeConf(c); console.log("Keep last " + cc.keepToolUses + " tool results raw."); }
     else if (a1 === "cooldown") { cc.compactionCooldownMs = Math.max(0, Number(a2) || 0) * 60000; writeConf(c); console.log("Compaction cooldown = " + (a2 || 0) + "min."); }
+    else if (a1 === "buffer") { cc.dynamicSafetyBufferPoints = Math.max(0, Number(a2) || 0); writeConf(c); console.log("Dynamic safety buffer = " + cc.dynamicSafetyBufferPoints + " points."); }
     else if (a1 === "memory") {
       const mf = p.join(process.cwd(), cc.memoryFile || ".cqr-memory.md");
       if (fs.existsSync(mf)) console.log(fs.readFileSync(mf, "utf8")); else console.log("(no memory file yet in " + process.cwd() + ")");
@@ -210,10 +226,11 @@ switch (cmd) {
       console.log("keep     :", cc.keepToolUses || 10, "tool results");
       console.log("resume   :", cc.compactBeforeResume !== false ? "compact before resuming after a wait" : "off");
       console.log("cooldown :", Math.round((cc.compactionCooldownMs == null ? 600000 : cc.compactionCooldownMs) / 60000) + "min (prevents recompacting on every account ping-pong once both are hot)");
-      console.log("thresholds:", JSON.stringify(Object.assign({}, comp.DEFAULT_THRESHOLDS, cc.thresholds || {})));
+      console.log("thresholds:", JSON.stringify(Object.assign({}, comp.DEFAULT_THRESHOLDS, cc.thresholds || {})), "(static per-model ceiling)");
+      console.log("buffer   :", (cc.dynamicSafetyBufferPoints == null ? 4 : cc.dynamicSafetyBufferPoints) + " points (dynamic threshold also drops if the current context is already large -- effective = min(static, dynamic))");
       console.log("memory   :", cc.memoryFile || ".cqr-memory.md", "(per project, max " + (cc.memoryMaxLines || 400) + " lines)");
     }
-    else console.error("Usage: cqr compact [status|on|off|dry-run|mode native|strip|keep <n>|cooldown <min>|memory]");
+    else console.error("Usage: cqr compact [status|on|off|dry-run|mode native|strip|keep <n>|cooldown <min>|buffer <points>|memory]");
     break;
   }
   case "preflight": {

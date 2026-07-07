@@ -5,6 +5,7 @@
   "waitAtSoftPercent": null,
   "maxWaitMs": 604800000,
   "pollMs": 15000,
+  "livePollMs": 45000,
   "compaction": {
     "enabled": false,
     "dryRun": true,
@@ -14,6 +15,7 @@
     "triggerTokens": 2000,
     "compactBeforeResume": true,
     "compactionCooldownMs": 600000,
+    "dynamicSafetyBufferPoints": 4,
     "memoryFile": ".cqr-memory.md",
     "memoryMaxLines": 400,
     "archiveDir": ".cqr-archive"

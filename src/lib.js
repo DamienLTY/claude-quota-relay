@@ -37,6 +37,20 @@ function findClaude() {
   return "claude"; // last resort: rely on PATH at spawn time
 }
 
+// Ask the user to paste a token directly -- for people who don't want the automated browser
+// login (or are on a headless/remote box where a browser can't open). Retries once on an
+// obviously-invalid paste. Returns the token string, or null if left blank.
+async function pasteTokenManually(promptText) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  let pasted = await ask(rl, promptText || "  Paste the token (sk-ant-oat01-...): ");
+  if (pasted && !TOKEN_RE.test(pasted)) {
+    pasted = await ask(rl, "  That doesn't look like a sk-ant-oat01-... token. Paste again (or leave blank to skip): ");
+  }
+  rl.close();
+  const m = (pasted || "").match(TOKEN_RE);
+  return m ? m[0] : null;
+}
+
 // Run `claude setup-token` interactively, tee its output so the user sees the browser
 // prompts, and capture the printed token. Falls back to asking the user to paste it if
 // the token can't be scraped from the output. Returns the token string, or null.
@@ -106,6 +120,21 @@ function healthiestToken(conf, state) {
   return cands[0];
 }
 
+// The compaction Haiku call should spend the OLD account's last sliver of margin (it's
+// about to be abandoned anyway) rather than the fresh one's pristine quota. Use
+// `preferName` (state.compaction.from) if that account is still enabled and not currently
+// marked exhausted/blocked; otherwise fall back to the freshest account (it likely WAS
+// exhausted -- the exact scenario a user hit: proxy held the request, then resumed fresh).
+function preferredCompactionToken(conf, state, preferName) {
+  if (preferName) {
+    const t = (conf.tokens || []).find((x) => x.name === preferName);
+    const exhausted = state && state.exhausted && state.exhausted[preferName];
+    const stillBlocked = exhausted && Date.now() < exhausted;
+    if (t && t.enabled && !isPlaceholder(t) && !stillBlocked) return t;
+  }
+  return healthiestToken(conf, state);
+}
+
 // Minimal POST to api.anthropic.com. Resolves {status, json, raw} (never rejects).
 function anthropicPost(pathname, token, body, extraHeaders, timeoutMs) {
   return new Promise((resolve) => {
@@ -161,4 +190,4 @@ function bestHeadroom(conf, state) {
   return vals.length ? Math.min.apply(null, vals) : null;
 }
 
-module.exports = { TOKEN_RE, isPlaceholder, mask, configDir, settingsPath, readConf, writeConf, ask, findClaude, captureSetupToken, syncAuthToken, healthiestToken, anthropicPost, haikuSummarize, fmtDur, accounts, bestHeadroom };
+module.exports = { TOKEN_RE, isPlaceholder, mask, configDir, settingsPath, readConf, writeConf, ask, findClaude, captureSetupToken, pasteTokenManually, syncAuthToken, healthiestToken, preferredCompactionToken, anthropicPost, haikuSummarize, fmtDur, accounts, bestHeadroom };

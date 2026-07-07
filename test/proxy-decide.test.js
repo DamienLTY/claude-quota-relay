@@ -2,7 +2,7 @@
 // proxy.js exports decideCompaction and only boots the server when run directly.
 // Run: node test/proxy-decide.test.js
 const assert = require("assert");
-const { decideCompaction } = require("../src/proxy.js");
+const { decideCompaction, pickRoute } = require("../src/proxy.js");
 
 const baseConf = (over) => Object.assign({
   tokens: [{ name: "a" }, { name: "b" }],
@@ -110,4 +110,58 @@ const body = { model: "claude-haiku-4-5", messages: [{ role: "user", content: "x
   assert.strictEqual(d, null, "cooldown applique aussi en dry-run (logs representatifs)");
 }
 
-console.log("PASS — proxy decideCompaction: switch/threshold/resume/dry-run/strip/disabled/cooldown");
+// --- pickRoute : model-aware effective threshold, fixes the switchAtPercent vs
+// per-model-compaction-threshold misalignment (haiku 95% was unreachable when
+// switchAtPercent=94%; this closes that gap without touching non-compaction users) ---
+const twoTokens = (h5a, h5b) => ({
+  tokens: [{ name: "a", token: "sk-ant-oat01-fake-a", enabled: true }, { name: "b", token: "sk-ant-oat01-fake-b", enabled: true }],
+  switchAtPercent: 94, sevenDayBlockPercent: 99, waitAtSoftPercent: null,
+  compaction: { enabled: true, thresholds: {} },
+});
+const rState = (h5a, h5b) => ({ activeIndex: 0, exhausted: {}, pct: { a: { h5: h5a }, b: { h5: h5b } }, reset5h: {}, reset7d: {} });
+
+{
+  // haiku: static threshold (95) > switchAtPercent (94) -> at 94.x%, a plain global switch
+  // would already have moved away, but with model-awareness pickRoute keeps hysteresis a
+  // bit longer (up to ~95%) since haiku is cheap and dynamic context here is tiny.
+  const conf = twoTokens();
+  const st = rState(94.5, 40);
+  const body = { model: "claude-haiku-4-5", messages: [{ role: "user", content: "x" }] };
+  const route = pickRoute(conf, st, body);
+  assert.strictEqual(route.idx, 0, "haiku @94.5% with small context: effective threshold ~95 -> stays on 'a' (hysteresis)");
+}
+{
+  // fable: static threshold (85) < switchAtPercent (94) -> switches EARLIER than the old
+  // flat 94% would have, giving Fable (biggest single-request risk) more safety margin.
+  const conf = twoTokens();
+  const st = rState(90, 40);
+  const body = { model: "claude-fable-5", messages: [{ role: "user", content: "x" }] };
+  const route = pickRoute(conf, st, body);
+  assert.strictEqual(route.idx, 1, "fable @90%: switches away well before the old flat 94% threshold");
+}
+{
+  // huge context on a risky model pushes the dynamic threshold down further still
+  const conf = twoTokens();
+  const st = rState(80, 40);
+  const body = { model: "claude-fable-5", messages: [{ role: "user", content: "x".repeat(50_000_000) }] };
+  const route = pickRoute(conf, st, body);
+  assert.strictEqual(route.idx, 1, "fable with a huge already-filled context switches even at 80%");
+}
+{
+  // compaction disabled entirely -> behavior is EXACTLY the old flat switchAtPercent (94%),
+  // zero change for installs that don't use the compaction feature.
+  const conf = twoTokens(); conf.compaction = { enabled: false, dryRun: false };
+  const st = rState(90, 40); // 90 < 94 -> hysteresis keeps 'a' under the OLD flat rule
+  const body = { model: "claude-fable-5", messages: [{ role: "user", content: "x" }] };
+  const route = pickRoute(conf, st, body);
+  assert.strictEqual(route.idx, 0, "compaction off: unaffected by model, uses flat switchAtPercent (94) unchanged");
+}
+{
+  // no model on the request body (e.g. an endpoint without one) -> falls back to flat switchAtPercent
+  const conf = twoTokens();
+  const st = rState(90, 40);
+  const route = pickRoute(conf, st, { messages: [{ role: "user", content: "x" }] });
+  assert.strictEqual(route.idx, 0, "no model known: falls back to flat switchAtPercent (94)");
+}
+
+console.log("PASS — proxy decideCompaction: switch/threshold/resume/dry-run/strip/disabled/cooldown + pickRoute model-aware threshold");

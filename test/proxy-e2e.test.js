@@ -8,6 +8,7 @@ const fs = require("fs"), os = require("os"), p = require("path"), http = requir
 const SRC = p.join(__dirname, "..", "src");
 const PROXY_PORT = 8792, MOCK_PORT = 8793;
 const FAKE = "sk-ant-oat01-FAKE-TEST-TOKEN-not-real-000000";
+const FAKE1 = "sk-ant-oat01-FAKE-ACCOUNT-ONE-not-real-0000000";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -24,13 +25,23 @@ function health(port) {
   return new Promise((resolve) => { const r = http.get("http://127.0.0.1:" + port + "/__proxy_health", (res) => { res.resume(); resolve(res.statusCode === 200); }); r.on("error", () => resolve(false)); r.setTimeout(500, () => { r.destroy(); resolve(false); }); });
 }
 
-// Mock upstream: echoes back whether the request carried context_management + which beta header.
+// Mock upstream: echoes back whether the request carried context_management + which beta header,
+// AND returns rate-limit headers whose value increments on every hit (per-token counter) --
+// lets the live-poll test detect that a token got probed AGAIN (a changed % = a new probe).
+const probeHits = {};
 function startMock() {
   return new Promise((resolve) => {
     const srv = http.createServer((req, res) => {
       let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => {
         let body = {}; try { body = JSON.parse(b); } catch (e) {}
-        res.writeHead(200, { "content-type": "application/json" });
+        const auth = req.headers["authorization"] || "";
+        probeHits[auth] = (probeHits[auth] || 0) + 1;
+        res.writeHead(200, {
+          "content-type": "application/json",
+          "anthropic-ratelimit-unified-5h-utilization": String(Math.min(0.99, probeHits[auth] * 0.01)),
+          "anthropic-ratelimit-unified-7d-utilization": "0.5",
+          "anthropic-ratelimit-unified-status": "allowed",
+        });
         res.end(JSON.stringify({ echo: { has_cm: !!body.context_management, edits: (body.context_management || {}).edits || null, beta: req.headers["anthropic-beta"] || null }, usage: { input_tokens: 10, output_tokens: 1 } }));
       });
     });
@@ -47,11 +58,13 @@ const bigBody = () => {
 function seedState(dir) {
   fs.writeFileSync(p.join(dir, "state.json"), JSON.stringify({ activeIndex: 0, pct: { account1: { h5: 99, d7: 50 }, account2: { h5: 40, d7: 50 } }, exhausted: {}, reset5h: {}, reset7d: {} }));
 }
-function writeConf(dir, compaction) {
+function writeConf(dir, compaction, opts) {
+  opts = opts || {};
   fs.writeFileSync(p.join(dir, "tokens.json"), JSON.stringify({
     port: PROXY_PORT, switchAtPercent: 94, sevenDayBlockPercent: 99, waitAtSoftPercent: null, maxWaitMs: 600000, pollMs: 15000,
+    livePollMs: opts.livePollMs,
     compaction,
-    tokens: [{ name: "account1", token: FAKE, enabled: false }, { name: "account2", token: FAKE, enabled: true }],
+    tokens: [{ name: "account1", token: opts.tokenAccount1 || FAKE, enabled: opts.bothEnabled ? true : false }, { name: "account2", token: FAKE, enabled: true }],
   }));
 }
 
@@ -101,6 +114,28 @@ function writeConf(dir, compaction) {
     assert.strictEqual(r4.json.echo.has_cm, false, "count_tokens: not compacted (gated to /v1/messages)");
 
     console.log("PASS — proxy e2e: native inject (+beta merge), dry-run no-op, strip mode, count_tokens skipped");
+
+    // --- live poll: BOTH accounts' quota keeps refreshing in state.json with ZERO client
+    // requests (the fix for "statusline only updates the active account, goes stale while
+    // idle waiting for a reset"). livePollMs is read once at proxy startup -> restart it. ---
+    try { child.kill(); } catch (e) {}
+    writeConf(DIR, { enabled: false }, { livePollMs: 150, bothEnabled: true, tokenAccount1: FAKE1 });
+    seedState(DIR);
+    const child2 = cp.spawn(process.execPath, [p.join(DIR, "proxy.js")], { env: Object.assign({}, process.env, { CQR_UPSTREAM_HOST: "127.0.0.1", CQR_UPSTREAM_PORT: String(MOCK_PORT), CQR_UPSTREAM_HTTP: "1" }), stdio: "ignore", windowsHide: true });
+    try {
+      let up2 = false; for (let i = 0; i < 40; i++) { if (await health(PROXY_PORT)) { up2 = true; break; } await sleep(150); }
+      assert.ok(up2, "restarted proxy (live poll config) should be up");
+      await sleep(700); // let a couple of 150ms poll cycles run, with zero client requests sent
+      const s1 = JSON.parse(fs.readFileSync(p.join(DIR, "state.json"), "utf8"));
+      assert.ok(s1.pct && s1.pct.account1 && s1.pct.account2, "both accounts probed with no client traffic at all");
+      assert.notStrictEqual(s1.pct.account1.h5, 99, "account1's stale seeded value (99%) was refreshed by the background probe");
+      assert.notStrictEqual(s1.pct.account2.h5, 40, "account2's stale seeded value (40%) was refreshed too (not just the active one)");
+      const h5_1_first = s1.pct.account1.h5;
+      await sleep(700); // more cycles -> the mock's incrementing counter proves it's PERIODIC, not one-shot
+      const s2 = JSON.parse(fs.readFileSync(p.join(DIR, "state.json"), "utf8"));
+      assert.ok(s2.pct.account1.h5 > h5_1_first, "account1 keeps being re-probed over time (periodic, not a single probe): " + h5_1_first + " -> " + s2.pct.account1.h5);
+      console.log("PASS — live poll: both accounts refresh with zero client requests, periodically (not one-shot)");
+    } finally { try { child2.kill(); } catch (e) {} }
   } catch (e) { failed = e; }
   finally {
     try { child.kill(); } catch (e) {}
