@@ -135,7 +135,23 @@ function preferredCompactionToken(conf, state, preferName) {
   return healthiestToken(conf, state);
 }
 
-// Minimal POST to api.anthropic.com. Resolves {status, json, raw} (never rejects).
+// Upstream cible pour les appels Haiku (memory-hook.js). Meme logique que proxy.js :
+// api.anthropic.com par defaut, mais respecte ANTHROPIC_TARGET_API_URL si defini (reseau
+// d'entreprise ou l'API Anthropic directe est bloquee -- l'utilisateur passe par son propre
+// relais, ex. un Cloudflare Worker). Claude Code ne lit pas cette variable lui-meme.
+function resolveUpstream() {
+  const target = process.env.ANTHROPIC_TARGET_API_URL;
+  if (target) {
+    try {
+      const u = new URL(target);
+      return { hostname: u.hostname, port: Number(u.port) || (u.protocol === "http:" ? 80 : 443), mod: u.protocol === "http:" ? require("http") : https, pathPrefix: u.pathname.replace(/\/$/, "") };
+    } catch (e) { /* URL invalide -> defaut api.anthropic.com */ }
+  }
+  return { hostname: "api.anthropic.com", port: 443, mod: https, pathPrefix: "" };
+}
+
+// Minimal POST to api.anthropic.com (or ANTHROPIC_TARGET_API_URL if set). Resolves
+// {status, json, raw} (never rejects).
 function anthropicPost(pathname, token, body, extraHeaders, timeoutMs) {
   return new Promise((resolve) => {
     const data = Buffer.from(JSON.stringify(body));
@@ -145,7 +161,8 @@ function anthropicPost(pathname, token, body, extraHeaders, timeoutMs) {
       "content-type": "application/json",
       "content-length": data.length,
     }, extraHeaders || {});
-    const req = https.request({ hostname: "api.anthropic.com", port: 443, path: pathname, method: "POST", headers }, (res) => {
+    const up = resolveUpstream();
+    const req = up.mod.request({ hostname: up.hostname, port: up.port, path: up.pathPrefix + pathname, method: "POST", headers }, (res) => {
       let d = ""; res.on("data", (c) => (d += c)); res.on("end", () => { let j = null; try { j = JSON.parse(d); } catch (e) {} resolve({ status: res.statusCode, json: j, raw: d }); });
     });
     req.setTimeout(timeoutMs || 60000, () => { try { req.destroy(new Error("timeout")); } catch (e) {} });
@@ -190,4 +207,4 @@ function bestHeadroom(conf, state) {
   return vals.length ? Math.min.apply(null, vals) : null;
 }
 
-module.exports = { TOKEN_RE, isPlaceholder, mask, configDir, settingsPath, readConf, writeConf, ask, findClaude, captureSetupToken, pasteTokenManually, syncAuthToken, healthiestToken, preferredCompactionToken, anthropicPost, haikuSummarize, fmtDur, accounts, bestHeadroom };
+module.exports = { TOKEN_RE, isPlaceholder, mask, configDir, settingsPath, readConf, writeConf, ask, findClaude, captureSetupToken, pasteTokenManually, syncAuthToken, healthiestToken, preferredCompactionToken, anthropicPost, haikuSummarize, fmtDur, accounts, bestHeadroom, resolveUpstream };

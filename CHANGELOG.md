@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0
+
+- **Interface entièrement en français** : l'installeur, le désinstalleur et le CLI (`cqr status`, `compact`, `guard`, `live`, etc.) étaient encore en anglais malgré un README français — corrigé, tous les messages affichés à l'utilisateur sont maintenant en français (les commentaires internes du code restent en anglais, convention du projet).
+- **Support des réseaux d'entreprise (`ANTHROPIC_TARGET_API_URL`)** : sur les réseaux où `api.anthropic.com` est bloqué, l'utilisateur peut avoir configuré un relais personnel (ex. un Cloudflare Worker) via cette variable dans `settings.json`. Le proxy (et les appels Haiku de l'auto-compaction) la respectent maintenant automatiquement — vérifié : Claude Code lui-même ne lit PAS cette variable, c'est bien notre outil qui devait le faire. L'installeur détecte et confirme sa présence sans jamais y toucher. Prouvé par un test e2e réel (aucun seam de test, la vraie variable, un vrai relais local).
+- Nouvelle suite de tests (`upstream-override.test.js`) + extension de `upgrade.test.js` (préservation de la variable). 15 suites au total, toutes vertes.
+
 ## 0.5.0
 
 - **Login manuel, en plus de l'automatique** : à chaque compte, l'installeur demande maintenant « navigateur ou coller un token ? ». Nouveau `lib.pasteTokenManually`, réutilisé par l'installeur et par `cqr login/add --paste`. Le README documente aussi explicitement le chemin « éditer `tokens.json` à la main + `cqr sync-env` » pour ceux qui ne veulent aucun flux interactif.

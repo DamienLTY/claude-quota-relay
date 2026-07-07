@@ -83,32 +83,32 @@ async function collectTokens() {
   const example = JSON.parse(fs.readFileSync(EXAMPLE_TOKENS, "utf8"));
   example.port = Number(PORT);
   if (NO_INTERACTIVE) {
-    info("non-interactive: tokens.json written with placeholders");
-    info("fill them in later with: cqr login <name> (browser) or cqr set <name> <token> (paste)");
-    info("or hand-edit " + p.join(INSTALL_DIR, "tokens.json") + " directly, then: cqr sync-env");
+    info("mode non-interactif : tokens.json créé avec des emplacements vides");
+    info("à remplir plus tard avec : cqr login <nom> (navigateur) ou cqr set <nom> <token> (coller)");
+    info("ou en éditant directement " + p.join(INSTALL_DIR, "tokens.json") + ", puis : cqr sync-env");
     return example;
   }
-  section("Accounts");
-  console.log("  You can rotate as many Claude accounts as you like (2, 3, 5...). For each one, you'll");
-  console.log("  either log in through your browser (token captured automatically) or paste a token you");
-  console.log("  already have — your choice, per account.\n");
-  let n = parseInt(await prompt1("  How many accounts do you want to rotate? [2] "), 10);
+  section("Comptes");
+  console.log("  Vous pouvez faire tourner autant de comptes Claude que vous voulez (2, 3, 5...). Pour");
+  console.log("  chacun, vous vous connecterez via votre navigateur (token récupéré automatiquement) ou");
+  console.log("  collerez un token que vous avez déjà — au choix, compte par compte.\n");
+  let n = parseInt(await prompt1("  Combien de comptes voulez-vous faire tourner ? [2] "), 10);
   if (!Number.isFinite(n) || n < 1) n = 2;
 
   const tokens = [];
   for (let i = 0; i < n; i++) {
-    console.log("\n  " + bold("Account " + (i + 1) + "/" + n));
-    const name = (await prompt1(`  Name [account-${i + 1}]: `)) || `account-${i + 1}`;
-    const how = (await prompt1("  Log in automatically via browser, or paste a token yourself? [auto/paste] [auto]: ")).toLowerCase();
+    console.log("\n  " + bold("Compte " + (i + 1) + "/" + n));
+    const name = (await prompt1(`  Nom [account-${i + 1}]: `)) || `account-${i + 1}`;
+    const how = (await prompt1("  Connexion automatique par navigateur, ou coller un token vous-même ? [auto/paste] [auto]: ")).toLowerCase();
     let tok;
     if (how.startsWith("p")) {
-      tok = await lib.pasteTokenManually("  Paste the token for '" + name + "' (get one with: claude setup-token) — sk-ant-oat01-...: ");
+      tok = await lib.pasteTokenManually("  Collez le token pour '" + name + "' (obtenu via : claude setup-token) — sk-ant-oat01-...: ");
     } else {
-      if (i > 0) await prompt1("  Log OUT of the previous account in your browser, then press Enter to continue... ");
+      if (i > 0) await prompt1("  Déconnectez-vous du compte précédent dans votre navigateur, puis appuyez sur Entrée pour continuer... ");
       tok = await lib.captureSetupToken(); // runs `claude setup-token`, captures the token (paste fallback)
     }
-    if (tok) { ok("captured token for '" + name + "' (" + lib.mask(tok) + ")"); tokens.push({ name, token: tok, enabled: true }); }
-    else { warn("skipped '" + name + "' — add it later with: cqr login " + name + " (or cqr set " + name + " <token>)"); tokens.push({ name, token: "PASTE_TOKEN_FROM_claude_setup-token", enabled: true }); }
+    if (tok) { ok("token récupéré pour '" + name + "' (" + lib.mask(tok) + ")"); tokens.push({ name, token: tok, enabled: true }); }
+    else { warn("'" + name + "' ignoré — ajoutez-le plus tard avec : cqr login " + name + " (ou cqr set " + name + " <token>)"); tokens.push({ name, token: "PASTE_TOKEN_FROM_claude_setup-token", enabled: true }); }
   }
   example.tokens = tokens;
   return example;
@@ -124,7 +124,7 @@ function patchSettings(conf) {
   let backupName = null;
   if (fs.existsSync(SETTINGS)) {
     const raw = fs.readFileSync(SETTINGS, "utf8").replace(/^﻿/, "");
-    try { settings = JSON.parse(raw); } catch (e) { throw new Error("settings.json is not valid JSON — fix it or move it aside, then re-run.\n  " + e.message); }
+    try { settings = JSON.parse(raw); } catch (e) { throw new Error("settings.json n'est pas un JSON valide — corrigez-le ou déplacez-le, puis relancez.\n  " + e.message); }
     const bak = SETTINGS + ".bak-" + Date.now();
     fs.writeFileSync(bak, raw);
     backupName = p.basename(bak);
@@ -134,6 +134,10 @@ function patchSettings(conf) {
   for (const [k, v] of Object.entries(TIMEOUTS)) settings.env[k] = v;
   const tok = firstRealToken(conf);
   if (tok) settings.env.ANTHROPIC_AUTH_TOKEN = tok;
+  // Reseau d'entreprise : si cette variable est deja presente (ex. api.anthropic.com bloque,
+  // l'utilisateur passe par son propre relais), on ne la touche pas -- le proxy la lira lui-meme
+  // au demarrage (voir resolveUpstream dans proxy.js/lib.js). On informe juste que c'est detecte.
+  const targetApiUrl = settings.env.ANTHROPIC_TARGET_API_URL || null;
 
   settings.hooks = settings.hooks || {};
   let hooksAdded = 0;
@@ -155,7 +159,7 @@ function patchSettings(conf) {
   const sl = setupStatusline(settings);
 
   fs.writeFileSync(SETTINGS, JSON.stringify(settings, null, 2));
-  return { hasToken: !!tok, backupName, hooksAdded, statusline: sl };
+  return { hasToken: !!tok, backupName, hooksAdded, statusline: sl, targetApiUrl };
 }
 
 // Add our quota status line. If the user already has one, WRAP it (save the original so our
@@ -172,7 +176,7 @@ function setupStatusline(settings) {
 }
 
 (async () => {
-  console.log(bold("claude-quota-relay") + dim("  —  installer"));
+  console.log(bold("claude-quota-relay") + dim("  —  installeur"));
   info(CONFIG_DIR + "  (port " + PORT + ")");
 
   fs.mkdirSync(INSTALL_DIR, { recursive: true });
@@ -188,13 +192,13 @@ function setupStatusline(settings) {
     conf.compaction = Object.assign({}, COMPACTION_DEFAULT, conf.compaction || {});
     conf.workflowGuard = Object.assign({}, WORKFLOW_GUARD_DEFAULT, conf.workflowGuard || {});
     fs.writeFileSync(tokensPath, JSON.stringify(conf, null, 2));
-    tokensLine = (conf.tokens || []).length + " account(s), kept";
+    tokensLine = (conf.tokens || []).length + " compte(s), conservés";
   } else {
     conf = await collectTokens();
     conf.compaction = Object.assign({}, COMPACTION_DEFAULT, conf.compaction || {});
     conf.workflowGuard = Object.assign({}, WORKFLOW_GUARD_DEFAULT, conf.workflowGuard || {});
     fs.writeFileSync(tokensPath, JSON.stringify(conf, null, 2));
-    tokensLine = (conf.tokens || []).length + " account(s), just set up";
+    tokensLine = (conf.tokens || []).length + " compte(s), configurés";
   }
 
   const res = patchSettings(conf);
@@ -202,22 +206,23 @@ function setupStatusline(settings) {
   // real registry / shell rc file (used by the automated test suite; never set this yourself).
   const alias = setupPath.ensureAlias(INSTALL_DIR, process.env.CQR_SKIP_PATH_REGISTER ? { skipRegister: true } : undefined);
 
-  section("Setup");
-  ok("proxy files copied (" + COPY_FILES.length + ")");
-  ok("accounts: " + tokensLine);
-  if (res.backupName) info("settings.json backed up -> " + res.backupName);
-  ok("Claude Code wired up: routing, timeouts" + (res.hooksAdded ? ", hooks" : "") + " (all done automatically)");
-  ok("status line " + (res.statusline === "kept" ? "already set up" : res.statusline === "wrapped" ? "added (kept your existing one)" : "added"));
-  ok("`cqr` command " + (alias.skipped ? "wrapper scripts ready" : alias.changed ? "added to your PATH" : "already on your PATH"));
+  section("Installation");
+  ok("fichiers du proxy copiés (" + COPY_FILES.length + ")");
+  ok("comptes : " + tokensLine);
+  if (res.backupName) info("settings.json sauvegardé -> " + res.backupName);
+  ok("Claude Code configuré : routage, timeouts" + (res.hooksAdded ? ", hooks" : "") + " (tout automatique)");
+  ok("statusline " + (res.statusline === "kept" ? "déjà en place" : res.statusline === "wrapped" ? "ajoutée (la vôtre est conservée)" : "ajoutée"));
+  ok("commande `cqr` " + (alias.skipped ? "scripts prêts" : alias.changed ? "ajoutée à votre PATH" : "déjà disponible"));
+  if (res.targetApiUrl) ok("réseau d'entreprise détecté (ANTHROPIC_TARGET_API_URL = " + res.targetApiUrl + ") — le proxy passera automatiquement par là");
 
-  section("Next steps");
+  section("Prochaines étapes");
   if (!res.hasToken) {
-    console.log("  1. " + bold("Restart Claude Code") + ", then run: " + bold("cqr login <name>") + " for each account.");
+    console.log("  1. " + bold("Redémarrez Claude Code") + ", puis lancez : " + bold("cqr login <nom>") + " pour chaque compte.");
   } else {
-    console.log("  1. " + bold("Restart Claude Code") + " (it needs to pick up the new settings).");
+    console.log("  1. " + bold("Redémarrez Claude Code") + " (nécessaire pour prendre en compte les nouveaux réglages).");
   }
-  if (alias.changed) console.log("  2. Open a " + bold("new terminal") + " and run: " + bold("cqr status"));
-  else console.log("  2. Run: " + bold("cqr status"));
+  if (alias.changed) console.log("  2. Ouvrez un " + bold("nouveau terminal") + " et lancez : " + bold("cqr status"));
+  else console.log("  2. Lancez : " + bold("cqr status"));
   console.log("");
-  info("auto-compaction (saves tokens on the 2nd account) is off by default — try: cqr compact dry-run");
-})().catch((e) => { console.error("\nInstall failed: " + e.message); process.exit(1); });
+  info("l'auto-compaction (réduit les tokens sur le 2e compte) est désactivée par défaut — essayez : cqr compact dry-run");
+})().catch((e) => { console.error("\nÉchec de l'installation : " + e.message); process.exit(1); });

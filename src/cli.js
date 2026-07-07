@@ -33,7 +33,7 @@ function writeConf(c) { fs.writeFileSync(CONF, JSON.stringify(c, null, 2)); }
 function readState() { try { return JSON.parse(fs.readFileSync(STATE, "utf8")); } catch (e) { return { activeIndex: 0, exhausted: {}, pct: {} }; } }
 function writeState(s) { fs.writeFileSync(STATE, JSON.stringify(s, null, 2)); }
 function isPlaceholder(t) { return !t || !t.token || /^(PASTE|REMPLACE|<)/i.test(t.token); }
-function mask(tok) { return isPlaceholder({ token: tok }) ? "(empty)" : tok.slice(0, 14) + "..." + tok.slice(-4); }
+function mask(tok) { return isPlaceholder({ token: tok }) ? "(vide)" : tok.slice(0, 14) + "..." + tok.slice(-4); }
 
 function health(cb) {
   let c; try { c = readConf(); } catch (e) { return cb(null); }
@@ -87,26 +87,26 @@ function fmtPct(pctObj) {
 }
 function eta(ms) {
   if (!ms) return "";
-  const d = ms - Date.now(); if (d <= 0) return "now";
+  const d = ms - Date.now(); if (d <= 0) return "maintenant";
   const m = Math.round(d / 60000);
   return m >= 60 ? Math.floor(m / 60) + "h" + String(m % 60).padStart(2, "0") : m + "min";
 }
 function showStatus() {
   let c, s;
-  try { c = readConf(); } catch (e) { console.error("No tokens.json in " + DIR + " — run the installer first."); process.exit(1); }
+  try { c = readConf(); } catch (e) { console.error("Aucun tokens.json dans " + DIR + " — lancez d'abord l'installeur."); process.exit(1); }
   s = readState();
-  const soft = c.waitAtSoftPercent == null ? "off (use the 90-100% margin before waiting)" : c.waitAtSoftPercent + "%";
+  const soft = c.waitAtSoftPercent == null ? "désactivé (utilise la marge 90-100% avant d'attendre)" : c.waitAtSoftPercent + "%";
   health((h) => {
-    console.log("Proxy      :", h ? "RUNNING (port " + (c.port || 8787) + ")" : "STOPPED");
-    console.log("Policy     : switch5h=" + (c.switchAtPercent || 94) + "%  block7d=" + (c.sevenDayBlockPercent || 99) + "%  waitSoft=" + soft + "  maxWait=" + Math.round((c.maxWaitMs || 604800000) / 60000) + "min");
-    const pin = s.forceIndex != null && c.tokens[s.forceIndex] ? " [PINNED: " + c.tokens[s.forceIndex].name + "]" : "";
-    console.log("Active     :", ((c.tokens[s.activeIndex] && c.tokens[s.activeIndex].name) || "?") + pin);
-    if (s.waiting) console.log("WAITING    : " + s.waiting.reason + " -> '" + s.waiting.target + "' resumes in ~" + eta(Date.parse(s.waiting.until)));
+    console.log("Proxy      :", h ? "EN COURS (port " + (c.port || 8787) + ")" : "ARRÊTÉ");
+    console.log("Politique  : switch5h=" + (c.switchAtPercent || 94) + "%  block7d=" + (c.sevenDayBlockPercent || 99) + "%  waitSoft=" + soft + "  maxWait=" + Math.round((c.maxWaitMs || 604800000) / 60000) + "min");
+    const pin = s.forceIndex != null && c.tokens[s.forceIndex] ? " [ÉPINGLÉ: " + c.tokens[s.forceIndex].name + "]" : "";
+    console.log("Actif      :", ((c.tokens[s.activeIndex] && c.tokens[s.activeIndex].name) || "?") + pin);
+    if (s.waiting) console.log("ATTENTE    : " + s.waiting.reason + " -> '" + s.waiting.target + "' reprend dans ~" + eta(Date.parse(s.waiting.until)));
     console.log("");
     c.tokens.forEach((t, i) => {
       const act = i === s.activeIndex ? ">" : " ";
       const ex = s.exhausted && s.exhausted[t.name] && Date.now() < s.exhausted[t.name];
-      const exTxt = ex ? " [blocked, free in ~" + eta(s.exhausted[t.name]) + "]" : "";
+      const exTxt = ex ? " [bloqué, libre dans ~" + eta(s.exhausted[t.name]) + "]" : "";
       const r5 = s.reset5h && s.reset5h[t.name]; const r7 = s.reset7d && s.reset7d[t.name];
       const resets = [r5 ? "reset5h~" + eta(r5) : "", r7 ? "reset7d~" + eta(r7) : ""].filter(Boolean).join(" ");
       console.log(` ${act} [${i}] ${t.name.padEnd(12)} ${t.enabled ? "on " : "off"} ${mask(t.token).padEnd(22)} quota:${fmtPct(s.pct && s.pct[t.name])}  ${resets}${exTxt}`);
@@ -125,11 +125,11 @@ switch (cmd) {
     const c = readConf(); const s = readState();
     let idx = c.tokens.findIndex((t) => t.name === a1);
     if (idx < 0 && /^\d+$/.test(a1)) idx = Number(a1);
-    if (idx < 0 || idx >= c.tokens.length) { console.error("Token not found:", a1); process.exit(1); }
+    if (idx < 0 || idx >= c.tokens.length) { console.error("Compte introuvable :", a1); process.exit(1); }
     s.activeIndex = idx; s.forceIndex = idx;
     if (s.exhausted) delete s.exhausted[c.tokens[idx].name];
     writeState(s);
-    console.log("PINNED -> " + c.tokens[idx].name + " (forced, effective immediately). Run `cqr auto` to return to automatic mode.");
+    console.log("ÉPINGLÉ -> " + c.tokens[idx].name + " (forcé, effectif immédiatement). Lancez `cqr auto` pour revenir au mode automatique.");
     break;
   }
   case "login": case "add": {
@@ -140,7 +140,7 @@ switch (cmd) {
       const c = readConf();
       const paste = process.argv.includes("--paste");
       const tok = paste ? await lib.pasteTokenManually() : await lib.captureSetupToken();
-      if (!tok) { console.error("\nNo token captured. Don't want the browser flow? Try: cqr " + cmd + " " + (a1 || "") + " --paste  (or: cqr set <name> <token>)"); process.exit(1); }
+      if (!tok) { console.error("\nAucun token récupéré. Vous ne voulez pas du navigateur ? Essayez : cqr " + cmd + " " + (a1 || "") + " --paste  (ou : cqr set <nom> <token>)"); process.exit(1); }
       let name;
       if (cmd === "add") {
         name = a1 || ("account-" + (c.tokens.length + 1));
@@ -150,13 +150,13 @@ switch (cmd) {
         let idx = c.tokens.findIndex((t) => t.name === a1);
         if (idx < 0 && /^\d+$/.test(a1 || "")) idx = Number(a1);
         if (idx < 0) idx = 0;
-        if (!c.tokens[idx]) { console.error("Account not found:", a1); process.exit(1); }
+        if (!c.tokens[idx]) { console.error("Compte introuvable :", a1); process.exit(1); }
         c.tokens[idx].token = tok; c.tokens[idx].enabled = true; name = c.tokens[idx].name;
       }
       writeConf(c);
       const synced = lib.syncAuthToken(c, SETTINGS);
-      console.log("\n✓ token saved for '" + name + "' (" + mask(tok) + ")" + (synced ? " and synced into settings.json" : "") + ".");
-      console.log("Run `cqr restart` then restart Claude Code for it to take effect.");
+      console.log("\n✓ token enregistré pour '" + name + "' (" + mask(tok) + ")" + (synced ? " et synchronisé dans settings.json" : "") + ".");
+      console.log("Lancez `cqr restart` puis redémarrez Claude Code pour que ce soit pris en compte.");
       process.exit(0);
     })();
     break;
@@ -164,27 +164,27 @@ switch (cmd) {
   case "sync-env": {
     const c = readConf();
     const okk = lib.syncAuthToken(c, SETTINGS);
-    console.log(okk ? "Synced first token into settings.json (ANTHROPIC_AUTH_TOKEN)." : "No usable token or no settings.json found.");
+    console.log(okk ? "1er token synchronisé dans settings.json (ANTHROPIC_AUTH_TOKEN)." : "Aucun token utilisable, ou settings.json introuvable.");
     break;
   }
-  case "auto": { const s = readState(); delete s.forceIndex; writeState(s); console.log("Automatic mode re-enabled (failover + waiting per policy)."); break; }
-  case "reset": { const s = readState(); s.exhausted = {}; writeState(s); console.log("'exhausted' state cleared."); break; }
+  case "auto": { const s = readState(); delete s.forceIndex; writeState(s); console.log("Mode automatique réactivé (bascule + attente selon la politique)."); break; }
+  case "reset": { const s = readState(); s.exhausted = {}; writeState(s); console.log("État 'épuisé' effacé."); break; }
   case "set": {
-    if (!a1 || !a2) { console.error("Usage: cqr set <name> <token>"); process.exit(1); }
+    if (!a1 || !a2) { console.error("Usage : cqr set <nom> <token>"); process.exit(1); }
     const c = readConf(); let t = c.tokens.find((x) => x.name === a1);
     if (!t) { t = { name: a1, token: a2, enabled: true }; c.tokens.push(t); } else { t.token = a2; t.enabled = true; }
-    writeConf(c); console.log("Token '" + a1 + "' saved (" + mask(a2) + ").");
+    writeConf(c); console.log("Token '" + a1 + "' enregistré (" + mask(a2) + ").");
     break;
   }
   case "policy": {
     const c = readConf();
     if (!a1) {
-      console.log("switch5h :", (c.switchAtPercent || 94) + "%   (prefer a token below this 5h %)");
-      console.log("block7d  :", (c.sevenDayBlockPercent || 99) + "%   (never route to a token above this 7d %)");
-      console.log("waitSoft :", c.waitAtSoftPercent == null ? "off" : c.waitAtSoftPercent + "%", "  (off = consume the 90-100% margin before waiting)");
-      console.log("maxWait  :", Math.round((c.maxWaitMs || 604800000) / 60000) + "min", "  (cap on how long a request is held)");
+      console.log("switch5h :", (c.switchAtPercent || 94) + "%   (préférer un compte sous ce % de 5h)");
+      console.log("block7d  :", (c.sevenDayBlockPercent || 99) + "%   (ne jamais router vers un compte au-delà de ce % sur 7j)");
+      console.log("waitSoft :", c.waitAtSoftPercent == null ? "désactivé" : c.waitAtSoftPercent + "%", "  (désactivé = consommer la marge 90-100% avant d'attendre)");
+      console.log("maxWait  :", Math.round((c.maxWaitMs || 604800000) / 60000) + "min", "  (durée max de rétention d'une requête)");
       console.log("");
-      console.log("Change   : cqr policy <switch|block7d|waitsoft|maxwait> <value>   (waitsoft off|<N>, maxwait <minutes>)");
+      console.log("Modifier : cqr policy <switch|block7d|waitsoft|maxwait> <valeur>   (waitsoft off|<N>, maxwait <minutes>)");
       break;
     }
     const v = a2;
@@ -192,45 +192,45 @@ switch (cmd) {
     else if (a1 === "block7d") c.sevenDayBlockPercent = Number(v);
     else if (a1 === "waitsoft") c.waitAtSoftPercent = (v === "off" || v === "null") ? null : Number(v);
     else if (a1 === "maxwait") c.maxWaitMs = Number(v) * 60000;
-    else { console.error("Unknown key:", a1); process.exit(1); }
-    writeConf(c); console.log("Policy updated:", a1, "=", v);
+    else { console.error("Clé inconnue :", a1); process.exit(1); }
+    writeConf(c); console.log("Politique mise à jour :", a1, "=", v);
     break;
   }
   case "live": {
     // Background quota poll (statusline "live" refresh) -- see src/proxy.js startLivePolling.
     const c = readConf();
-    if (a1 === "off") { c.livePollMs = 0; writeConf(c); console.log("Live poll OFF (quota numbers only update on real requests). Restart the proxy: cqr restart"); }
-    else if (a1 && /^\d+$/.test(a1)) { c.livePollMs = Number(a1) * 1000; writeConf(c); console.log("Live poll every " + a1 + "s. Restart the proxy: cqr restart"); }
-    else if (!a1 || a1 === "status") { console.log("livePollMs:", c.livePollMs == null ? "45000 (default)" : c.livePollMs, "-- background probe (near-free: ~8 input tokens, 0 output) that keeps BOTH accounts' quota numbers fresh for the statusline even when idle"); }
-    else console.error("Usage: cqr live [status|<seconds>|off]");
+    if (a1 === "off") { c.livePollMs = 0; writeConf(c); console.log("Rafraîchissement live désactivé (le quota ne se met à jour qu'avec de vraies requêtes). Redémarrez le proxy : cqr restart"); }
+    else if (a1 && /^\d+$/.test(a1)) { c.livePollMs = Number(a1) * 1000; writeConf(c); console.log("Rafraîchissement toutes les " + a1 + "s. Redémarrez le proxy : cqr restart"); }
+    else if (!a1 || a1 === "status") { console.log("livePollMs :", c.livePollMs == null ? "45000 (défaut)" : c.livePollMs, "-- sonde en arrière-plan (quasi gratuite : ~8 tokens d'entrée, 0 en sortie) qui garde le quota des DEUX comptes à jour pour la statusline, même à l'arrêt"); }
+    else console.error("Usage : cqr live [status|<secondes>|off]");
     break;
   }
   case "compact": {
     const c = readConf(); c.compaction = c.compaction || {};
     const cc = c.compaction;
-    if (a1 === "on") { cc.enabled = true; cc.dryRun = false; writeConf(c); console.log("Compaction ON (native clear_tool_uses + per-project memory). Restart the proxy: cqr restart"); }
-    else if (a1 === "off") { cc.enabled = false; cc.dryRun = false; writeConf(c); console.log("Compaction OFF."); }
-    else if (a1 === "dry-run" || a1 === "dryrun") { cc.enabled = false; cc.dryRun = true; writeConf(c); console.log("Compaction DRY-RUN: proxy only LOGS what it would compact (no request change); memory still builds. Watch: proxy.log"); }
-    else if (a1 === "mode") { cc.mode = a2 === "strip" ? "strip" : "native"; writeConf(c); console.log("Compaction mode = " + cc.mode + (cc.mode === "strip" ? " (proxy stubs old tool results; use if Claude Code chokes on native)" : " (Anthropic context-editing, 0 token)")); }
-    else if (a1 === "keep") { cc.keepToolUses = Number(a2) || 10; writeConf(c); console.log("Keep last " + cc.keepToolUses + " tool results raw."); }
-    else if (a1 === "cooldown") { cc.compactionCooldownMs = Math.max(0, Number(a2) || 0) * 60000; writeConf(c); console.log("Compaction cooldown = " + (a2 || 0) + "min."); }
-    else if (a1 === "buffer") { cc.dynamicSafetyBufferPoints = Math.max(0, Number(a2) || 0); writeConf(c); console.log("Dynamic safety buffer = " + cc.dynamicSafetyBufferPoints + " points."); }
+    if (a1 === "on") { cc.enabled = true; cc.dryRun = false; writeConf(c); console.log("Auto-compaction activée (clear_tool_uses natif + mémoire par projet). Redémarrez le proxy : cqr restart"); }
+    else if (a1 === "off") { cc.enabled = false; cc.dryRun = false; writeConf(c); console.log("Auto-compaction désactivée."); }
+    else if (a1 === "dry-run" || a1 === "dryrun") { cc.enabled = false; cc.dryRun = true; writeConf(c); console.log("Mode simulation : le proxy LOGUE seulement ce qu'il compacterait (rien ne change) ; la mémoire se construit quand même. Voir : proxy.log"); }
+    else if (a1 === "mode") { cc.mode = a2 === "strip" ? "strip" : "native"; writeConf(c); console.log("Mode de compaction = " + cc.mode + (cc.mode === "strip" ? " (le proxy tronque lui-même les vieux résultats ; utile si Claude Code n'aime pas le mode natif)" : " (context-editing natif Anthropic, 0 token)")); }
+    else if (a1 === "keep") { cc.keepToolUses = Number(a2) || 10; writeConf(c); console.log("Garde les " + cc.keepToolUses + " derniers résultats d'outils intacts."); }
+    else if (a1 === "cooldown") { cc.compactionCooldownMs = Math.max(0, Number(a2) || 0) * 60000; writeConf(c); console.log("Délai minimum entre deux compactages = " + (a2 || 0) + "min."); }
+    else if (a1 === "buffer") { cc.dynamicSafetyBufferPoints = Math.max(0, Number(a2) || 0); writeConf(c); console.log("Marge de sécurité dynamique = " + cc.dynamicSafetyBufferPoints + " points."); }
     else if (a1 === "memory") {
       const mf = p.join(process.cwd(), cc.memoryFile || ".cqr-memory.md");
-      if (fs.existsSync(mf)) console.log(fs.readFileSync(mf, "utf8")); else console.log("(no memory file yet in " + process.cwd() + ")");
+      if (fs.existsSync(mf)) console.log(fs.readFileSync(mf, "utf8")); else console.log("(pas encore de fichier mémoire dans " + process.cwd() + ")");
     }
     else if (a1 === "status" || !a1) {
-      console.log("enabled  :", !!cc.enabled);
-      console.log("dryRun   :", !!cc.dryRun);
+      console.log("activée  :", !!cc.enabled);
+      console.log("dry-run  :", !!cc.dryRun);
       console.log("mode     :", cc.mode || "native");
-      console.log("keep     :", cc.keepToolUses || 10, "tool results");
-      console.log("resume   :", cc.compactBeforeResume !== false ? "compact before resuming after a wait" : "off");
-      console.log("cooldown :", Math.round((cc.compactionCooldownMs == null ? 600000 : cc.compactionCooldownMs) / 60000) + "min (prevents recompacting on every account ping-pong once both are hot)");
-      console.log("thresholds:", JSON.stringify(Object.assign({}, comp.DEFAULT_THRESHOLDS, cc.thresholds || {})), "(static per-model ceiling)");
-      console.log("buffer   :", (cc.dynamicSafetyBufferPoints == null ? 4 : cc.dynamicSafetyBufferPoints) + " points (dynamic threshold also drops if the current context is already large -- effective = min(static, dynamic))");
-      console.log("memory   :", cc.memoryFile || ".cqr-memory.md", "(per project, max " + (cc.memoryMaxLines || 400) + " lines)");
+      console.log("garde    :", cc.keepToolUses || 10, "résultats d'outils intacts");
+      console.log("reprise  :", cc.compactBeforeResume !== false ? "compacte avant de reprendre après une attente" : "désactivé");
+      console.log("cooldown :", Math.round((cc.compactionCooldownMs == null ? 600000 : cc.compactionCooldownMs) / 60000) + "min (évite de recompacter à chaque ping-pong une fois les 2 comptes chauds)");
+      console.log("seuils   :", JSON.stringify(Object.assign({}, comp.DEFAULT_THRESHOLDS, cc.thresholds || {})), "(plafond statique par modèle)");
+      console.log("marge    :", (cc.dynamicSafetyBufferPoints == null ? 4 : cc.dynamicSafetyBufferPoints) + " points (le seuil dynamique baisse aussi si le contexte est déjà gros -- effectif = min(statique, dynamique))");
+      console.log("mémoire  :", cc.memoryFile || ".cqr-memory.md", "(par projet, max " + (cc.memoryMaxLines || 400) + " lignes)");
     }
-    else console.error("Usage: cqr compact [status|on|off|dry-run|mode native|strip|keep <n>|cooldown <min>|buffer <points>|memory]");
+    else console.error("Usage : cqr compact [status|on|off|dry-run|mode native|strip|keep <n>|cooldown <min>|buffer <points>|memory]");
     break;
   }
   case "preflight": {
@@ -241,8 +241,8 @@ switch (cmd) {
     const best = lib.bestHeadroom(c, s);
     const good = best != null && best < percent;
     console.log(good
-      ? "\nOK — freshest account " + best + "% < " + percent + "%. Safe to fan out a workflow."
-      : "\nRISKY — freshest account " + (best == null ? "unknown" : best + "%") + " (need < " + percent + "%). Prefer inline work or wait for a reset.");
+      ? "\nOK — le compte le plus frais est à " + best + "% < " + percent + "%. Prudent de lancer un workflow."
+      : "\nRISQUÉ — le compte le plus frais est à " + (best == null ? "inconnu" : best + "%") + " (il faudrait < " + percent + "%). Préférez travailler en inline ou attendre un reset.");
     process.exit(good ? 0 : 1);
   }
   case "guard": {
@@ -252,13 +252,13 @@ switch (cmd) {
     else if (a1 === "off") wg.enabled = false;
     else if (a1 === "ask" || a1 === "deny") { wg.enabled = true; wg.mode = a1; }
     else if (a1 && /^\d+$/.test(a1)) { wg.enabled = true; wg.percent = Number(a1); }
-    else if (a1 && a1 !== "status") { console.error("Usage: cqr guard [status|on|off|ask|deny|<percent>]"); process.exit(1); }
+    else if (a1 && a1 !== "status") { console.error("Usage : cqr guard [status|on|off|ask|deny|<pourcentage>]"); process.exit(1); }
     if (a1 && a1 !== "status") writeConf(c);
-    console.log("workflowGuard:", JSON.stringify(wg));
+    console.log("workflowGuard :", JSON.stringify(wg));
     break;
   }
-  case "start": health((h) => { if (h) console.log("Already running."); else { startProxy(); console.log("Proxy started."); } }); break;
-  case "stop": stopProxy((ok) => console.log(ok === true ? "Proxy stopped." : ok === "unknown" ? "Proxy responds but no PID file (started outside the CLI?)." : "No proxy running.")); break;
-  case "restart": stopProxy(() => setTimeout(() => { startProxy(); console.log("Proxy restarted."); }, 800)); break;
-  default: console.error("Unknown command. See the header of cli.js or the README."); process.exit(1);
+  case "start": health((h) => { if (h) console.log("Déjà en cours."); else { startProxy(); console.log("Proxy démarré."); } }); break;
+  case "stop": stopProxy((ok) => console.log(ok === true ? "Proxy arrêté." : ok === "unknown" ? "Le proxy répond mais aucun fichier PID (démarré hors du CLI ?)." : "Aucun proxy en cours.")); break;
+  case "restart": stopProxy(() => setTimeout(() => { startProxy(); console.log("Proxy redémarré."); }, 800)); break;
+  default: console.error("Commande inconnue. Voir l'en-tête de cli.js ou le README."); process.exit(1);
 }

@@ -14,7 +14,7 @@ fs.mkdirSync(IDIR, { recursive: true });
 // --- simulate a v1 install: tokens.json without compaction/guard, custom port, a v1 settings.json
 fs.writeFileSync(p.join(IDIR, "tokens.json"), JSON.stringify({ port: 9999, switchAtPercent: 94, tokens: [{ name: "a", token: FAKE, enabled: true }] }));
 fs.writeFileSync(p.join(CFG, "settings.json"), JSON.stringify({
-  env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:9999", FOO: "bar" },
+  env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:9999", FOO: "bar", ANTHROPIC_TARGET_API_URL: "https://claude.example-corp.workers.dev" },
   hooks: { SessionStart: [{ matcher: "startup|resume|clear", hooks: [{ type: "command", command: 'node "' + p.join(IDIR, "ensure-proxy.js") + '"' }] }] },
   statusLine: { type: "command", command: "echo MINE" },
 }));
@@ -35,6 +35,8 @@ assert.strictEqual(tok.tokens[0].token, FAKE, "existing token preserved");
 
 const s = rd(p.join(CFG, "settings.json"));
 assert.strictEqual(s.env.FOO, "bar", "unrelated user env preserved");
+assert.strictEqual(s.env.ANTHROPIC_TARGET_API_URL, "https://claude.example-corp.workers.dev", "corporate relay env var preserved untouched (proxy reads it itself at runtime)");
+assert.ok(r1.stdout.includes("ANTHROPIC_TARGET_API_URL"), "installer detects and reports the corporate relay var: " + r1.stdout);
 assert.ok(s.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS, "timeouts applied");
 assert.strictEqual(count(s.hooks, /ensure-proxy\.js/g), 1, "ensure-proxy hook once");
 assert.strictEqual(count(s.hooks, /memory-hook\.js/g), 3, "memory hook on 3 events");

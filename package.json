@@ -1,6 +1,6 @@
 {
   "name": "claude-quota-relay",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Local failover proxy for Claude Code: rotate between multiple Claude subscription tokens and transparently WAIT for the 5h quota to reset instead of failing — so long tasks and subagents never stop.",
   "bin": {
     "cqr": "src/cli.js"
@@ -8,7 +8,7 @@
   "scripts": {
     "install-relay": "node src/install.js",
     "uninstall-relay": "node src/uninstall.js",
-    "test": "node test/run.js && node test/lib.test.js && node test/paste-token.test.js && node test/compaction.test.js && node test/proxy-decide.test.js && node test/proxy-e2e.test.js && node test/memory-hook.test.js && node test/statusline.test.js && node test/guard.test.js && node test/setup-path.test.js && node test/upgrade.test.js && node test/uninstall.test.js"
+    "test": "node test/run.js && node test/lib.test.js && node test/paste-token.test.js && node test/upstream-override.test.js && node test/compaction.test.js && node test/proxy-decide.test.js && node test/proxy-e2e.test.js && node test/memory-hook.test.js && node test/statusline.test.js && node test/guard.test.js && node test/setup-path.test.js && node test/upgrade.test.js && node test/uninstall.test.js"
   },
   "keywords": [
     "claude",

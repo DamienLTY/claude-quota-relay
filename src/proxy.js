@@ -32,11 +32,31 @@ const DIR = __dirname;
 const CONF = path.join(DIR, "tokens.json");
 const STATE = path.join(DIR, "state.json");
 const LOG = path.join(DIR, "proxy.log");
-// Upstream is api.anthropic.com over https. Overridable via env for tests / gateways.
-// ponytail: env seam, only touched when CQR_UPSTREAM_* is set; default unchanged.
-const UPSTREAM_HOST = process.env.CQR_UPSTREAM_HOST || "api.anthropic.com";
-const UPSTREAM_PORT = Number(process.env.CQR_UPSTREAM_PORT) || 443;
-const UPSTREAM = process.env.CQR_UPSTREAM_HTTP ? require("http") : https;
+// Upstream cible : api.anthropic.com par defaut. Deux facons de le changer :
+//   - CQR_UPSTREAM_HOST/PORT/HTTP : couture de test (mock upstream local), priorite max.
+//   - ANTHROPIC_TARGET_API_URL : reglage REEL pour les reseaux d'entreprise ou
+//     api.anthropic.com est bloque -- l'utilisateur passe alors par son propre relais
+//     (ex. un Cloudflare Worker). Claude Code lui-meme ne lit PAS cette variable (verifie
+//     dans le binaire) ; c'est ce proxy qui doit la respecter pour que TOUT (bascule,
+//     sondes, statusline, appels Haiku de compaction) fonctionne derriere ce blocage.
+function resolveUpstream() {
+  if (process.env.CQR_UPSTREAM_HOST) {
+    return { host: process.env.CQR_UPSTREAM_HOST, port: Number(process.env.CQR_UPSTREAM_PORT) || 443, mod: process.env.CQR_UPSTREAM_HTTP ? require("http") : https, pathPrefix: "" };
+  }
+  const target = process.env.ANTHROPIC_TARGET_API_URL;
+  if (target) {
+    try {
+      const u = new URL(target);
+      return { host: u.hostname, port: Number(u.port) || (u.protocol === "http:" ? 80 : 443), mod: u.protocol === "http:" ? require("http") : https, pathPrefix: u.pathname.replace(/\/$/, "") };
+    } catch (e) { log("ANTHROPIC_TARGET_API_URL invalide, ignore :", target, e.message); }
+  }
+  return { host: "api.anthropic.com", port: 443, mod: https, pathPrefix: "" };
+}
+const _upstream = resolveUpstream();
+const UPSTREAM_HOST = _upstream.host;
+const UPSTREAM_PORT = _upstream.port;
+const UPSTREAM = _upstream.mod;
+const UPSTREAM_PATH_PREFIX = _upstream.pathPrefix;
 const FIVE_H_MS = 5 * 60 * 60 * 1000;
 const AUTH_COOLDOWN_MS = 5 * 60 * 1000; // 401 -> petit cooldown
 const TRANSIENT_COOLDOWN_MS = 90 * 1000; // 429 sans aucune info de fenetre -> transitoire, pas un epuisement
@@ -166,7 +186,7 @@ function probeToken(conf, idx, done) {
   if (!tok || isPlaceholder(tok)) { if (done) done(false); return; }
   lastProbeAt[tok.name] = now();
   const req = UPSTREAM.request({
-    hostname: UPSTREAM_HOST, port: UPSTREAM_PORT, path: "/v1/messages", method: "POST",
+    hostname: UPSTREAM_HOST, port: UPSTREAM_PORT, path: UPSTREAM_PATH_PREFIX + "/v1/messages", method: "POST",
     headers: {
       "authorization": "Bearer " + tok.token,
       "anthropic-version": "2023-06-01",
@@ -431,7 +451,7 @@ function serve(creq, cres) {
       // on force une reponse upstream non compressee pour pouvoir la relayer telle quelle
       if (ctx.sse) delete headers["accept-encoding"];
 
-      const preq = UPSTREAM.request({ hostname: UPSTREAM_HOST, port: UPSTREAM_PORT, path: creq.url, method: creq.method, headers }, (pres) => {
+      const preq = UPSTREAM.request({ hostname: UPSTREAM_HOST, port: UPSTREAM_PORT, path: UPSTREAM_PATH_PREFIX + creq.url, method: creq.method, headers }, (pres) => {
         ctx.netRetries = 0; // une reponse (meme un rejet HTTP) prouve que le reseau fonctionne
         logRate(pres.headers, pres.statusCode, tok.name);
         const q = readQuotaHeaders(pres.headers);
@@ -513,7 +533,7 @@ function serve(creq, cres) {
 }
 
 // Pure decision helpers are exported for tests; the server only boots when run directly.
-module.exports = { pickRoute, decideCompaction, readQuotaHeaders, startLivePolling, probeToken, LIVE_POLL_DEFAULT_MS };
+module.exports = { pickRoute, decideCompaction, readQuotaHeaders, startLivePolling, probeToken, LIVE_POLL_DEFAULT_MS, resolveUpstream, UPSTREAM_HOST, UPSTREAM_PORT, UPSTREAM_PATH_PREFIX };
 
 if (require.main === module) {
   const conf0 = readConf();

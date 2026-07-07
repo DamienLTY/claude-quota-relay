@@ -36,6 +36,7 @@ L'installeur vous pose quelques questions (combien de comptes, comment récupér
 - [Utilisation au quotidien](#utilisation-au-quotidien)
 - [Fonctionnalités avancées (optionnelles)](#fonctionnalités-avancées-optionnelles) — auto-compaction, statusline en direct, garde-fou workflow
 - [Les timeouts](#les-timeouts-pourquoi-lattente-marche-vraiment)
+- [Réseau d'entreprise (api.anthropic.com bloqué)](#réseau-dentreprise-apianthropiccom-bloqué)
 - [Configuration complète](#configuration-complète)
 - [Sécurité](#sécurité)
 - [Limites honnêtes](#limites-honnêtes)
@@ -215,6 +216,12 @@ Retenir une requête pendant plusieurs minutes ou plusieurs heures ne fonctionne
 | `CLAUDE_STREAM_IDLE_TIMEOUT_MS` | 7 jours | **la plus importante** : Claude Code a un délai de sécurité codé en dur à 5 minutes qui n'est PAS réarmé par le signal d'attente du proxy. Sans ce réglage, toute requête retenue meurt au bout de 5 minutes. |
 | `CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS` | 7 jours | permet aux **sous-agents** d'attendre aussi (par défaut, 3 minutes seulement) |
 | `CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS` | 2 minutes | garde-fou technique bas niveau ; déjà satisfait par le signal que le proxy envoie toutes les 20 secondes |
+
+## Réseau d'entreprise (api.anthropic.com bloqué)
+
+Sur certains réseaux professionnels, l'adresse `api.anthropic.com` est bloquée par la sécurité de l'entreprise, et il faut passer par un relais personnel (par exemple un Cloudflare Worker) pour atteindre Anthropic. Si votre `settings.json` contient déjà une variable **`ANTHROPIC_TARGET_API_URL`** pointant vers ce relais, **le proxy la détecte et l'utilise automatiquement** — pour tout : la bascule entre comptes, les sondes de quota, la statusline en direct, et les appels de l'auto-compaction. Rien à configurer de votre côté : si la variable est là, tout ce que fait ce projet passe par elle plutôt que par `api.anthropic.com` directement.
+
+L'installeur vous confirme la détection au moment de l'installation (« réseau d'entreprise détecté »). Si vous ajoutez cette variable **après** avoir déjà installé et démarré le proxy, un redémarrage est nécessaire : `cqr restart`.
 
 ## Configuration complète
 
