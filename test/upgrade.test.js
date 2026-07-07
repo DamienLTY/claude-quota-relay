@@ -19,7 +19,8 @@ fs.writeFileSync(p.join(CFG, "settings.json"), JSON.stringify({
   statusLine: { type: "command", command: "echo MINE" },
 }));
 
-function install() { return cp.spawnSync(process.execPath, [INSTALLER, "--no-interactive", "--config-dir", CFG], { encoding: "utf8" }); }
+// CQR_SKIP_PATH_REGISTER: test seam — never mutate the real Windows registry / shell rc file.
+function install() { return cp.spawnSync(process.execPath, [INSTALLER, "--no-interactive", "--config-dir", CFG], { encoding: "utf8", env: Object.assign({}, process.env, { CQR_SKIP_PATH_REGISTER: "1" }) }); }
 const rd = (f) => JSON.parse(fs.readFileSync(f, "utf8"));
 const count = (obj, re) => (JSON.stringify(obj).match(re) || []).length;
 
@@ -41,6 +42,8 @@ assert.strictEqual(count(s.hooks, /cqr-workflow-guard\.js/g), 1, "guard hook onc
 assert.ok(s.statusLine.command.includes("cqr-statusline.js"), "statusline wrapped");
 assert.strictEqual(rd(p.join(IDIR, "statusline.json")).original.command, "echo MINE", "original statusline saved");
 ["compaction.js", "memory-hook.js", "cqr-statusline.js", "cqr-workflow-guard.js"].forEach((f) => assert.ok(fs.existsSync(p.join(IDIR, f)), f + " copied on upgrade"));
+assert.ok(fs.existsSync(p.join(IDIR, "bin", "cqr")), "posix cqr wrapper created on upgrade (no more manual alias needed)");
+assert.ok(fs.existsSync(p.join(IDIR, "bin", "cqr.cmd")), "windows cqr.cmd wrapper created on upgrade");
 
 // --- second run: must be idempotent (no duplicates, no re-wrap) ---
 const r2 = install();

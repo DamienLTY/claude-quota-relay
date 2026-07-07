@@ -198,6 +198,7 @@ switch (cmd) {
     else if (a1 === "dry-run" || a1 === "dryrun") { cc.enabled = false; cc.dryRun = true; writeConf(c); console.log("Compaction DRY-RUN: proxy only LOGS what it would compact (no request change); memory still builds. Watch: proxy.log"); }
     else if (a1 === "mode") { cc.mode = a2 === "strip" ? "strip" : "native"; writeConf(c); console.log("Compaction mode = " + cc.mode + (cc.mode === "strip" ? " (proxy stubs old tool results; use if Claude Code chokes on native)" : " (Anthropic context-editing, 0 token)")); }
     else if (a1 === "keep") { cc.keepToolUses = Number(a2) || 10; writeConf(c); console.log("Keep last " + cc.keepToolUses + " tool results raw."); }
+    else if (a1 === "cooldown") { cc.compactionCooldownMs = Math.max(0, Number(a2) || 0) * 60000; writeConf(c); console.log("Compaction cooldown = " + (a2 || 0) + "min."); }
     else if (a1 === "memory") {
       const mf = p.join(process.cwd(), cc.memoryFile || ".cqr-memory.md");
       if (fs.existsSync(mf)) console.log(fs.readFileSync(mf, "utf8")); else console.log("(no memory file yet in " + process.cwd() + ")");
@@ -208,10 +209,11 @@ switch (cmd) {
       console.log("mode     :", cc.mode || "native");
       console.log("keep     :", cc.keepToolUses || 10, "tool results");
       console.log("resume   :", cc.compactBeforeResume !== false ? "compact before resuming after a wait" : "off");
+      console.log("cooldown :", Math.round((cc.compactionCooldownMs == null ? 600000 : cc.compactionCooldownMs) / 60000) + "min (prevents recompacting on every account ping-pong once both are hot)");
       console.log("thresholds:", JSON.stringify(Object.assign({}, comp.DEFAULT_THRESHOLDS, cc.thresholds || {})));
       console.log("memory   :", cc.memoryFile || ".cqr-memory.md", "(per project, max " + (cc.memoryMaxLines || 400) + " lines)");
     }
-    else console.error("Usage: cqr compact [status|on|off|dry-run|mode native|strip|keep <n>|memory]");
+    else console.error("Usage: cqr compact [status|on|off|dry-run|mode native|strip|keep <n>|cooldown <min>|memory]");
     break;
   }
   case "preflight": {

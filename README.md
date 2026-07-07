@@ -52,9 +52,10 @@ L'installeur va, pas à pas :
 - copier le proxy dans `~/.claude/claude-quota-relay/` ;
 - vous demander **combien de comptes** vous voulez faire tourner (2, 3, 5…) ;
 - pour **chaque compte**, ouvrir le login navigateur (`claude setup-token`) et **récupérer le token automatiquement** — aucun copier-coller. Entre deux comptes, il vous rappelle de vous **déconnecter** du précédent ;
-- modifier `~/.claude/settings.json` (avec une sauvegarde) pour router Claude Code via le proxy, poser les *timeouts* qui rendent l'« attente puis reprise » possible, et ajouter un hook `SessionStart` qui démarre le proxy tout seul.
+- modifier `~/.claude/settings.json` (avec une sauvegarde) pour router Claude Code via le proxy, poser les *timeouts* qui rendent l'« attente puis reprise » possible, ajouter les hooks (démarrage auto, mémoire, garde-fou) et la statusline ;
+- rendre la commande **`cqr` disponible partout tout seul** (aucun alias à créer à la main) : sur Windows, ajouté à votre PATH utilisateur (via l'API .NET, pas `setx` — donc aucun risque de tronquer un PATH déjà long) ; sur macOS/Linux, une ligne clairement identifiée est ajoutée à votre `.bashrc`/`.zshrc`.
 
-Puis **redémarrez Claude Code**. C'est tout.
+Puis **redémarrez Claude Code ET ouvrez un nouveau terminal** (le PATH ne se met à jour que dans les nouvelles fenêtres). C'est tout.
 
 > Installation non interactive (CI, script) : `node src/install.js --no-interactive` crée un `tokens.json` avec des emplacements vides ; renseignez-les ensuite avec `cqr login <nom>`.
 
@@ -88,7 +89,7 @@ Rien à réactiver : l'auto-compaction reste **opt-in** (`cqr compact on` quand 
 
 ## Utilisation
 
-L'installeur affiche une ligne `alias cqr=…` : ajoutez-la à votre profil shell pour utiliser `cqr` partout. Ensuite :
+`cqr` est prêt dès l'installation (aucun alias à créer). Si la commande n'est pas trouvée juste après l'install, ouvrez un **nouveau** terminal (le PATH ne se propage pas aux terminaux déjà ouverts).
 
 ```bash
 cqr status                 # état du proxy, quota par compte (5h/7j), resets, attente en cours
@@ -130,6 +131,8 @@ Quand le proxy bascule vers un autre compte parce que le premier arrive au bout 
 
 **Déclencheurs** : juste avant une bascule quand le compte quitté atteint son seuil (par modèle, voir config), et juste avant la reprise après une attente de quota.
 
+**Anti-ping-pong (cooldown).** Une fois `switchAtPercent` dépassé sur tous les comptes, le proxy continue (volontairement) d'alterner sur celui qui a le quota le plus bas — c'est la marge normale avant le vrai rejet. Sans garde-fou, ça déclencherait une recompaction (et un appel Haiku) à **chaque requête**. Un cooldown (`compactionCooldownMs`, défaut **10 min**) empêche ça : la 1ʳᵉ compaction d'une bascule se fait normalement, les suivantes sont ignorées tant que le cooldown n'est pas écoulé, même si les comptes continuent de ping-ponger. Réglable : `cqr compact cooldown <minutes>` (`0` = désactivé).
+
 **Activation prudente** (elle modifie de vraies requêtes) :
 
 ```bash
@@ -137,9 +140,10 @@ cqr compact dry-run   # le proxy LOGUE seulement ce qu'il compacterait (proxy.lo
 cqr compact on        # active pour de bon, puis :  cqr restart
 cqr compact off       # revient en arrière à tout moment
 cqr compact mode strip  # repli : le proxy tronque lui-même les vieux résultats (forme de réponse inchangée), si jamais le mode natif pose souci
+cqr compact cooldown 15  # espace les recompactions d'au moins 15 min (défaut 10)
 ```
 
-Réglages (dans `tokens.json` → `compaction`) : `thresholds` par modèle (`fable` 85 / `opus` 89 / `sonnet` 90 / `haiku` 95 / `default` 88 %), `keepToolUses` (10), `triggerTokens` (2000), `memoryFile`, `memoryMaxLines` (400), `mode` (`native`|`strip`). Le fichier mémoire et le dossier `.cqr-archive/` restent **dans votre projet** et sont ignorés par git.
+Réglages (dans `tokens.json` → `compaction`) : `thresholds` par modèle (`fable` 85 / `opus` 89 / `sonnet` 90 / `haiku` 95 / `default` 88 %), `keepToolUses` (10), `triggerTokens` (2000), `compactionCooldownMs` (600000 = 10 min), `memoryFile`, `memoryMaxLines` (400), `mode` (`native`|`strip`). Le fichier mémoire et le dossier `.cqr-archive/` restent **dans votre projet** et sont ignorés par git.
 
 ## Statusline (quota en direct)
 
@@ -204,8 +208,8 @@ cqr guard off        # désactive le garde-fou
 ## Désinstallation
 
 ```bash
-node src/uninstall.js          # retire les variables d'env + le hook (garde une sauvegarde de settings.json), conserve tokens.json
-node src/uninstall.js --purge  # supprime en plus le dossier d'installation + tokens.json
+node src/uninstall.js          # retire les variables d'env + les hooks (garde une sauvegarde de settings.json), restaure votre statusline d'origine, conserve tokens.json et `cqr`
+node src/uninstall.js --purge  # supprime en plus le dossier d'installation, tokens.json et `cqr` (retiré du PATH)
 ```
 
 Redémarrez Claude Code ensuite.

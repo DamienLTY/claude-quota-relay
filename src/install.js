@@ -22,6 +22,16 @@ const os = require("os");
 const p = require("path");
 const readline = require("readline");
 const lib = require("./lib.js");
+const setupPath = require("./setup-path.js");
+
+// Minimal, NO_COLOR-aware console styling for a clean install experience.
+const COLOR = !process.env.NO_COLOR;
+const c = (code, s) => (COLOR ? "\x1b[" + code + "m" + s + "\x1b[0m" : s);
+const bold = (s) => c(1, s), dim = (s) => c(90, s), green = (s) => c(32, s), yellow = (s) => c(33, s);
+function section(title) { console.log("\n" + bold(title)); }
+function ok(s) { console.log("  " + green("✓") + " " + s); }
+function info(s) { console.log("  " + dim("· " + s)); }
+function warn(s) { console.log("  " + yellow("!") + " " + s); }
 
 const SRC_DIR = __dirname; // repo/src
 const REPO_ROOT = p.dirname(SRC_DIR);
@@ -36,7 +46,7 @@ const WORKFLOW_GUARD_DEFAULT = { enabled: true, mode: "ask", percent: 50 };
 const COMPACTION_DEFAULT = {
   enabled: false, dryRun: true, mode: "native",
   thresholds: { fable: 85, opus: 89, sonnet: 90, haiku: 95, default: 88 },
-  keepToolUses: 10, triggerTokens: 2000, compactBeforeResume: true,
+  keepToolUses: 10, triggerTokens: 2000, compactBeforeResume: true, compactionCooldownMs: 600000,
   memoryFile: ".cqr-memory.md", memoryMaxLines: 400, archiveDir: ".cqr-archive",
 };
 
@@ -61,9 +71,6 @@ let PORT = String(arg("--port", "8787"));
 const INSTALL_DIR = p.join(CONFIG_DIR, "claude-quota-relay");
 const SETTINGS = p.join(CONFIG_DIR, "settings.json");
 
-function log(...a) { console.log(...a); }
-function ok(s) { log("  ✓ " + s); }
-
 // One-shot prompt (open+ask+close) so it never conflicts with captureSetupToken's own readline.
 function prompt1(q) {
   return new Promise((res) => {
@@ -76,26 +83,24 @@ async function collectTokens() {
   const example = JSON.parse(fs.readFileSync(EXAMPLE_TOKENS, "utf8"));
   example.port = Number(PORT);
   if (NO_INTERACTIVE) {
-    log("\nNon-interactive: writing tokens.json with placeholders.");
-    log("Fill them in later with:  cqr login <name>   (guided) or  cqr set <name> <token>.");
+    info("non-interactive: tokens.json written with placeholders");
+    info("fill them in later with: cqr login <name>");
     return example;
   }
-  log("\n=== Accounts setup ===");
-  log("You can rotate as many Claude accounts as you like (2, 3, 5...). For each one you'll log in");
-  log("through your browser; the token is captured automatically. You DON'T need to copy-paste it.\n");
-  let n = parseInt(await prompt1("How many accounts do you want to rotate? [2] "), 10);
+  section("Accounts");
+  console.log("  You can rotate as many Claude accounts as you like (2, 3, 5...). For each one, log in");
+  console.log("  through your browser — the token is captured automatically, no copy-paste needed.\n");
+  let n = parseInt(await prompt1("  How many accounts do you want to rotate? [2] "), 10);
   if (!Number.isFinite(n) || n < 1) n = 2;
 
   const tokens = [];
   for (let i = 0; i < n; i++) {
-    log("\n--- Account " + (i + 1) + " / " + n + " ---");
-    if (i > 0) {
-      await prompt1("  IMPORTANT: log OUT of the previous account in your browser first, then press Enter to continue... ");
-    }
-    const name = (await prompt1(`  Name for account #${i + 1} [account-${i + 1}]: `)) || `account-${i + 1}`;
+    console.log("\n  " + bold("Account " + (i + 1) + "/" + n));
+    if (i > 0) await prompt1("  Log OUT of the previous account in your browser, then press Enter to continue... ");
+    const name = (await prompt1(`  Name [account-${i + 1}]: `)) || `account-${i + 1}`;
     const tok = await lib.captureSetupToken(); // runs `claude setup-token`, captures the token (paste fallback)
-    if (tok) { log("  ✓ captured token for '" + name + "' (" + lib.mask(tok) + ")"); tokens.push({ name, token: tok, enabled: true }); }
-    else { log("  ! skipped '" + name + "' (no token) — add it later with `cqr login " + name + "`."); tokens.push({ name, token: "PASTE_TOKEN_FROM_claude_setup-token", enabled: true }); }
+    if (tok) { ok("captured token for '" + name + "' (" + lib.mask(tok) + ")"); tokens.push({ name, token: tok, enabled: true }); }
+    else { warn("skipped '" + name + "' — add it later with: cqr login " + name); tokens.push({ name, token: "PASTE_TOKEN_FROM_claude_setup-token", enabled: true }); }
   }
   example.tokens = tokens;
   return example;
@@ -108,12 +113,13 @@ function firstRealToken(conf) {
 
 function patchSettings(conf) {
   let settings = {};
+  let backupName = null;
   if (fs.existsSync(SETTINGS)) {
     const raw = fs.readFileSync(SETTINGS, "utf8").replace(/^﻿/, "");
     try { settings = JSON.parse(raw); } catch (e) { throw new Error("settings.json is not valid JSON — fix it or move it aside, then re-run.\n  " + e.message); }
     const bak = SETTINGS + ".bak-" + Date.now();
     fs.writeFileSync(bak, raw);
-    ok("backed up settings.json -> " + p.basename(bak));
+    backupName = p.basename(bak);
   }
   settings.env = settings.env || {};
   settings.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:" + PORT;
@@ -122,28 +128,26 @@ function patchSettings(conf) {
   if (tok) settings.env.ANTHROPIC_AUTH_TOKEN = tok;
 
   settings.hooks = settings.hooks || {};
+  let hooksAdded = 0;
   // Register a command hook once (keyed by the script filename in its command).
-  function registerHook(event, matcher, script, label) {
+  function registerHook(event, matcher, script) {
     settings.hooks[event] = settings.hooks[event] || [];
-    if (JSON.stringify(settings.hooks[event]).includes(script)) { ok(label + " already present"); return; }
+    if (JSON.stringify(settings.hooks[event]).includes(script)) return;
     const entry = { hooks: [{ type: "command", command: 'node "' + p.join(INSTALL_DIR, script) + '"' }] };
     if (matcher) entry.matcher = matcher;
     settings.hooks[event].push(entry);
-    ok("added " + label);
+    hooksAdded++;
   }
-  // Proxy autostart.
-  registerHook("SessionStart", "startup|resume|clear", "ensure-proxy.js", "SessionStart autostart hook");
-  // Memory hook: inject the per-project memory + refresh it on switch / on manual /compact.
-  registerHook("SessionStart", "startup|resume|clear", "memory-hook.js", "SessionStart memory hook");
-  registerHook("UserPromptSubmit", null, "memory-hook.js", "UserPromptSubmit memory hook");
-  registerHook("PreCompact", null, "memory-hook.js", "PreCompact memory hook");
-  // Workflow quota guard (PreToolUse on the Workflow tool).
-  registerHook("PreToolUse", "Workflow", "cqr-workflow-guard.js", "Workflow quota guard hook");
+  registerHook("SessionStart", "startup|resume|clear", "ensure-proxy.js");          // proxy autostart
+  registerHook("SessionStart", "startup|resume|clear", "memory-hook.js");           // inject project memory
+  registerHook("UserPromptSubmit", null, "memory-hook.js");                        // refresh memory on switch
+  registerHook("PreCompact", null, "memory-hook.js");                              // enrich memory on manual /compact
+  registerHook("PreToolUse", "Workflow", "cqr-workflow-guard.js");                 // workflow quota guard
 
-  setupStatusline(settings);
+  const sl = setupStatusline(settings);
 
   fs.writeFileSync(SETTINGS, JSON.stringify(settings, null, 2));
-  return !!tok;
+  return { hasToken: !!tok, backupName, hooksAdded, statusline: sl };
 }
 
 // Add our quota status line. If the user already has one, WRAP it (save the original so our
@@ -152,25 +156,22 @@ function setupStatusline(settings) {
   const slPath = p.join(INSTALL_DIR, "statusline.json");
   const cur = settings.statusLine;
   const curCmd = (cur && (typeof cur === "string" ? cur : cur.command)) || "";
-  if (curCmd.includes("cqr-statusline.js")) { ok("statusline already wrapped (kept)"); return; }
+  if (curCmd.includes("cqr-statusline.js")) return "kept";
   const original = cur ? (typeof cur === "string" ? { type: "command", command: cur } : cur) : null;
   fs.writeFileSync(slPath, JSON.stringify({ original }, null, 2));
   settings.statusLine = { type: "command", command: 'node "' + p.join(INSTALL_DIR, "cqr-statusline.js") + '"' };
-  ok(original ? "wrapped your existing statusline (kept + appended quota)" : "added quota statusline");
+  return original ? "wrapped" : "added";
 }
 
 (async () => {
-  log("claude-quota-relay installer");
-  log("  config dir : " + CONFIG_DIR);
-  log("  install dir: " + INSTALL_DIR);
-  log("  port       : " + PORT);
+  console.log(bold("claude-quota-relay") + dim("  —  installer"));
+  info(CONFIG_DIR + "  (port " + PORT + ")");
 
   fs.mkdirSync(INSTALL_DIR, { recursive: true });
   for (const f of COPY_FILES) fs.copyFileSync(p.join(SRC_DIR, f), p.join(INSTALL_DIR, f));
-  ok("copied proxy files");
 
   const tokensPath = p.join(INSTALL_DIR, "tokens.json");
-  let conf;
+  let conf, tokensLine;
   if (fs.existsSync(tokensPath)) {
     conf = JSON.parse(fs.readFileSync(tokensPath, "utf8"));
     // keep the user's custom port unless --port was explicitly passed
@@ -179,31 +180,36 @@ function setupStatusline(settings) {
     conf.compaction = Object.assign({}, COMPACTION_DEFAULT, conf.compaction || {});
     conf.workflowGuard = Object.assign({}, WORKFLOW_GUARD_DEFAULT, conf.workflowGuard || {});
     fs.writeFileSync(tokensPath, JSON.stringify(conf, null, 2));
-    ok("kept existing tokens.json (" + (conf.tokens || []).length + " tokens, port " + conf.port + ")");
+    tokensLine = (conf.tokens || []).length + " account(s), kept";
   } else {
     conf = await collectTokens();
     conf.compaction = Object.assign({}, COMPACTION_DEFAULT, conf.compaction || {});
     conf.workflowGuard = Object.assign({}, WORKFLOW_GUARD_DEFAULT, conf.workflowGuard || {});
     fs.writeFileSync(tokensPath, JSON.stringify(conf, null, 2));
-    ok("wrote tokens.json");
+    tokensLine = (conf.tokens || []).length + " account(s), just set up";
   }
 
-  const haveToken = patchSettings(conf);
+  const res = patchSettings(conf);
+  // CQR_SKIP_PATH_REGISTER=1 is a test seam: writes the wrapper scripts but never touches the
+  // real registry / shell rc file (used by the automated test suite; never set this yourself).
+  const alias = setupPath.ensureAlias(INSTALL_DIR, process.env.CQR_SKIP_PATH_REGISTER ? { skipRegister: true } : undefined);
 
-  log("\nDone.");
-  log("\nNext steps:");
-  if (!haveToken) {
-    log("  1. Get a token per account:  claude setup-token   (switch account between each run)");
-    log("  2. Put them in: " + tokensPath + "   (or:  node \"" + p.join(INSTALL_DIR, "cli.js") + "\" set <name> <token>)");
-    log("  3. Re-run this installer (it will sync the first token into settings.json).");
-    log("  4. Restart Claude Code.");
+  section("Setup");
+  ok("proxy files copied (" + COPY_FILES.length + ")");
+  ok("accounts: " + tokensLine);
+  if (res.backupName) info("settings.json backed up -> " + res.backupName);
+  ok("Claude Code wired up: routing, timeouts" + (res.hooksAdded ? ", hooks" : "") + " (all done automatically)");
+  ok("status line " + (res.statusline === "kept" ? "already set up" : res.statusline === "wrapped" ? "added (kept your existing one)" : "added"));
+  ok("`cqr` command " + (alias.skipped ? "wrapper scripts ready" : alias.changed ? "added to your PATH" : "already on your PATH"));
+
+  section("Next steps");
+  if (!res.hasToken) {
+    console.log("  1. " + bold("Restart Claude Code") + ", then run: " + bold("cqr login <name>") + " for each account.");
   } else {
-    log("  1. Restart Claude Code (env vars are read at startup).");
-    log("  2. Check status:  node \"" + p.join(INSTALL_DIR, "cli.js") + "\" status");
+    console.log("  1. " + bold("Restart Claude Code") + " (it needs to pick up the new settings).");
   }
-  log("\nTip: add an alias so `cqr` works from anywhere, e.g.:");
-  log("  alias cqr='node \"" + p.join(INSTALL_DIR, "cli.js") + "\"'");
-  log("\nAuto-compaction (optional, saves tokens on the 2nd account) ships OFF in dry-run.");
-  log("  cqr compact dry-run   # watch what it WOULD compact (proxy.log), no request change");
-  log("  cqr compact on        # enable it, then: cqr restart");
+  if (alias.changed) console.log("  2. Open a " + bold("new terminal") + " and run: " + bold("cqr status"));
+  else console.log("  2. Run: " + bold("cqr status"));
+  console.log("");
+  info("auto-compaction (saves tokens on the 2nd account) is off by default — try: cqr compact dry-run");
 })().catch((e) => { console.error("\nInstall failed: " + e.message); process.exit(1); });

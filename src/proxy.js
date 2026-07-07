@@ -231,6 +231,15 @@ function decideCompaction(conf, state, bodyObj, prevActive, newIdx, ctx, switchi
   if (ctx.resumed) { compact = true; reason = "resume"; ctx.resumed = false; }
   else if (switching && prevU5 != null && prevU5 >= thr) { compact = true; reason = "switch@" + prevU5 + ">=" + thr + "%"; }
   if (!compact) return null;
+  // Cooldown : une fois tous les comptes au-dessus de leur seuil, pickRoute (a raison, pour
+  // le failover) continue d'alterner sur celui qui a le u5 le plus bas -> sans ce garde-fou on
+  // recompacterait (et rappellerait Haiku) a CHAQUE requete. Le cooldown lisse ce ping-pong :
+  // on ne recompacte pas plus souvent que compactionCooldownMs, quel que soit le nombre de
+  // bascules entre-temps. Applique aussi en dry-run pour que les logs reproduisent fidelement
+  // ce qui se passerait une fois active.
+  const cooldownMs = num(cc.compactionCooldownMs, 600000);
+  const last = state.lastCompactAt || 0;
+  if (cooldownMs > 0 && now() - last < cooldownMs) return null;
   return { compact: true, reason, dryRun: !cc.enabled && !!cc.dryRun, mode: cc.mode === "strip" ? "strip" : "native", keepToolUses: num(cc.keepToolUses, 10), triggerTokens: num(cc.triggerTokens, 2000) };
 }
 
@@ -283,8 +292,13 @@ function serve(creq, cres) {
       // Only for the real /v1/messages endpoint (never count_tokens or other JSON paths).
       const isMsgs = String(creq.url || "").split("?")[0] === "/v1/messages";
       const compactInfo = isMsgs ? decideCompaction(conf, state, bodyObj, prevActive, route.idx, ctx, switching) : null;
-      if (compactInfo && compactInfo.compact && !compactInfo.dryRun) {
-        state.compaction = { at: now(), from: (conf.tokens[prevActive] || {}).name, to: (conf.tokens[route.idx] || {}).name, model: bodyObj && bodyObj.model, reason: compactInfo.reason };
+      if (compactInfo && compactInfo.compact) {
+        // toujours tamponne (reel ou dry-run) : c'est ce que le cooldown de decideCompaction lit
+        // pour eviter de recompacter a chaque requete pendant un ping-pong entre comptes chauds.
+        state.lastCompactAt = now();
+        if (!compactInfo.dryRun) {
+          state.compaction = { at: now(), from: (conf.tokens[prevActive] || {}).name, to: (conf.tokens[route.idx] || {}).name, model: bodyObj && bodyObj.model, reason: compactInfo.reason };
+        }
       }
       writeState(state);
       stopKeepalive();

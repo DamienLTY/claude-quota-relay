@@ -12,6 +12,7 @@ const fs = require("fs");
 const os = require("os");
 const p = require("path");
 const cp = require("child_process");
+const setupPath = require("./setup-path.js");
 
 function arg(name, def) { const i = process.argv.indexOf(name); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : def; }
 const CONFIG_DIR = arg("--config-dir", process.env.CLAUDE_CONFIG_DIR || p.join(os.homedir(), ".claude"));
@@ -59,6 +60,7 @@ if (s) {
 }
 
 if (PURGE) {
+  try { setupPath.removeAlias(INSTALL_DIR, process.env.CQR_SKIP_PATH_REGISTER ? { skipRegister: true } : undefined); ok("removed `cqr` from PATH"); } catch (e) {}
   try { fs.rmSync(INSTALL_DIR, { recursive: true, force: true }); ok("deleted " + INSTALL_DIR + " (including tokens.json)"); } catch (e) { console.error("  ! could not delete " + INSTALL_DIR + ": " + e.message); }
 } else {
   console.log("\nInstall dir kept at " + INSTALL_DIR + " (tokens.json preserved). Use --purge to delete it.");

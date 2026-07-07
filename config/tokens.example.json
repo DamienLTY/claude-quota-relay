@@ -13,6 +13,7 @@
     "keepToolUses": 10,
     "triggerTokens": 2000,
     "compactBeforeResume": true,
+    "compactionCooldownMs": 600000,
     "memoryFile": ".cqr-memory.md",
     "memoryMaxLines": 400,
     "archiveDir": ".cqr-archive"
