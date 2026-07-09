@@ -45,6 +45,7 @@ function health(cb) {
 }
 
 const OUT_LOG = p.join(DIR, "proxy.out.log");
+const LOG = p.join(DIR, "proxy.log");
 
 function startProxy() {
   const out = fs.openSync(OUT_LOG, "a");
@@ -80,12 +81,27 @@ function startProxyAndVerify(cb) {
 }
 function reportStartFailure() {
   console.error("Le proxy a été lancé mais ne répond pas après 3 secondes (il a probablement planté).");
+  // proxy.out.log ne capture que les crashs bruts (exception non attrapée avant que notre
+  // propre log ne soit prêt) ; les erreurs GÉRÉES (port déjà pris, etc.) passent par notre
+  // propre journal structuré (proxy.log) via log() -- il faut lire les DEUX, sinon on rate
+  // exactement le cas le plus fréquent (EADDRINUSE), déjà arrivé en vrai à un utilisateur.
   const out = tailFile(OUT_LOG, 20);
-  if (out) { console.error("\nDernières lignes de proxy.out.log :\n" + out); }
-  else { console.error("(proxy.out.log est vide ou introuvable — le process n'a peut-être même pas pu démarrer)"); }
+  const structured = tailFile(LOG, 8);
+  const port = (() => { try { return readConf().port || 8787; } catch (e) { return 8787; } })();
+  const eaddrinuse = /EADDRINUSE/.test(out || "") || /EADDRINUSE/.test(structured || "");
+  if (eaddrinuse) {
+    console.error("\nCause identifiée (proxy.log) : le port " + port + " est déjà utilisé par un AUTRE programme sur cette machine (EADDRINUSE).");
+    console.error("(Si vous utilisez Cloudflare Workers, `wrangler dev` prend exactement ce port par défaut — un conflit fréquent.)");
+    console.error("\nSolution la plus simple — changez le port de claude-quota-relay :");
+    console.error("  cqr policy port " + (Number(port) + 3) + "     # met à jour tokens.json ET settings.json, puis : cqr restart");
+    return;
+  }
+  if (out) console.error("\nDernières lignes de proxy.out.log :\n" + out);
+  else console.error("(proxy.out.log est vide ou introuvable)");
+  if (structured) console.error("\nDernières lignes de proxy.log :\n" + structured);
   console.error("\nCauses fréquentes :");
   console.error("  - un fichier du proxy manque ou est corrompu -> relancez : node src/install.js (depuis le dossier du repo)");
-  console.error("  - le port " + (() => { try { return readConf().port || 8787; } catch (e) { return 8787; } })() + " est déjà utilisé par autre chose -> cqr policy, ou changez de port dans tokens.json");
+  console.error("  - le port " + port + " est déjà utilisé par autre chose -> cqr policy port <n>");
   console.error("  - un antivirus/EDR d'entreprise bloque les process détachés en arrière-plan -> vérifiez les journaux de votre antivirus, ou lancez le proxy au premier plan pour voir l'erreur : node \"" + PROXY + "\"");
 }
 
@@ -223,7 +239,9 @@ switch (cmd) {
       console.log("waitSoft :", c.waitAtSoftPercent == null ? "désactivé" : c.waitAtSoftPercent + "%", "  (désactivé = consommer la marge 90-100% avant d'attendre)");
       console.log("maxWait  :", Math.round((c.maxWaitMs || 604800000) / 60000) + "min", "  (durée max de rétention d'une requête)");
       console.log("");
-      console.log("Modifier : cqr policy <switch|block7d|waitsoft|maxwait> <valeur>   (waitsoft off|<N>, maxwait <minutes>)");
+      console.log("port     :", c.port || 8787, "  (port local du proxy)");
+      console.log("");
+      console.log("Modifier : cqr policy <switch|block7d|waitsoft|maxwait|port> <valeur>   (waitsoft off|<N>, maxwait <minutes>)");
       break;
     }
     const v = a2;
@@ -231,6 +249,21 @@ switch (cmd) {
     else if (a1 === "block7d") c.sevenDayBlockPercent = Number(v);
     else if (a1 === "waitsoft") c.waitAtSoftPercent = (v === "off" || v === "null") ? null : Number(v);
     else if (a1 === "maxwait") c.maxWaitMs = Number(v) * 60000;
+    else if (a1 === "port") {
+      const newPort = Number(v);
+      if (!newPort || newPort < 1 || newPort > 65535) { console.error("Port invalide :", v); process.exit(1); }
+      c.port = newPort;
+      writeConf(c);
+      if (fs.existsSync(SETTINGS)) {
+        const raw = fs.readFileSync(SETTINGS, "utf8").replace(/^﻿/, "");
+        const s = JSON.parse(raw);
+        s.env = s.env || {};
+        s.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:" + newPort;
+        fs.writeFileSync(SETTINGS, JSON.stringify(s, null, 2));
+      }
+      console.log("Port changé pour " + newPort + " (tokens.json + settings.json mis à jour). Redémarrez : cqr restart");
+      break;
+    }
     else { console.error("Clé inconnue :", a1); process.exit(1); }
     writeConf(c); console.log("Politique mise à jour :", a1, "=", v);
     break;

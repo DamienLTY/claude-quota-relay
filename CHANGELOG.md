@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.2
+
+- **Fix — le diagnostic de `cqr start`/`restart` ratait la cause la plus fréquente** : la v0.6.1 ne lisait que `proxy.out.log` (les plantages bruts) mais pas `proxy.log` (le propre journal du proxy, où passent les erreurs *gérées* comme "port déjà utilisé") — exactement le cas rencontré par un utilisateur (port 8787 squatté en permanence, probablement par `wrangler dev`). Le diagnostic lit maintenant les deux fichiers, détecte spécifiquement `EADDRINUSE` et propose la solution concrète.
+- **Nouveau : `cqr policy port <n>`** — change le port du proxy sans réinstaller ni éditer les fichiers à la main (met à jour `tokens.json` et `settings.json` d'un coup, puis `cqr restart`).
+- `start-verify.test.js` renforcé (le cas "port occupé" vérifie maintenant le détail EADDRINUSE + la suggestion) + nouveau scénario pour `cqr policy port`. 18 suites de tests au total, toutes vertes.
+
 ## 0.6.1
 
 - **Fix — `cqr start`/`restart` mentait quand le proxy plantait** : la commande spawnait le process et affichait toujours « Proxy démarré. » sans jamais vérifier qu'il restait en vie — un utilisateur a signalé un cas où le proxy ne démarrait jamais, sans aucun indice pour comprendre pourquoi. `cqr start`/`restart` vérifient maintenant réellement (jusqu'à ~3s) que le proxy répond, et si ce n'est pas le cas, affichent les dernières lignes de `proxy.out.log` (la trace du plantage) + les causes fréquentes (fichier manquant, port déjà utilisé, antivirus d'entreprise qui tue les process détachés). Prouvé par 3 scénarios réels : démarrage sain, plantage simulé, port déjà occupé.

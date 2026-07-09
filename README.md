@@ -147,6 +147,7 @@ cqr sync-env               # recopie le 1er token dans settings.json
 ```bash
 cqr policy                 # affiche les seuils actuels (à quel % on préfère changer de compte, etc.)
 cqr policy waitsoft 85     # attendre dès 85 % de quota au lieu de le consommer jusqu'à 100 %
+cqr policy port 8788       # change le port du proxy (tokens.json + settings.json), puis cqr restart
 ```
 
 ## Fonctionnalités avancées (optionnelles)
@@ -268,7 +269,7 @@ Les blocs `compaction` et `workflowGuard` (auto-compaction et garde-fou, voir pl
 `cqr start`/`cqr restart` vérifient désormais réellement que le proxy répond (jusqu'à ~3 secondes) — s'il plante, la commande vous l'affichera clairement avec les dernières lignes du journal d'erreur, au lieu de dire faussement « Proxy démarré ». Si vous voyez cette erreur, les causes les plus fréquentes sont :
 
 - **Un fichier du proxy manque ou est corrompu** → relancez l'installeur pour tout recopier proprement : `node src/install.js` (depuis le dossier du repo cloné).
-- **Le port est déjà utilisé** par autre chose sur votre machine → changez de port dans `tokens.json` (`"port": 8788` par exemple), puis `cqr restart`.
+- **Le port est déjà utilisé** par autre chose sur votre machine (message `EADDRINUSE` dans `proxy.log` — si vous utilisez Cloudflare Workers, `wrangler dev` prend exactement le même port par défaut) → changez de port en une commande : `cqr policy port 8788`, puis `cqr restart`.
 - **Un antivirus ou un logiciel de sécurité d'entreprise** bloque les processus lancés en arrière-plan (fréquent sur les PC professionnels). Pour voir l'erreur exacte en direct, lancez le proxy au premier plan :
   ```bash
   node ~/.claude/claude-quota-relay/proxy.js

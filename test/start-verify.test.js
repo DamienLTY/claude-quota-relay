@@ -57,7 +57,41 @@ function cleanup(DIR) {
       const r = runCli(DIR, ["start"]);
       assert.strictEqual(r.status, 1, "port conflict: cqr start exits 1: " + r.stdout);
       assert.ok(r.stderr.includes("ne répond pas") || r.stderr.includes("planté"), "reports failure on port conflict: " + r.stderr);
+      // Real bug found via a user report: proxy.js's server.on("error", ...) writes EADDRINUSE
+      // to proxy.log (its own structured log), NOT proxy.out.log (raw stdout/stderr) -- the
+      // diagnostic used to only read the latter, so this exact case was silently unhelpful.
+      assert.ok(/EADDRINUSE/.test(r.stderr), "surfaces the EADDRINUSE detail from proxy.log: " + r.stderr);
+      assert.ok(/cqr policy port/.test(r.stderr), "suggests the concrete fix: " + r.stderr);
     } finally { blocker.close(); cleanup(DIR); }
-    console.log("PASS — cqr start: port conflict correctly detected (not falsely reported as started)");
+    console.log("PASS — cqr start: port conflict correctly detected + real EADDRINUSE cause surfaced from proxy.log");
+  }
+
+  // --- Case D: `cqr policy port <n>` actually unblocks a stuck install (the remedy Case C
+  // points to) -- updates tokens.json AND settings.json's ANTHROPIC_BASE_URL, then a real start
+  // on the new port succeeds. ---
+  {
+    // cli.js resolves settings.json as a sibling of the install dir (p.dirname(__dirname)) --
+    // mirror the real <config>/claude-quota-relay layout, like upgrade.test.js does.
+    const CFG = fs.mkdtempSync(p.join(os.tmpdir(), "cqr-policy-"));
+    const DIR = p.join(CFG, "claude-quota-relay");
+    fs.mkdirSync(DIR, { recursive: true });
+    for (const f of ["proxy.js", "cli.js", "compaction.js", "lib.js"]) fs.copyFileSync(p.join(SRC, f), p.join(DIR, f));
+    fs.writeFileSync(p.join(DIR, "tokens.json"), JSON.stringify({ port: 8799, switchAtPercent: 94, sevenDayBlockPercent: 99, tokens: [{ name: "a", token: FAKE, enabled: true }] }));
+    const realSettings = p.join(CFG, "settings.json");
+    fs.writeFileSync(realSettings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:8799", FOO: "bar" } }));
+    const blocker = http.createServer((req, res) => res.end("not the proxy"));
+    await new Promise((resolve) => blocker.listen(8799, "127.0.0.1", resolve));
+    try {
+      const pol = runCli(DIR, ["policy", "port", "8800"]);
+      assert.ok(pol.stdout.includes("8800"), "confirms the new port: " + pol.stdout);
+      const conf = JSON.parse(fs.readFileSync(p.join(DIR, "tokens.json"), "utf8"));
+      assert.strictEqual(conf.port, 8800, "tokens.json updated: " + JSON.stringify(conf));
+      const settings = JSON.parse(fs.readFileSync(realSettings, "utf8"));
+      assert.strictEqual(settings.env.ANTHROPIC_BASE_URL, "http://127.0.0.1:8800", "settings.json updated: " + JSON.stringify(settings));
+      assert.strictEqual(settings.env.FOO, "bar", "unrelated settings preserved: " + JSON.stringify(settings));
+      const r = runCli(DIR, ["start"]);
+      assert.strictEqual(r.status, 0, "start on the new port succeeds: " + r.stdout + r.stderr);
+    } finally { blocker.close(); cleanup(DIR); fs.rmSync(CFG, { recursive: true, force: true }); }
+    console.log("PASS — cqr policy port: unblocks a port conflict end-to-end (tokens.json + settings.json + real restart)");
   }
 })();
