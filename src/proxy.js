@@ -556,7 +556,8 @@ if (require.main === module) {
   server.listen(conf0.port, "127.0.0.1", () => {
     log("PROXY v3 up http://127.0.0.1:" + conf0.port,
       "switch=" + conf0.switchAtPercent + "% bloc7j=" + conf0.sevenDayBlockPercent + "% softWait=" + conf0.waitAtSoftPercent + " maxWait=" + Math.round(conf0.maxWaitMs / 60000) + "min",
-      "tokens=" + conf0.tokens.map((t) => t.name + (isPlaceholder(t) ? "(vide)" : "")).join(","));
+      "tokens=" + conf0.tokens.map((t) => t.name + (isPlaceholder(t) ? "(vide)" : "")).join(","),
+      "upstream=" + UPSTREAM_HOST + ":" + UPSTREAM_PORT);
     // sonde de demarrage : etat reel des quotas sans attendre la 1re vraie reponse
     conf0.tokens.forEach((t, i) => {
       if (t.enabled && !isPlaceholder(t)) setTimeout(() => probeToken(conf0, i), 500 + i * 2000);

@@ -94,4 +94,32 @@ function cleanup(DIR) {
     } finally { blocker.close(); cleanup(DIR); fs.rmSync(CFG, { recursive: true, force: true }); }
     console.log("PASS — cqr policy port: unblocks a port conflict end-to-end (tokens.json + settings.json + real restart)");
   }
+
+  // --- Case E: manual `cqr start` (bare terminal, no ANTHROPIC_TARGET_API_URL in ITS OWN env)
+  // must still route through the corporate relay declared only in settings.json -- a real user
+  // hit this: Claude Code's own hook-spawned proxy worked fine (inherits settings.json's env),
+  // but a manual `cqr start` after fixing a port conflict silently fell back to the blocked
+  // api.anthropic.com, making every account look identically dead. ---
+  {
+    const CFG = fs.mkdtempSync(p.join(os.tmpdir(), "cqr-relay-"));
+    const DIR = p.join(CFG, "claude-quota-relay");
+    fs.mkdirSync(DIR, { recursive: true });
+    for (const f of ["proxy.js", "cli.js", "compaction.js", "lib.js"]) fs.copyFileSync(p.join(SRC, f), p.join(DIR, f));
+    fs.writeFileSync(p.join(DIR, "tokens.json"), JSON.stringify({ port: 8801, switchAtPercent: 94, sevenDayBlockPercent: 99, tokens: [{ name: "a", token: FAKE, enabled: true }] }));
+    const relayPort = 8802;
+    fs.writeFileSync(p.join(CFG, "settings.json"), JSON.stringify({ env: { ANTHROPIC_TARGET_API_URL: "http://127.0.0.1:" + relayPort } }));
+    let relayHits = 0;
+    const relay = http.createServer((req, res) => { relayHits++; res.writeHead(200, { "content-type": "application/json" }); res.end("{}"); });
+    await new Promise((resolve) => relay.listen(relayPort, "127.0.0.1", resolve));
+    try {
+      // Simulate a bare terminal: strip the var from the CLI subprocess's own env, exactly
+      // like a fresh PowerShell window that never sourced Claude Code's settings.json.
+      const bareEnv = Object.assign({}, process.env); delete bareEnv.ANTHROPIC_TARGET_API_URL;
+      const r = cp.spawnSync(process.execPath, [p.join(DIR, "cli.js"), "start"], { encoding: "utf8", timeout: 15000, windowsHide: true, env: bareEnv });
+      assert.strictEqual(r.status, 0, "start succeeds: " + r.stdout + r.stderr);
+      await new Promise((resolve) => setTimeout(resolve, 700)); // startup probe
+      assert.ok(relayHits > 0, "manually-started proxy still reached the relay declared in settings.json, not api.anthropic.com");
+    } finally { relay.close(); cleanup(DIR); fs.rmSync(CFG, { recursive: true, force: true }); }
+    console.log("PASS — cqr start (bare terminal): still honors ANTHROPIC_TARGET_API_URL from settings.json (" + relayHits + " hit(s))");
+  }
 })();

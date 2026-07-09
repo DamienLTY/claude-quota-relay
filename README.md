@@ -223,7 +223,7 @@ Retenir une requête pendant plusieurs minutes ou plusieurs heures ne fonctionne
 
 Sur certains réseaux professionnels, l'adresse `api.anthropic.com` est bloquée par la sécurité de l'entreprise, et il faut passer par un relais personnel (par exemple un Cloudflare Worker) pour atteindre Anthropic. Si votre `settings.json` contient déjà une variable **`ANTHROPIC_TARGET_API_URL`** pointant vers ce relais, **le proxy la détecte et l'utilise automatiquement** — pour tout : la bascule entre comptes, les sondes de quota, la statusline en direct, et les appels de l'auto-compaction. Rien à configurer de votre côté : si la variable est là, tout ce que fait ce projet passe par elle plutôt que par `api.anthropic.com` directement.
 
-L'installeur vous confirme la détection au moment de l'installation (« réseau d'entreprise détecté »). Si vous ajoutez cette variable **après** avoir déjà installé et démarré le proxy, un redémarrage est nécessaire : `cqr restart`.
+L'installeur vous confirme la détection au moment de l'installation (« réseau d'entreprise détecté »). Si vous ajoutez cette variable **après** avoir déjà installé et démarré le proxy, un redémarrage est nécessaire : `cqr restart` (fonctionne aussi bien lancé à la main que via Claude Code — la variable est relue depuis `settings.json` à chaque démarrage). Vous pouvez vérifier quel hôte est réellement utilisé dans `proxy.log` (ligne `upstream=...` au démarrage).
 
 ## Configuration complète
 

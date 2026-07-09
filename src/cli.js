@@ -47,9 +47,24 @@ function health(cb) {
 const OUT_LOG = p.join(DIR, "proxy.out.log");
 const LOG = p.join(DIR, "proxy.log");
 
+// Quand Claude Code démarre le proxy lui-même (hook ensure-proxy.js), il injecte l'env de
+// settings.json (dont ANTHROPIC_TARGET_API_URL sur les réseaux d'entreprise) à ses process
+// enfants. Un `cqr start`/`restart` lancé à la main depuis un terminal nu n'a PAS cette
+// variable dans son propre process.env -> le proxy retombe sur api.anthropic.com direct,
+// bloqué sur ces réseaux, alors que Claude Code fonctionne. Il faut la relire depuis
+// settings.json et l'injecter explicitement, pour que démarrage manuel = démarrage auto.
+function targetApiUrlFromSettings() {
+  try {
+    const raw = fs.readFileSync(SETTINGS, "utf8").replace(/^﻿/, "");
+    return (JSON.parse(raw).env || {}).ANTHROPIC_TARGET_API_URL || null;
+  } catch (e) { return null; }
+}
 function startProxy() {
   const out = fs.openSync(OUT_LOG, "a");
-  const child = cp.spawn(process.execPath, [PROXY], { detached: true, stdio: ["ignore", out, out], windowsHide: true });
+  const env = Object.assign({}, process.env);
+  const target = targetApiUrlFromSettings();
+  if (target && !env.ANTHROPIC_TARGET_API_URL) env.ANTHROPIC_TARGET_API_URL = target;
+  const child = cp.spawn(process.execPath, [PROXY], { detached: true, stdio: ["ignore", out, out], windowsHide: true, env });
   child.unref();
 }
 

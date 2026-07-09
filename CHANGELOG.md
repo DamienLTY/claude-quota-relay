@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.3
+
+- **Fix — `cqr start`/`restart` manuel ignorait `ANTHROPIC_TARGET_API_URL`** : quand Claude Code démarre le proxy lui-même (hook `ensure-proxy.js`), il lui transmet automatiquement les variables de `settings.json`, dont `ANTHROPIC_TARGET_API_URL` sur les réseaux d'entreprise. Un `cqr start`/`restart` lancé à la main depuis un terminal (PowerShell, etc.) n'a PAS cette variable dans son propre environnement — le proxy retombait alors silencieusement sur `api.anthropic.com` direct, bloqué sur ces réseaux, et **tous les comptes remontaient un état identique et faux** (même réponse de blocage réseau pour chaque token). Un utilisateur a signalé exactement ce symptôme : quotas identiques à 100 % sur deux comptes réellement différents, alors que Claude Code lui-même fonctionnait normalement (car lancé via le hook, qui a la bonne variable). `cqr start`/`restart` relisent maintenant `ANTHROPIC_TARGET_API_URL` depuis `settings.json` et l'injectent explicitement si absent de l'environnement du terminal.
+- Le démarrage du proxy logue maintenant l'hôte Anthropic réellement utilisé (`upstream=...`) dans `proxy.log`, pour vérifier facilement lequel est actif.
+- Nouveau scénario de test (démarrage manuel depuis un terminal "nu", sans la variable, avec un vrai relais local). 18 suites de tests au total, toutes vertes.
+
 ## 0.6.2
 
 - **Fix — le diagnostic de `cqr start`/`restart` ratait la cause la plus fréquente** : la v0.6.1 ne lisait que `proxy.out.log` (les plantages bruts) mais pas `proxy.log` (le propre journal du proxy, où passent les erreurs *gérées* comme "port déjà utilisé") — exactement le cas rencontré par un utilisateur (port 8787 squatté en permanence, probablement par `wrangler dev`). Le diagnostic lit maintenant les deux fichiers, détecte spécifiquement `EADDRINUSE` et propose la solution concrète.

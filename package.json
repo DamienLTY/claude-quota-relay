@@ -1,6 +1,6 @@
 {
   "name": "claude-quota-relay",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "Local failover proxy for Claude Code: rotate between multiple Claude subscription tokens and transparently WAIT for the 5h quota to reset instead of failing — so long tasks and subagents never stop.",
   "bin": {
     "cqr": "src/cli.js"
