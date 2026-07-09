@@ -146,7 +146,7 @@ function stopProxy(cb) {
 
 // strip known bare flags before positional destructuring, so `cqr add --paste` doesn't
 // treat "--paste" as the account name.
-const [cmd, a1, a2] = process.argv.slice(2).filter((x) => x !== "--paste");
+const [cmd, a1, a2, a3] = process.argv.slice(2).filter((x) => x !== "--paste");
 
 function fmtPct(pctObj) {
   if (!pctObj) return "?";
@@ -313,6 +313,21 @@ switch (cmd) {
     else if (a1 === "keep") { cc.keepToolUses = Number(a2) || 10; writeConf(c); console.log("Garde les " + cc.keepToolUses + " derniers résultats d'outils intacts."); }
     else if (a1 === "cooldown") { cc.compactionCooldownMs = Math.max(0, Number(a2) || 0) * 60000; writeConf(c); console.log("Délai minimum entre deux compactages = " + (a2 || 0) + "min."); }
     else if (a1 === "buffer") { cc.dynamicSafetyBufferPoints = Math.max(0, Number(a2) || 0); writeConf(c); console.log("Marge de sécurité dynamique = " + cc.dynamicSafetyBufferPoints + " points."); }
+    else if (a1 === "threshold" || a1 === "seuil") {
+      // cqr compact threshold <modele> <pct> : ajuste le % de bascule/compaction pour un modele
+      const models = ["fable", "opus", "sonnet", "haiku", "default"];
+      const m = String(a2 || "").toLowerCase(); const pct = Number(a3);
+      if (!models.includes(m) || !(pct >= 50 && pct <= 100)) { console.error("Usage : cqr compact threshold <fable|opus|sonnet|haiku|default> <50-100>"); process.exit(1); }
+      cc.thresholds = Object.assign({}, comp.DEFAULT_THRESHOLDS, cc.thresholds || {}); cc.thresholds[m] = pct;
+      writeConf(c); console.log("Seuil " + m + " = " + pct + "% (bascule + compaction quand le compte actif dépasse ce % sur 5h). Redémarrez : cqr restart");
+    }
+    else if (a1 === "dynamic") {
+      // Seuil dynamique (baisse le point de bascule quand le contexte est deja gros). Opt-in :
+      // trop agressif avec la compaction active (elle reduit deja la requete). Defaut = off.
+      if (a2 === "on") { cc.dynamicThreshold = true; writeConf(c); console.log("Seuil dynamique ACTIVÉ : la bascule peut se déclencher plus tôt que le seuil statique si le contexte est déjà très gros (ex. Opus à ~800k tokens -> ~68%). Redémarrez : cqr restart"); }
+      else if (a2 === "off") { cc.dynamicThreshold = false; writeConf(c); console.log("Seuil dynamique désactivé : la bascule utilise le seuil statique par modèle (Opus 89%, etc.). Redémarrez : cqr restart"); }
+      else console.error("Usage : cqr compact dynamic on|off");
+    }
     else if (a1 === "memory") {
       const mf = p.join(process.cwd(), cc.memoryFile || ".cqr-memory.md");
       if (fs.existsSync(mf)) console.log(fs.readFileSync(mf, "utf8")); else console.log("(pas encore de fichier mémoire dans " + process.cwd() + ")");
@@ -324,11 +339,12 @@ switch (cmd) {
       console.log("garde    :", cc.keepToolUses || 10, "résultats d'outils intacts");
       console.log("reprise  :", cc.compactBeforeResume !== false ? "compacte avant de reprendre après une attente" : "désactivé");
       console.log("cooldown :", Math.round((cc.compactionCooldownMs == null ? 600000 : cc.compactionCooldownMs) / 60000) + "min (évite de recompacter à chaque ping-pong une fois les 2 comptes chauds)");
-      console.log("seuils   :", JSON.stringify(Object.assign({}, comp.DEFAULT_THRESHOLDS, cc.thresholds || {})), "(plafond statique par modèle)");
-      console.log("marge    :", (cc.dynamicSafetyBufferPoints == null ? 4 : cc.dynamicSafetyBufferPoints) + " points (le seuil dynamique baisse aussi si le contexte est déjà gros -- effectif = min(statique, dynamique))");
+      console.log("seuils   :", JSON.stringify(Object.assign({}, comp.DEFAULT_THRESHOLDS, cc.thresholds || {})), "(% de bascule/compaction par modèle -- cqr compact threshold <modèle> <pct>)");
+      console.log("dynamique:", cc.dynamicThreshold ? "ACTIVÉ (peut baisser le seuil si le contexte est déjà gros)" : "désactivé (bascule au seuil statique ci-dessus)", "-- cqr compact dynamic on|off");
+      if (cc.dynamicThreshold) console.log("marge    :", (cc.dynamicSafetyBufferPoints == null ? 4 : cc.dynamicSafetyBufferPoints) + " points (marge du seuil dynamique)");
       console.log("mémoire  :", cc.memoryFile || ".cqr-memory.md", "(par projet, max " + (cc.memoryMaxLines || 400) + " lignes)");
     }
-    else console.error("Usage : cqr compact [status|on|off|dry-run|mode native|strip|keep <n>|cooldown <min>|buffer <points>|memory]");
+    else console.error("Usage : cqr compact [status|on|off|dry-run|mode native|strip|keep <n>|cooldown <min>|threshold <modèle> <pct>|dynamic on|off|buffer <points>|memory]");
     break;
   }
   case "preflight": {

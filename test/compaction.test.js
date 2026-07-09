@@ -118,19 +118,29 @@ assert.strictEqual(comp.modelWeight("unknown-model"), 3, "unknown -> default wei
   assert.ok(t >= 50 && t <= 99, "clamped into [50,99]: " + t);
 }
 
-// --- effectiveSwitchThreshold : min(static per-model default, dynamic) ---
+// --- effectiveSwitchThreshold : static per-model by DEFAULT; dynamic is opt-in ---
 {
-  // small context -> dynamic is high -> static default wins (unchanged from today's behavior)
+  // dynamic OFF (default): always the static per-model threshold, whatever the context size.
   const tiny = { messages: [{ role: "user", content: "hi" }] };
-  const t = comp.effectiveSwitchThreshold({ thresholds: {} }, "claude-haiku-4-5", tiny);
-  assert.strictEqual(t, 95, "small context: static default (95) is the binding constraint");
+  const huge = { messages: [{ role: "user", content: "x".repeat(50_000_000) }] };
+  assert.strictEqual(comp.effectiveSwitchThreshold({ thresholds: {} }, "claude-haiku-4-5", tiny), 95, "default: static 95 for haiku");
+  assert.strictEqual(comp.effectiveSwitchThreshold({ thresholds: {} }, "claude-opus-4-8", huge), 89, "default: huge Opus context still switches at the STATIC 89 (no aggressive early switch)");
 }
 {
-  // huge context -> dynamic is lower than static -> dynamic wins (this is the fix: switches EARLIER, never later)
+  // dynamic ON (opt-in): huge context lowers the effective threshold below static, never above.
   const huge = { messages: [{ role: "user", content: "x".repeat(50_000_000) }] };
   const stat = comp.modelThreshold("claude-fable-5", {});
-  const t = comp.effectiveSwitchThreshold({ thresholds: {} }, "claude-fable-5", huge);
-  assert.ok(t <= stat, "huge context: effective threshold never exceeds the static default: " + t + " <= " + stat);
+  const t = comp.effectiveSwitchThreshold({ dynamicThreshold: true, thresholds: {} }, "claude-fable-5", huge);
+  assert.ok(t < stat, "dynamic on + huge context: effective threshold drops below static: " + t + " < " + stat);
+}
+{
+  // The exact reported case: Opus with ~829k tokens of context. With dynamic ON it lands ~68%
+  // (the "switched at 68% instead of 89%" a user hit); with dynamic OFF it stays at 89%.
+  const bigOpus = { model: "claude-opus-4-8", messages: [{ role: "user", content: "x".repeat(Math.round(829_000 * 3.5)) }] };
+  const withDyn = comp.effectiveSwitchThreshold({ dynamicThreshold: true, thresholds: {} }, "claude-opus-4-8", bigOpus);
+  const noDyn = comp.effectiveSwitchThreshold({ thresholds: {} }, "claude-opus-4-8", bigOpus);
+  assert.ok(withDyn >= 66 && withDyn <= 70, "dynamic on: ~829k Opus context -> ~68% (got " + withDyn + ")");
+  assert.strictEqual(noDyn, 89, "dynamic off (default): same context stays at static 89%");
 }
 
-console.log("PASS — compaction.js unit tests (threshold, weight, estimate, dynamic, injectNative, mergeBeta, stripOldToolResults)");
+console.log("PASS — compaction.js unit tests (threshold, weight, estimate, dynamic opt-in, injectNative, mergeBeta, stripOldToolResults)");

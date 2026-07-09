@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0
+
+- **Auto-compaction ACTIVE par défaut** (nouvelles installs) : mode natif `clear_tool_uses` (0 token), n'agit qu'au moment d'un changement de compte, donc l'usage normal est inchangé. Les installs existantes gardent leur réglage — pour l'activer : `cqr compact on`.
+- **Fix — bascule trop tôt (68 % au lieu de 89 % sur Opus)** : le « seuil dynamique » (qui avance la bascule quand le contexte est déjà très gros) tombait à ~68 % sur un gros contexte Opus (~800k tokens). C'est mathématiquement prudent mais trop agressif une fois la compaction active (elle réduit déjà la requête). Le seuil dynamique devient **opt-in** (`cqr compact dynamic on`) ; par défaut, la bascule utilise le **seuil statique par modèle** (Opus 89 %, Sonnet 90 %, Fable 85 %, Haiku 95 %). Investigué + verrouillé par tests (le cas exact 829k→68 % est reproduit et documenté).
+- **Nouvelles commandes de réglage** : `cqr compact threshold <modèle> <pct>` (% de bascule par modèle) et `cqr compact dynamic on|off`.
+- **README réécrit** (encore) pour les non-développeurs : phrases courtes, analogie du standard téléphonique, une seule commande à retenir (`cqr status`), sections « ce qui est actif tout seul » / « problèmes courants » / « référence », et une note claire sur le piège « deux clés du même compte = même quota » avec la vérification `Organization-Id`.
+- 19 suites de tests, toutes vertes.
+
 ## 0.6.4
 
 - **Nouveau : `cqr remove <nom>`** (alias `rm`) — retire un compte de la config sans éditer `tokens.json` à la main. Utile pour nettoyer un doublon : deux tokens générés depuis le même compte Claude pointent vers la **même organisation** (donc le même quota — la bascule ne sert alors à rien). Astuce de diagnostic : l'endpoint gratuit `/v1/messages/count_tokens` renvoie l'en-tête `Anthropic-Organization-Id` ; si deux comptes ont le même, ce sont en réalité le même compte, il faut en régénérer un depuis un abonnement Claude réellement distinct.

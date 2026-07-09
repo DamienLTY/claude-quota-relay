@@ -1,20 +1,20 @@
 # claude-quota-relay
 
-**Vous avez plusieurs abonnements Claude et vous voulez que Claude Code passe de l'un à l'autre tout seul quand l'un est à court de quota — au lieu de planter en plein milieu d'une tâche.** C'est exactement ce que fait ce projet : un petit programme qui tourne discrètement sur votre ordinateur, entre Claude Code et Anthropic, et qui gère les changements de compte à votre place.
+**Le problème :** vous avez plusieurs abonnements Claude, mais Claude Code n'en utilise qu'un seul. Quand son quota est épuisé, il s'arrête net :
 
-**Sans ce projet**, quand votre quota de 5 heures est épuisé, Claude Code affiche une erreur et s'arrête :
 ```
 API Error: Request rejected (429) · This request would exceed your account's rate limit.
 ```
-Il faut alors attendre, ou changer de compte à la main.
 
-**Avec ce projet**, ça ne se voit jamais : le relais bascule automatiquement sur un autre compte, ou patiente si tous sont pleins, et Claude Code reprend tout seul dès que possible — même en plein milieu d'une longue tâche ou d'un sous-agent.
+**La solution :** ce projet installe un petit programme qui tourne sur votre ordinateur, entre Claude Code et Anthropic. Il jongle entre vos comptes tout seul. Quand l'un est plein, il passe au suivant. Quand ils sont tous pleins, il attend qu'un quota se libère et reprend automatiquement — même au milieu d'une longue tâche. Vous ne voyez rien, ça continue.
 
-> Projet indépendant, gratuit, non affilié à Anthropic. Utilisez uniquement des comptes qui vous appartiennent, dans le respect des conditions d'utilisation d'Anthropic.
+> Une image : c'est un standard téléphonique. Claude Code appelle un seul numéro (votre ordinateur) ; le standard redirige l'appel vers celui de vos comptes qui peut répondre.
+
+Projet indépendant, gratuit, non affilié à Anthropic. N'utilisez que des comptes **qui vous appartiennent**, dans le respect des conditions d'Anthropic.
 
 ---
 
-## Démarrage en 3 étapes
+## Installer (3 commandes)
 
 ```bash
 git clone https://github.com/DamienLTY/claude-quota-relay.git
@@ -22,269 +22,233 @@ cd claude-quota-relay
 node src/install.js
 ```
 
-L'installeur vous pose quelques questions (combien de comptes, comment récupérer leurs tokens), configure tout, puis vous dit de redémarrer Claude Code. C'est tout — pas d'alias à créer, pas de fichier à éditer à la main (sauf si vous préférez, voir plus bas).
+L'installeur vous pose 2 questions (combien de comptes, et comment donner leur clé), configure tout seul, et vous dit de redémarrer. Puis :
 
-**Prérequis** : [Node.js](https://nodejs.org) version 18 ou plus, et le CLI Claude Code déjà installé.
+1. **Redémarrez Claude Code.**
+2. Ouvrez un **nouveau** terminal et tapez `cqr status`.
 
----
+**Il vous faut juste :** [Node.js](https://nodejs.org) version 18 ou plus, et Claude Code déjà installé.
 
-## Sommaire
+### Donner la clé de chaque compte
 
-- [Ce que fait ce projet, en détail](#ce-que-fait-ce-projet-en-détail)
-- [Installation](#installation)
-- [Mettre à jour](#mettre-à-jour-vous-aviez-déjà-installé-une-version-)
-- [Utilisation au quotidien](#utilisation-au-quotidien)
-- [Fonctionnalités avancées (optionnelles)](#fonctionnalités-avancées-optionnelles) — auto-compaction, statusline en direct, garde-fou workflow
-- [Les timeouts](#les-timeouts-pourquoi-lattente-marche-vraiment)
-- [Réseau d'entreprise (api.anthropic.com bloqué)](#réseau-dentreprise-apianthropiccom-bloqué)
-- [Dépannage](#dépannage)
-- [Configuration complète](#configuration-complète)
-- [Sécurité](#sécurité)
-- [Limites honnêtes](#limites-honnêtes)
-- [Désinstallation](#désinstallation)
+Pour chaque compte, l'installeur demande : **navigateur** ou **coller** ?
+
+- **Navigateur** (le plus simple) : une fenêtre s'ouvre, vous vous connectez à ce compte Claude, la clé est récupérée toute seule.
+- **Coller** : tapez `paste`, puis collez une clé que vous avez déjà (format `sk-ant-oat01-…`, obtenue via la commande `claude setup-token`). Pratique si le navigateur est bloqué sur votre machine.
+
+> ⚠️ **Le piège le plus courant.** Vos comptes doivent être **vraiment différents** (deux abonnements, deux emails). Si vous générez deux clés en étant connecté au **même** compte Claude, ce sont deux clés du même compte → même quota → la bascule ne sert à rien. Comment vérifier : voir [« Mes deux comptes montrent le même quota »](#mes-deux-comptes-montrent-toujours-le-même-quota) plus bas.
 
 ---
 
-## Ce que fait ce projet, en détail
+## Au quotidien
 
-Claude Code ne connaît qu'**un seul** token d'authentification, lu une seule fois au démarrage. Impossible d'en changer en cours de route par vous-même, et impossible de lui en donner plusieurs à la fois. Si vous avez 2, 3 abonnements Claude, vous ne pouvez normalement en utiliser qu'un à la fois.
-
-La solution : Claude Code peut être configuré pour envoyer toutes ses requêtes vers une adresse locale (`http://127.0.0.1:8787`) au lieu d'aller directement chez Anthropic. C'est cette adresse locale qu'occupe notre **proxy** — un programme qui reçoit chaque requête, choisit le meilleur compte disponible, et la retransmet à Anthropic avec le bon token. Claude Code ne voit pas la différence.
-
-Concrètement, à chaque requête, le proxy :
-
-1. **Choisit le compte le plus frais** (celui dont le quota 5 h est le plus bas), sans changer de compte pour un rien tant que celui utilisé reste correct.
-2. **Lit la vraie utilisation** renvoyée par Anthropic dans la réponse (des informations que Claude Code lui-même ne regarde pas), pour savoir précisément où en est chaque compte.
-3. **Change de compte automatiquement** si celui utilisé se fait refuser (erreur 429).
-4. **Attend, si vraiment tous les comptes sont pleins** — la requête reste ouverte (Claude Code croit juste que le serveur met du temps à répondre) jusqu'à ce qu'un quota se libère, puis repart toute seule. Plus besoin de retaper « continue ».
-
-## Installation
+Une seule commande à retenir :
 
 ```bash
-git clone https://github.com/DamienLTY/claude-quota-relay.git
-cd claude-quota-relay
-node src/install.js
+cqr status
 ```
 
-L'installeur fait tout, dans l'ordre :
+Elle montre, pour chaque compte : le quota utilisé (sur 5 h et sur 7 jours), l'heure du prochain reset, et si une attente est en cours. Exemple :
 
-1. Il copie les fichiers du programme dans `~/.claude/claude-quota-relay/`.
-2. Il vous demande **combien de comptes Claude** vous voulez utiliser en rotation (2, 3, 5…).
-3. Pour **chaque compte**, il vous demande comment récupérer son token — deux choix (voir juste en dessous).
-4. Il modifie `~/.claude/settings.json` (en gardant une sauvegarde) pour que Claude Code passe par le proxy, avec les bons réglages pour que l'attente fonctionne vraiment.
-5. Il rend la commande **`cqr`** utilisable partout, tout de suite, sans que vous ayez à créer un alias vous-même.
-
-À la fin : **redémarrez Claude Code, et ouvrez un nouveau terminal** (un terminal déjà ouvert ne voit pas tout de suite la nouvelle commande `cqr`).
-
-### Récupérer le token de chaque compte : automatique ou manuel
-
-Pour chaque compte, l'installeur vous demande : **connexion automatique par navigateur**, ou **coller un token vous-même** ?
-
-- **Automatique (recommandé)** : l'installeur lance `claude setup-token`, votre navigateur s'ouvre, vous vous connectez normalement, et le token est récupéré tout seul — vous n'avez rien à copier.
-- **Manuel** : si vous préférez ne pas passer par le navigateur (ou si vous êtes sur une machine sans navigateur), tapez `paste` — on vous demande alors de coller directement un token que vous avez déjà (obtenu par exemple en lançant vous-même `claude setup-token` dans un autre terminal).
-
-Vous pouvez aussi **ne pas utiliser l'installeur interactif du tout** :
-
-```bash
-node src/install.js --no-interactive
+```
+Proxy   : EN COURS (port 8787)
+Actif   : compte-1
+ > [0] compte-1   on  quota:5h=42% 7d=25%  reset5h~4h05
+   [1] compte-2   on  quota:5h=9%  7d=1%   reset5h~4h05
 ```
 
-Ça crée un `tokens.json` avec des emplacements vides, que vous remplissez ensuite comme vous voulez :
+Le reste est optionnel :
 
 ```bash
-cqr login <nom>            # récupère le token via le navigateur
-cqr add [nom] --paste      # ajoute un compte en collant un token vous-même, sans navigateur
-cqr set <nom> <token>      # renseigne un token directement en une commande (pratique dans un script)
-```
-
-Ou encore plus simple : **éditez `tokens.json` vous-même** avec un éditeur de texte (son chemin exact est affiché par l'installeur, en général `~/.claude/claude-quota-relay/tokens.json`), en remplaçant les emplacements vides par vos tokens (format : `sk-ant-oat01-…`, obtenu via `claude setup-token`). Une fois fait, lancez `cqr sync-env` puis redémarrez Claude Code.
-
-## Mettre à jour (vous aviez déjà installé une version ?)
-
-La mise à jour est **sans risque** : l'installeur préserve vos tokens, votre port et vos réglages, et n'ajoute **jamais deux fois** ses hooks ni sa statusline.
-
-```bash
-cd claude-quota-relay
-git pull
-node src/install.js        # redevient non-interactif tout seul si tokens.json existe déjà
-```
-
-Puis **redémarrez Claude Code**. Ce que fait la mise à jour, précisément :
-- recopie les fichiers du proxy (nouvelles fonctionnalités incluses) ;
-- complète `tokens.json` avec les nouveaux réglages par défaut, **sans toucher** à vos tokens ni à vos réglages existants ;
-- ajoute les nouveaux hooks (mémoire, garde-fou workflow) **une seule fois**, jamais en double ;
-- ajoute ou rafraîchit la **statusline** de quota (en gardant la vôtre si vous en aviez déjà une) ;
-- **sauvegarde** `settings.json` avant toute modification.
-
-Rien à réactiver de force : les fonctionnalités optionnelles (auto-compaction) restent **désactivées par défaut**, vous les activez quand vous voulez. (Si votre config Claude Code n'est pas dans `~/.claude`, ajoutez `--config-dir <chemin>` à la commande.)
-
-## Utilisation au quotidien
-
-Une fois installé, `cqr` fonctionne depuis n'importe quel dossier, sans rien à activer.
-
-**Les commandes de base :**
-
-```bash
-cqr status                 # état du proxy : quota par compte (5h/7j), heure des resets, attente en cours
-cqr list                   # liste les comptes (tokens masqués, jamais affichés en clair)
-cqr use <nom|index>        # force un compte précis (ignore les règles automatiques, jusqu'à cqr auto)
-cqr auto                   # revient au mode automatique
-cqr start | stop | restart # démarre / arrête / redémarre le proxy
+cqr list                 # liste les comptes (clés masquées)
+cqr start | stop | restart   # gère le programme
+cqr use <nom>            # force un compte précis
+cqr auto                 # revient au choix automatique
 ```
 
 **Gérer les comptes :**
 
 ```bash
-cqr login <nom>            # (re)connecte un compte via le navigateur
-cqr login <nom> --paste    # (re)connecte un compte en collant un token vous-même
-cqr add [nom]              # ajoute un nouveau compte (mêmes choix : navigateur ou --paste)
-cqr set <nom> <token>      # renseigne un token directement, sans prompt (utile en script)
-cqr sync-env               # recopie le 1er token dans settings.json
+cqr add [nom]            # ajoute un compte (navigateur, ou --paste pour coller)
+cqr login <nom>          # reconnecte un compte
+cqr set <nom> <clé>      # met une clé directement, sans question
+cqr remove <nom>         # retire un compte
 ```
 
-**Régler le comportement :**
+---
+
+## Ce qui est actif tout seul (rien à faire)
+
+### La bascule + l'attente
+
+Le cœur du projet. À chaque requête, le programme choisit le compte le moins chargé, change de compte si celui-ci est refusé, et **patiente** si tous sont pleins (la requête reste ouverte, Claude Code croit juste que ça répond lentement, puis ça repart). Toujours actif.
+
+Réglage principal — **à quel pourcentage changer de compte** :
 
 ```bash
-cqr policy                 # affiche les seuils actuels (à quel % on préfère changer de compte, etc.)
-cqr policy waitsoft 85     # attendre dès 85 % de quota au lieu de le consommer jusqu'à 100 %
-cqr policy port 8788       # change le port du proxy (tokens.json + settings.json), puis cqr restart
+cqr policy                     # voir les réglages
+cqr policy waitsoft 85         # attendre dès 85 % au lieu d'aller jusqu'à 100 %
 ```
 
-## Fonctionnalités avancées (optionnelles)
+### L'auto-compaction (active par défaut)
 
-Ces trois fonctionnalités sont indépendantes du cœur du projet (bascule + attente, toujours actives). Elles s'activent séparément.
+**Quand le programme change de compte, il allège la requête envoyée au nouveau compte** — sans rien perdre. Il demande à Anthropic d'effacer les vieux résultats d'outils de la conversation (en gardant les plus récents), une fonction officielle qui **ne coûte aucun token**. Résultat : le compte tout neuf se remplit beaucoup plus lentement. Mesuré jusqu'à **-98 %** de tokens.
 
-### Statusline — voir le quota de tous vos comptes en direct
+Rien n'est perdu : Claude Code garde tout son historique en local, on allège seulement ce qui part sur le réseau.
 
-L'installeur ajoute une ligne d'état compacte et colorée, visible en permanence dans Claude Code :
+C'est **actif par défaut**. Ça n'agit qu'au moment d'un changement de compte, donc votre usage normal n'est pas touché. Pour régler ou couper :
+
+```bash
+cqr compact                    # voir l'état + tous les réglages
+cqr compact off                # tout couper
+cqr compact threshold opus 89  # % de quota qui déclenche la bascule pour Opus (défaut ci-dessous)
+```
+
+**Le % de bascule dépend du modèle** (un gros modèle risque plus de dépasser le quota d'un coup, donc on bascule plus tôt) :
+
+| Modèle | Bascule à | Pourquoi |
+|---|---|---|
+| Fable | 85 % | peut sauter de 85 à 100 % en une requête |
+| Opus | 89 % | gros modèle |
+| Sonnet | 90 % | — |
+| Haiku | 95 % | peu cher, on peut le pousser |
+
+Change-les avec `cqr compact threshold <modèle> <pourcentage>`.
+
+<details>
+<summary>Réglage « seuil dynamique » (avancé, désactivé par défaut)</summary>
+
+Le programme peut aussi **avancer** la bascule quand la conversation est déjà énorme (car une requête géante consomme beaucoup d'un coup). Sur un très gros contexte Opus (~800 000 tokens), ça faisait basculer dès ~68 % au lieu de 89 %. C'est mathématiquement prudent, mais **trop agressif** puisque l'auto-compaction réduit déjà la requête. Donc **désactivé par défaut**. Pour l'activer :
+
+```bash
+cqr compact dynamic on
+cqr compact buffer 4     # marge de sécurité, en points
+```
+</details>
+
+### La statusline (barre d'état)
+
+Une ligne toujours visible dans Claude Code, montrant le quota de tous vos comptes :
 
 ```
 5h █████████░ 84% ↻ 19h30 │ 7j ① ███░ 86% │ ② ████ 99%
 ```
 
-- **5h** : une seule barre qui représente toute votre flotte de comptes — avec 2 comptes, chacun occupe la moitié de la barre et la remplit selon SON propre usage (avec 3 comptes, un tiers chacun, etc.). La barre entière donne donc une vue d'ensemble. Juste après : la moyenne, puis l'**heure réelle** (pas un compte à rebours) à laquelle le prochain compte va se réinitialiser — parce qu'une statusline ne se rafraîchit pas magiquement toute seule à la seconde près.
-- **7j** : une petite barre **par compte** (①②③…) avec son pourcentage sur la fenêtre de 7 jours.
-- Les couleurs (vert / jaune / rouge) indiquent le niveau d'usage ; désactivables avec la variable d'environnement `NO_COLOR`.
+Elle se met à jour **toute seule toutes les ~45 secondes**, même quand vous ne faites rien et attendez qu'un quota revienne — grâce à une petite vérification quasi gratuite (0 token de sortie). Réglage : `cqr live 30` (secondes) ou `cqr live off`. Si vous aviez déjà une barre d'état, la vôtre est gardée et la nôtre ajoutée à côté.
 
-**Mise à jour en direct, même sans rien faire.** Même quand tous vos comptes sont déjà à sec et que vous avez juste Claude Code ouvert en attendant qu'un quota se libère, les chiffres continuent de bouger : le proxy interroge Anthropic en arrière-plan toutes les **45 secondes environ** (réglable) pour rafraîchir **les deux comptes**, avec une requête quasi gratuite (0 token de sortie, ~8 tokens d'entrée) — donc ça ne consomme jamais de votre quota réel. Réglages :
+### Le garde-fou « workflow »
 
-```bash
-cqr live status   # affiche l'intervalle actuel
-cqr live 30       # rafraîchit toutes les 30 secondes au lieu de 45
-cqr live off       # désactive le rafraîchissement en arrière-plan
-```
-
-Si vous **aviez déjà** une statusline personnalisée, elle est **conservée** telle quelle, et la nôtre est ajoutée juste après un séparateur `│` — jamais en double, même après une réinstallation. La désinstallation restaure votre statusline d'origine.
-
-### Auto-compaction — réduire les tokens consommés au changement de compte
-
-Quand le proxy bascule vers un autre compte, la requête envoyée à ce nouveau compte peut être **allégée automatiquement**, sans perte d'information, avant même d'y toucher. Deux mécanismes, tous deux **désactivés par défaut** :
-
-1. **Réduction des tokens (0 token de résumé).** Le proxy demande à Anthropic d'effacer, côté serveur, les vieux résultats d'outils de la conversation (en gardant les 10 derniers), une fonctionnalité native appelée *context editing*. Mesuré en conditions réelles : jusqu'à **-98 %** de tokens envoyés. Rien n'est perdu : Claude Code garde tout son historique local, on allège seulement ce qui est transmis au réseau.
-2. **Mémoire de projet.** Un fichier `.cqr-memory.md`, un par projet, résume les tâches faites / en cours / prévues. Il est mis à jour par **Haiku** (le modèle le moins cher) au moment du changement de compte, puis réinjecté au début de la conversation sur le nouveau compte — et vous (ou l'agent) pouvez continuer à l'enrichir.
-
-**Le compactage dépense la marge du compte qu'on quitte, pas celle du compte frais** : puisque l'ancien compte va de toute façon se réinitialiser dans quelques heures, autant utiliser ce qu'il lui reste plutôt que d'entamer le quota tout neuf du nouveau compte. Le proxy ne bascule sur le compte frais pour cette opération que si l'ancien est vraiment bloqué.
-
-**Activation prudente**, puisque ça touche à de vraies requêtes :
+L'outil **Workflow** de Claude Code (qui lance plein de sous-agents d'un coup) abandonne un sous-agent bloqué au bout de ~18 minutes, et **le relais ne peut pas prolonger ce délai**. Donc, avant un gros workflow, un avertissement s'affiche si le quota est trop juste.
 
 ```bash
-cqr compact dry-run   # ne change RIEN, mais note dans les journaux ce qu'il aurait fait — pour observer avant d'activer
-cqr compact on        # active pour de vrai, puis : cqr restart
-cqr compact off        # désactive à tout moment
+cqr preflight       # est-ce prudent de lancer un workflow maintenant ?
+cqr guard ask       # (défaut) demande confirmation si risqué
+cqr guard off       # désactive l'avertissement
 ```
 
-Réglages avancés (`cqr compact status` pour tout voir) : à quel pourcentage de quota déclencher le changement selon le modèle utilisé, combien de temps minimum entre deux compactages (`cqr compact cooldown <minutes>`), une marge de sécurité supplémentaire quand la conversation est déjà très grosse (`cqr compact buffer <points>`), et un mode de secours (`cqr compact mode strip`) si jamais la méthode native pose souci avec votre version de Claude Code.
+---
 
-### Garde-fou workflow — éviter qu'un gros workflow ne se bloque
+## Problèmes courants
 
-L'outil **Workflow** de Claude Code (qui lance plusieurs sous-agents en parallèle) a sa propre limite interne : si un sous-agent ne progresse plus pendant environ 18 minutes, il abandonne — et ce délai ne peut **pas** être prolongé par le relais, même en attendant un quota. Pour éviter la mauvaise surprise, un avertissement se déclenche **avant** de lancer un gros workflow si le quota restant est trop juste :
+### Mes deux comptes montrent toujours le même quota
+
+Vos deux clés viennent probablement du **même compte Claude** (voir le piège plus haut). Vérifiez, sans dépenser de quota — pour chaque clé :
 
 ```bash
-cqr preflight         # affiche le quota de chaque compte et dit si c'est prudent de lancer un workflow
-cqr guard ask         # (par défaut) demande confirmation quand c'est risqué
-cqr guard deny        # bloque carrément dans ce cas
-cqr guard 30          # n'avertit que si même le meilleur compte est déjà à 30 % ou plus
-cqr guard off         # désactive l'avertissement
+curl -s -D - -o /dev/null -X POST https://api.anthropic.com/v1/messages/count_tokens \
+  -H "authorization: Bearer VOTRE_CLÉ" -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" \
+  -d '{"model":"claude-haiku-4-5","messages":[{"role":"user","content":"hi"}]}' | grep -i organization-id
 ```
 
-## Les timeouts (pourquoi l'attente marche vraiment)
+(Sur un réseau d'entreprise, remplacez `https://api.anthropic.com` par votre relais.)
 
-Retenir une requête pendant plusieurs minutes ou plusieurs heures ne fonctionne que parce que l'installeur règle ces variables dans `settings.json`. Si vous voyez un jour l'erreur `Request timed out · attempt N/10`, c'est que l'une d'elles manque :
+- **`Organization-Id` différents** → deux vrais comptes, tout va bien.
+- **`Organization-Id` identiques** → c'est le même compte. Régénérez une clé depuis un **autre** abonnement : connectez-vous à https://claude.ai, **déconnectez-vous complètement**, reconnectez-vous avec l'autre compte, puis relancez `claude setup-token`. Mettez la nouvelle clé avec `cqr set <nom> <clé>`.
 
-| Variable | Valeur posée | Rôle |
-|---|---|---|
-| `ANTHROPIC_BASE_URL` | `http://127.0.0.1:8787` | fait passer Claude Code par le proxy |
-| `API_TIMEOUT_MS` | 7 jours | délai maximum global d'une requête |
-| `CLAUDE_STREAM_IDLE_TIMEOUT_MS` | 7 jours | **la plus importante** : Claude Code a un délai de sécurité codé en dur à 5 minutes qui n'est PAS réarmé par le signal d'attente du proxy. Sans ce réglage, toute requête retenue meurt au bout de 5 minutes. |
-| `CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS` | 7 jours | permet aux **sous-agents** d'attendre aussi (par défaut, 3 minutes seulement) |
-| `CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS` | 2 minutes | garde-fou technique bas niveau ; déjà satisfait par le signal que le proxy envoie toutes les 20 secondes |
+### `cqr status` dit ARRÊTÉ même après `cqr start`
 
-## Réseau d'entreprise (api.anthropic.com bloqué)
+Le programme a planté au démarrage. `cqr start` vous montre alors la cause. Les plus fréquentes :
 
-Sur certains réseaux professionnels, l'adresse `api.anthropic.com` est bloquée par la sécurité de l'entreprise, et il faut passer par un relais personnel (par exemple un Cloudflare Worker) pour atteindre Anthropic. Si votre `settings.json` contient déjà une variable **`ANTHROPIC_TARGET_API_URL`** pointant vers ce relais, **le proxy la détecte et l'utilise automatiquement** — pour tout : la bascule entre comptes, les sondes de quota, la statusline en direct, et les appels de l'auto-compaction. Rien à configurer de votre côté : si la variable est là, tout ce que fait ce projet passe par elle plutôt que par `api.anthropic.com` directement.
+- **Le port est déjà pris** (message `EADDRINUSE`). Si vous utilisez Cloudflare Workers, `wrangler dev` prend le même port par défaut. → Changez-en un : `cqr policy port 8788`, puis `cqr restart`.
+- **Un fichier manque ou est abîmé** → relancez `node src/install.js`.
+- **Un antivirus d'entreprise** bloque les programmes en arrière-plan → lancez-le au premier plan pour voir l'erreur : `node ~/.claude/claude-quota-relay/proxy.js`.
 
-L'installeur vous confirme la détection au moment de l'installation (« réseau d'entreprise détecté »). Si vous ajoutez cette variable **après** avoir déjà installé et démarré le proxy, un redémarrage est nécessaire : `cqr restart` (fonctionne aussi bien lancé à la main que via Claude Code — la variable est relue depuis `settings.json` à chaque démarrage). Vous pouvez vérifier quel hôte est réellement utilisé dans `proxy.log` (ligne `upstream=...` au démarrage).
+Les journaux détaillés sont dans `~/.claude/claude-quota-relay/proxy.log`.
 
-## Configuration complète
+### Réseau d'entreprise (api.anthropic.com bloqué)
 
-Tous les réglages vivent dans un seul fichier : `~/.claude/claude-quota-relay/tokens.json`.
+Si `api.anthropic.com` est bloqué chez vous et que vous passez par un relais perso (ex. un Cloudflare Worker), mettez son adresse dans `settings.json` sous la variable **`ANTHROPIC_TARGET_API_URL`**. Le programme la détecte et l'utilise **partout** automatiquement (bascule, vérifications de quota, statusline, compaction). Après l'avoir ajoutée : `cqr restart`.
+
+### `Request timed out · attempt N/10`
+
+Il manque un réglage de timeout dans `settings.json`. Relancez `node src/install.js`, qui les repose (voir le tableau plus bas).
+
+---
+
+## Référence
+
+### Mettre à jour
+
+```bash
+cd claude-quota-relay
+git pull
+node src/install.js
+```
+
+Sans risque : vos clés, votre port et vos réglages sont conservés ; les hooks et la barre d'état ne sont jamais dupliqués ; `settings.json` est sauvegardé avant modification. Redémarrez Claude Code ensuite.
+
+### Le fichier de config
+
+Tout est dans `~/.claude/claude-quota-relay/tokens.json` :
 
 ```jsonc
 {
   "port": 8787,
-  "switchAtPercent": 94,       // préférer un autre compte dès que celui-ci dépasse ce % (5h)
-  "sevenDayBlockPercent": 99,  // ne jamais router vers un compte au-delà de ce % (7j)
-  "waitAtSoftPercent": null,   // null = consommer la marge 90-100% avant d'attendre ; un chiffre = attendre dès ce %
-  "maxWaitMs": 604800000,      // durée maximale de rétention d'une requête (7 jours)
-  "pollMs": 15000,             // fréquence de ré-évaluation pendant une attente active
-  "livePollMs": 45000,         // fréquence de rafraîchissement en arrière-plan pour la statusline (0 = désactivé)
+  "switchAtPercent": 94,       // % de 5h au-delà duquel on préfère un autre compte
+  "sevenDayBlockPercent": 99,  // ne jamais utiliser un compte au-delà de ce % sur 7j
+  "waitAtSoftPercent": null,   // null = consommer jusqu'à 100 % avant d'attendre
+  "maxWaitMs": 604800000,      // attente maximale d'une requête (7 jours)
+  "livePollMs": 45000,         // rafraîchissement de la statusline (0 = coupé)
   "tokens": [
-    { "name": "account-1", "token": "sk-ant-oat01-…", "enabled": true },
-    { "name": "account-2", "token": "sk-ant-oat01-…", "enabled": true },
-    { "name": "account-3", "token": "sk-ant-oat01-…", "enabled": true }
+    { "name": "compte-1", "token": "sk-ant-oat01-…", "enabled": true },
+    { "name": "compte-2", "token": "sk-ant-oat01-…", "enabled": true }
   ]
 }
 ```
 
-Les blocs `compaction` et `workflowGuard` (auto-compaction et garde-fou, voir plus haut) sont ajoutés automatiquement par l'installeur, avec leurs propres réglages détaillés dans les sections correspondantes.
+Les blocs `compaction` et `workflowGuard` sont ajoutés automatiquement.
 
-## Sécurité
+### Les timeouts (pourquoi l'attente marche)
 
-- `tokens.json`, `state.json` et les journaux (`*.log`) sont **ignorés par git** — ils ne seront jamais commités par erreur.
-- Vos tokens ne quittent jamais votre machine : le proxy n'écoute que sur `127.0.0.1` (uniquement accessible depuis votre propre ordinateur).
-- Les journaux du proxy masquent toujours les tokens (jamais affichés en clair).
+Retenir une requête plusieurs heures ne marche que grâce à ces variables, posées par l'installeur dans `settings.json` :
 
-## Limites honnêtes
+| Variable | Valeur | Rôle |
+|---|---|---|
+| `ANTHROPIC_BASE_URL` | `http://127.0.0.1:8787` | fait passer Claude Code par le programme |
+| `API_TIMEOUT_MS` | 7 jours | délai maximum d'une requête |
+| `CLAUDE_STREAM_IDLE_TIMEOUT_MS` | 7 jours | **la plus importante** : sinon toute requête en attente meurt au bout de 5 min |
+| `CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS` | 7 jours | laisse les **sous-agents** attendre aussi |
+| `CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS` | 2 min | garde-fou bas niveau, déjà couvert par le signal du programme |
 
-- Les rares requêtes qui ne sont **pas** en streaming ne peuvent pas recevoir le signal d'attente ; si elles tombent pile en pleine saturation, elles peuvent être coupées puis rejouées automatiquement.
-- Si votre ordinateur **se met en veille** pendant une longue attente, la connexion peut se couper ; Claude Code réessaie tout seul au réveil.
-- La protection sur la fenêtre de 7 jours d'un compte ne s'active qu'**après** avoir vu au moins une réponse de ce compte.
-- Le proxy retient chaque requête sur une seule connexion ; ça fonctionne même pour des attentes de plusieurs heures, mais c'est plus fluide avec `cqr policy waitsoft 85`.
-- L'outil **Workflow** de Claude Code a son propre délai d'abandon par sous-agent (~18 minutes) que le relais ne peut techniquement pas prolonger, même en jouant sur les timeouts ou le signal d'attente. Conseil : lancez un gros workflow quand **au moins un compte** a encore du quota (voir `cqr preflight`).
+### Sécurité
 
-## Dépannage
+- `tokens.json`, `state.json` et les journaux sont **ignorés par git** : jamais commités par erreur.
+- Vos clés ne quittent jamais votre machine : le programme n'écoute que sur `127.0.0.1` (votre ordinateur seul).
+- Les journaux masquent toujours les clés.
 
-### `cqr status` affiche toujours ARRÊTÉ, même après `cqr start`
+### Limites honnêtes
 
-`cqr start`/`cqr restart` vérifient désormais réellement que le proxy répond (jusqu'à ~3 secondes) — s'il plante, la commande vous l'affichera clairement avec les dernières lignes du journal d'erreur, au lieu de dire faussement « Proxy démarré ». Si vous voyez cette erreur, les causes les plus fréquentes sont :
+- Une requête **non-streaming** tombant pile en pleine saturation peut être coupée puis rejouée.
+- Si l'ordinateur se **met en veille** pendant une attente, la connexion peut se couper ; Claude Code réessaie au réveil.
+- La protection sur les 7 jours ne s'active qu'après une première réponse du compte.
+- L'outil **Workflow** a son propre délai (~18 min par sous-agent) que le relais ne peut pas prolonger. Lancez un gros workflow quand au moins un compte a du quota (`cqr preflight`).
 
-- **Un fichier du proxy manque ou est corrompu** → relancez l'installeur pour tout recopier proprement : `node src/install.js` (depuis le dossier du repo cloné).
-- **Le port est déjà utilisé** par autre chose sur votre machine (message `EADDRINUSE` dans `proxy.log` — si vous utilisez Cloudflare Workers, `wrangler dev` prend exactement le même port par défaut) → changez de port en une commande : `cqr policy port 8788`, puis `cqr restart`.
-- **Un antivirus ou un logiciel de sécurité d'entreprise** bloque les processus lancés en arrière-plan (fréquent sur les PC professionnels). Pour voir l'erreur exacte en direct, lancez le proxy au premier plan :
-  ```bash
-  node ~/.claude/claude-quota-relay/proxy.js
-  ```
-  L'erreur s'affichera immédiatement dans le terminal. Vous pouvez aussi consulter directement les journaux :
-  ```bash
-  cat ~/.claude/claude-quota-relay/proxy.out.log   # trace brute d'un plantage éventuel
-  cat ~/.claude/claude-quota-relay/proxy.log        # journal normal du proxy
-  ```
-
-## Désinstallation
+### Désinstaller
 
 ```bash
-node src/uninstall.js          # retire nos réglages et hooks (garde une sauvegarde de settings.json), restaure votre statusline d'origine, conserve tokens.json et la commande cqr
-node src/uninstall.js --purge  # supprime en plus le dossier d'installation, tokens.json, et retire cqr du PATH
+node src/uninstall.js          # retire nos réglages, garde tokens.json et la commande cqr
+node src/uninstall.js --purge  # retire tout, y compris tokens.json et la commande cqr
 ```
 
 Redémarrez Claude Code ensuite.

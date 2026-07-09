@@ -42,9 +42,12 @@ const COPY_FILES = ["proxy.js", "cli.js", "ensure-proxy.js", "lib.js", "compacti
 // because the Workflow tool's per-agent stall can't be extended by the relay.
 const WORKFLOW_GUARD_DEFAULT = { enabled: true, mode: "ask", percent: 50 };
 
-// Default auto-compaction config: OFF + dry-run so the user opts in after observing.
+// Default auto-compaction config: ON (native context-editing, 0 token). It only acts ON a
+// switch/resume, so normal single-account use is untouched. dynamicThreshold is OPT-IN (the
+// static per-model thresholds below are the switch points; the dynamic one is too aggressive
+// once compaction shrinks the request anyway).
 const COMPACTION_DEFAULT = {
-  enabled: false, dryRun: true, mode: "native",
+  enabled: true, dryRun: false, mode: "native", dynamicThreshold: false,
   thresholds: { fable: 85, opus: 89, sonnet: 90, haiku: 95, default: 88 },
   keepToolUses: 10, triggerTokens: 2000, compactBeforeResume: true, compactionCooldownMs: 600000,
   memoryFile: ".cqr-memory.md", memoryMaxLines: 400, archiveDir: ".cqr-archive",
@@ -224,5 +227,5 @@ function setupStatusline(settings) {
   if (alias.changed) console.log("  2. Ouvrez un " + bold("nouveau terminal") + " et lancez : " + bold("cqr status"));
   else console.log("  2. Lancez : " + bold("cqr status"));
   console.log("");
-  info("l'auto-compaction (réduit les tokens sur le 2e compte) est désactivée par défaut — essayez : cqr compact dry-run");
+  info("l'auto-compaction est ACTIVE par défaut (réduit les tokens lors d'un changement de compte, 0 token). Réglages : cqr compact — pour la couper : cqr compact off");
 })().catch((e) => { console.error("\nÉchec de l'installation : " + e.message); process.exit(1); });

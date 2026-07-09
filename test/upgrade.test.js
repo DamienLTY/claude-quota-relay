@@ -30,6 +30,12 @@ assert.strictEqual(r1.status, 0, "installer exits 0: " + (r1.stderr || ""));
 
 const tok = rd(p.join(IDIR, "tokens.json"));
 assert.ok(tok.compaction && tok.workflowGuard, "backfilled compaction + workflowGuard");
+// compaction is ON by default now (the v1 config had no compaction key -> backfills to the
+// new default), with the dynamic threshold OPT-IN (static per-model thresholds are the switch
+// points; the dynamic one over-switched on large Opus contexts).
+assert.strictEqual(tok.compaction.enabled, true, "compaction enabled by default");
+assert.strictEqual(tok.compaction.dryRun, false, "not dry-run by default");
+assert.strictEqual(tok.compaction.dynamicThreshold, false, "dynamic threshold opt-in (off) by default");
 assert.strictEqual(tok.port, 9999, "custom port preserved (no --port given)");
 assert.strictEqual(tok.tokens[0].token, FAKE, "existing token preserved");
 

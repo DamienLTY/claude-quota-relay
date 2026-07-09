@@ -140,12 +140,19 @@ const rState = (h5a, h5b) => ({ activeIndex: 0, exhausted: {}, pct: { a: { h5: h
   assert.strictEqual(route.idx, 1, "fable @90%: switches away well before the old flat 94% threshold");
 }
 {
-  // huge context on a risky model pushes the dynamic threshold down further still
-  const conf = twoTokens();
-  const st = rState(80, 40);
-  const body = { model: "claude-fable-5", messages: [{ role: "user", content: "x".repeat(50_000_000) }] };
-  const route = pickRoute(conf, st, body);
-  assert.strictEqual(route.idx, 1, "fable with a huge already-filled context switches even at 80%");
+  // DYNAMIC OFF (default): a huge Opus context does NOT trigger an early switch -- it waits
+  // for the static per-model threshold (89%). This is the reported "switched at 68% instead
+  // of 89% on Opus" case: with dynamic off (the new default), it stays until 89%.
+  const conf = twoTokens(); // compaction.enabled true, no dynamicThreshold flag -> off
+  const bigOpus = { model: "claude-opus-4-8", messages: [{ role: "user", content: "x".repeat(Math.round(829_000 * 3.5)) }] };
+  assert.strictEqual(pickRoute(conf, rState(68, 40), bigOpus).idx, 0, "dynamic off: Opus @68% with huge context STAYS (waits for static 89%)");
+  assert.strictEqual(pickRoute(conf, rState(90, 40), bigOpus).idx, 1, "dynamic off: Opus @90% (>=89 static) switches");
+}
+{
+  // DYNAMIC ON (opt-in): the same huge Opus context lowers the switch point to ~68%.
+  const conf = twoTokens(); conf.compaction = { enabled: true, dynamicThreshold: true, thresholds: {} };
+  const bigOpus = { model: "claude-opus-4-8", messages: [{ role: "user", content: "x".repeat(Math.round(829_000 * 3.5)) }] };
+  assert.strictEqual(pickRoute(conf, rState(68, 40), bigOpus).idx, 1, "dynamic on: Opus @68% with huge context switches early");
 }
 {
   // compaction disabled entirely -> behavior is EXACTLY the old flat switchAtPercent (94%),

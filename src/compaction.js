@@ -81,14 +81,17 @@ function dynamicThreshold(model, bodyObj, opts) {
   return Math.max(50, Math.min(99, Math.round(t)));
 }
 
-// Seuil EFFECTIF utilise a la fois par le routage (pickRoute) et la compaction : le plus
-// prudent (le plus bas) entre le seuil statique configure par modele et le seuil dynamique
-// calcule pour CETTE requete precise. Ne peut donc que switcher/compacter PLUS TOT que le
-// seuil statique seul, jamais plus tard -> narrows the exact "quota epuise pendant la
-// compaction" incident sans changer le comportement pour qui n'utilise pas la compaction.
+// Seuil EFFECTIF utilise a la fois par le routage (pickRoute) et la compaction. Par defaut :
+// le seuil STATIQUE par modele (Opus 89%, etc.). Le seuil DYNAMIQUE (qui baisse le point de
+// bascule quand le contexte est deja tres gros) est OPT-IN (cc.dynamicThreshold === true) car
+// il est trop agressif une fois la compaction active : la compaction reduit deja la requete
+// envoyee au compte frais, donc pas besoin de switcher aussi tot. Sur un gros contexte Opus
+// (~800k tokens) le dynamique tombait a ~68% -> bascule surprenante, signalee par un
+// utilisateur. Quand il est active, on prend le plus prudent (le plus bas) des deux.
 function effectiveSwitchThreshold(cc, model, bodyObj, opts) {
   const stat = modelThreshold(model, cc && cc.thresholds);
-  const dyn = dynamicThreshold(model, bodyObj, Object.assign({ safetyBufferPoints: cc && cc.dynamicSafetyBufferPoints }, opts));
+  if (!cc || !cc.dynamicThreshold) return stat;
+  const dyn = dynamicThreshold(model, bodyObj, Object.assign({ safetyBufferPoints: cc.dynamicSafetyBufferPoints }, opts));
   return Math.min(stat, dyn);
 }
 
