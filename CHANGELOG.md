@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.4
+
+- **Nouveau : `cqr remove <nom>`** (alias `rm`) — retire un compte de la config sans éditer `tokens.json` à la main. Utile pour nettoyer un doublon : deux tokens générés depuis le même compte Claude pointent vers la **même organisation** (donc le même quota — la bascule ne sert alors à rien). Astuce de diagnostic : l'endpoint gratuit `/v1/messages/count_tokens` renvoie l'en-tête `Anthropic-Organization-Id` ; si deux comptes ont le même, ce sont en réalité le même compte, il faut en régénérer un depuis un abonnement Claude réellement distinct.
+- Nouvelle suite de tests (`accounts.test.js`). 19 suites au total, toutes vertes.
+
 ## 0.6.3
 
 - **Fix — `cqr start`/`restart` manuel ignorait `ANTHROPIC_TARGET_API_URL`** : quand Claude Code démarre le proxy lui-même (hook `ensure-proxy.js`), il lui transmet automatiquement les variables de `settings.json`, dont `ANTHROPIC_TARGET_API_URL` sur les réseaux d'entreprise. Un `cqr start`/`restart` lancé à la main depuis un terminal (PowerShell, etc.) n'a PAS cette variable dans son propre environnement — le proxy retombait alors silencieusement sur `api.anthropic.com` direct, bloqué sur ces réseaux, et **tous les comptes remontaient un état identique et faux** (même réponse de blocage réseau pour chaque token). Un utilisateur a signalé exactement ce symptôme : quotas identiques à 100 % sur deux comptes réellement différents, alors que Claude Code lui-même fonctionnait normalement (car lancé via le hook, qui a la bonne variable). `cqr start`/`restart` relisent maintenant `ANTHROPIC_TARGET_API_URL` depuis `settings.json` et l'injectent explicitement si absent de l'environnement du terminal.

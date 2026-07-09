@@ -8,6 +8,7 @@
  *   cqr auto                   revient au mode automatique (failover + waiting)
  *   cqr reset                  oublie l'etat "epuise" (re-essaie tous les tokens)
  *   cqr set <nom> <token>      renseigne/ecrase le token d'un compte (script/manuel, sans prompt)
+ *   cqr remove <nom>           retire un compte de la config
  *   cqr login <nom> [--paste]  recapture un token (navigateur, ou --paste pour le coller soi-meme)
  *   cqr add [nom] [--paste]    ajoute un compte (navigateur, ou --paste pour le coller soi-meme)
  *   cqr policy [<cle> <val>]   affiche/modifie la politique (switch|block7d|waitsoft|maxwait)
@@ -244,6 +245,16 @@ switch (cmd) {
     const c = readConf(); let t = c.tokens.find((x) => x.name === a1);
     if (!t) { t = { name: a1, token: a2, enabled: true }; c.tokens.push(t); } else { t.token = a2; t.enabled = true; }
     writeConf(c); console.log("Token '" + a1 + "' enregistré (" + mask(a2) + ").");
+    break;
+  }
+  case "remove": case "rm": case "del": {
+    if (!a1) { console.error("Usage : cqr remove <nom>"); process.exit(1); }
+    const c = readConf();
+    const before = c.tokens.length;
+    c.tokens = c.tokens.filter((x) => x.name !== a1);
+    if (c.tokens.length === before) { console.error("Aucun compte nommé '" + a1 + "'. Voir : cqr list"); process.exit(1); }
+    writeConf(c);
+    console.log("Compte '" + a1 + "' retiré. Redémarrez le proxy : cqr restart");
     break;
   }
   case "policy": {
