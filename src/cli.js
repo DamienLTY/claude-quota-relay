@@ -44,10 +44,49 @@ function health(cb) {
   req.setTimeout(1500, () => { req.destroy(); cb(null); });
 }
 
+const OUT_LOG = p.join(DIR, "proxy.out.log");
+
 function startProxy() {
-  const out = fs.openSync(p.join(DIR, "proxy.out.log"), "a");
+  const out = fs.openSync(OUT_LOG, "a");
   const child = cp.spawn(process.execPath, [PROXY], { detached: true, stdio: ["ignore", out, out], windowsHide: true });
   child.unref();
+}
+
+// Last N lines of a (small) log file, or null if it doesn't exist / can't be read.
+function tailFile(path, maxLines) {
+  try {
+    const lines = fs.readFileSync(path, "utf8").split(/\r?\n/).filter(Boolean);
+    return lines.slice(-maxLines).join("\n");
+  } catch (e) { return null; }
+}
+
+// startProxy() spawns a DETACHED child and returns immediately -- it can't tell you whether
+// the process actually stayed up (crashed on a missing file, a port already in use, or killed
+// outright by corporate antivirus/EDR software that distrusts detached background processes,
+// all real failure modes reported by users). This polls the health endpoint for a few seconds
+// after spawning and, on failure, surfaces the crash log tail instead of a false "started".
+function startProxyAndVerify(cb) {
+  startProxy();
+  let tries = 0;
+  const check = () => {
+    health((h) => {
+      if (h) return cb(true);
+      tries++;
+      if (tries < 15) return setTimeout(check, 200); // ~3s total
+      cb(false);
+    });
+  };
+  setTimeout(check, 200);
+}
+function reportStartFailure() {
+  console.error("Le proxy a été lancé mais ne répond pas après 3 secondes (il a probablement planté).");
+  const out = tailFile(OUT_LOG, 20);
+  if (out) { console.error("\nDernières lignes de proxy.out.log :\n" + out); }
+  else { console.error("(proxy.out.log est vide ou introuvable — le process n'a peut-être même pas pu démarrer)"); }
+  console.error("\nCauses fréquentes :");
+  console.error("  - un fichier du proxy manque ou est corrompu -> relancez : node src/install.js (depuis le dossier du repo)");
+  console.error("  - le port " + (() => { try { return readConf().port || 8787; } catch (e) { return 8787; } })() + " est déjà utilisé par autre chose -> cqr policy, ou changez de port dans tokens.json");
+  console.error("  - un antivirus/EDR d'entreprise bloque les process détachés en arrière-plan -> vérifiez les journaux de votre antivirus, ou lancez le proxy au premier plan pour voir l'erreur : node \"" + PROXY + "\"");
 }
 
 function pidAlive(pid) { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } }
@@ -257,8 +296,8 @@ switch (cmd) {
     console.log("workflowGuard :", JSON.stringify(wg));
     break;
   }
-  case "start": health((h) => { if (h) console.log("Déjà en cours."); else { startProxy(); console.log("Proxy démarré."); } }); break;
+  case "start": health((h) => { if (h) console.log("Déjà en cours."); else startProxyAndVerify((ok) => { if (ok) console.log("Proxy démarré et opérationnel."); else { reportStartFailure(); process.exit(1); } }); }); break;
   case "stop": stopProxy((ok) => console.log(ok === true ? "Proxy arrêté." : ok === "unknown" ? "Le proxy répond mais aucun fichier PID (démarré hors du CLI ?)." : "Aucun proxy en cours.")); break;
-  case "restart": stopProxy(() => setTimeout(() => { startProxy(); console.log("Proxy redémarré."); }, 800)); break;
+  case "restart": stopProxy(() => setTimeout(() => { startProxyAndVerify((ok) => { if (ok) console.log("Proxy redémarré et opérationnel."); else { reportStartFailure(); process.exit(1); } }); }, 800)); break;
   default: console.error("Commande inconnue. Voir l'en-tête de cli.js ou le README."); process.exit(1);
 }

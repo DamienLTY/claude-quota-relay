@@ -37,6 +37,7 @@ L'installeur vous pose quelques questions (combien de comptes, comment récupér
 - [Fonctionnalités avancées (optionnelles)](#fonctionnalités-avancées-optionnelles) — auto-compaction, statusline en direct, garde-fou workflow
 - [Les timeouts](#les-timeouts-pourquoi-lattente-marche-vraiment)
 - [Réseau d'entreprise (api.anthropic.com bloqué)](#réseau-dentreprise-apianthropiccom-bloqué)
+- [Dépannage](#dépannage)
 - [Configuration complète](#configuration-complète)
 - [Sécurité](#sécurité)
 - [Limites honnêtes](#limites-honnêtes)
@@ -259,6 +260,24 @@ Les blocs `compaction` et `workflowGuard` (auto-compaction et garde-fou, voir pl
 - La protection sur la fenêtre de 7 jours d'un compte ne s'active qu'**après** avoir vu au moins une réponse de ce compte.
 - Le proxy retient chaque requête sur une seule connexion ; ça fonctionne même pour des attentes de plusieurs heures, mais c'est plus fluide avec `cqr policy waitsoft 85`.
 - L'outil **Workflow** de Claude Code a son propre délai d'abandon par sous-agent (~18 minutes) que le relais ne peut techniquement pas prolonger, même en jouant sur les timeouts ou le signal d'attente. Conseil : lancez un gros workflow quand **au moins un compte** a encore du quota (voir `cqr preflight`).
+
+## Dépannage
+
+### `cqr status` affiche toujours ARRÊTÉ, même après `cqr start`
+
+`cqr start`/`cqr restart` vérifient désormais réellement que le proxy répond (jusqu'à ~3 secondes) — s'il plante, la commande vous l'affichera clairement avec les dernières lignes du journal d'erreur, au lieu de dire faussement « Proxy démarré ». Si vous voyez cette erreur, les causes les plus fréquentes sont :
+
+- **Un fichier du proxy manque ou est corrompu** → relancez l'installeur pour tout recopier proprement : `node src/install.js` (depuis le dossier du repo cloné).
+- **Le port est déjà utilisé** par autre chose sur votre machine → changez de port dans `tokens.json` (`"port": 8788` par exemple), puis `cqr restart`.
+- **Un antivirus ou un logiciel de sécurité d'entreprise** bloque les processus lancés en arrière-plan (fréquent sur les PC professionnels). Pour voir l'erreur exacte en direct, lancez le proxy au premier plan :
+  ```bash
+  node ~/.claude/claude-quota-relay/proxy.js
+  ```
+  L'erreur s'affichera immédiatement dans le terminal. Vous pouvez aussi consulter directement les journaux :
+  ```bash
+  cat ~/.claude/claude-quota-relay/proxy.out.log   # trace brute d'un plantage éventuel
+  cat ~/.claude/claude-quota-relay/proxy.log        # journal normal du proxy
+  ```
 
 ## Désinstallation
 

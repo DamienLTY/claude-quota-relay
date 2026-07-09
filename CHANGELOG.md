@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.1
+
+- **Fix — `cqr start`/`restart` mentait quand le proxy plantait** : la commande spawnait le process et affichait toujours « Proxy démarré. » sans jamais vérifier qu'il restait en vie — un utilisateur a signalé un cas où le proxy ne démarrait jamais, sans aucun indice pour comprendre pourquoi. `cqr start`/`restart` vérifient maintenant réellement (jusqu'à ~3s) que le proxy répond, et si ce n'est pas le cas, affichent les dernières lignes de `proxy.out.log` (la trace du plantage) + les causes fréquentes (fichier manquant, port déjà utilisé, antivirus d'entreprise qui tue les process détachés). Prouvé par 3 scénarios réels : démarrage sain, plantage simulé, port déjà occupé.
+- 17 suites de tests au total, toutes vertes.
+
 ## 0.6.0
 
 - **Interface entièrement en français** : l'installeur, le désinstalleur et le CLI (`cqr status`, `compact`, `guard`, `live`, etc.) étaient encore en anglais malgré un README français — corrigé, tous les messages affichés à l'utilisateur sont maintenant en français (les commentaires internes du code restent en anglais, convention du projet).
