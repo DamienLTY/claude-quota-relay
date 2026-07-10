@@ -111,14 +111,15 @@ function parseEpochMs(v) {
 function pickRoute(conf, state, bodyObj) {
   const t0 = now();
   state.exhausted = state.exhausted || {}; state.reset5h = state.reset5h || {}; state.reset7d = state.reset7d || {}; state.pct = state.pct || {};
-  // Si la compaction est active et qu'on connait le modele, on switche au seuil EFFECTIF
-  // (statique par modele ET dynamique selon le contexte deja rempli) plutot qu'au seuil
-  // global fixe -- evite (1) qu'un modele au seuil de compaction > switchAtPercent (ex.
-  // haiku 95% > 94%) ne bascule jamais assez tard pour que la compaction se declenche, et
-  // (2) qu'un modele risque (fable) attende trop avant de switcher. Ne change RIEN pour les
-  // installs qui n'utilisent pas la compaction (comportement historique inchange).
+  // Si la compaction est active et qu'on connait le modele, on switche au seuil STATIQUE par
+  // modele plutot qu'au seuil global fixe -- evite (1) qu'un modele au seuil de compaction >
+  // switchAtPercent (ex. haiku 95% > 94%) ne bascule jamais assez tard pour que la compaction
+  // se declenche, et (2) qu'un modele risque (fable, seuil 85%) attende trop avant de switcher.
+  // Le seuil DYNAMIQUE ne sert PLUS a avancer la bascule (trop agressif -> switchait un gros
+  // contexte Opus a ~68%) : il declenche desormais une compaction EN PLACE (meme compte, voir
+  // decideCompaction). Ne change RIEN pour les installs sans compaction (comportement inchange).
   const compActive = conf.compaction && (conf.compaction.enabled || conf.compaction.dryRun);
-  const SW = (compActive && bodyObj && bodyObj.model) ? comp.effectiveSwitchThreshold(conf.compaction, bodyObj.model, bodyObj) : conf.switchAtPercent;
+  const SW = (compActive && bodyObj && bodyObj.model) ? comp.modelThreshold(bodyObj.model, conf.compaction.thresholds) : conf.switchAtPercent;
   const BLOCK = conf.sevenDayBlockPercent, SOFT = conf.waitAtSoftPercent;
 
   // override manuel (claude-auth use) : on force ce token, sans regle ni attente
@@ -281,20 +282,32 @@ function decideCompaction(conf, state, bodyObj, prevActive, newIdx, ctx, switchi
   const thr = comp.modelThreshold(model, cc.thresholds);
   const prevName = (conf.tokens[prevActive] || {}).name;
   const prevU5 = prevName && state.pct && state.pct[prevName] ? state.pct[prevName].h5 : null;
-  let compact = false, reason = "";
+  let compact = false, reason = "", inPlace = false;
   if (ctx.resumed) { compact = true; reason = "resume"; ctx.resumed = false; }
   else if (switching && prevU5 != null && prevU5 >= thr) { compact = true; reason = "switch@" + prevU5 + ">=" + thr + "%"; }
+  // Compaction dynamique EN PLACE (sans changer de compte) : quand le contexte est deja assez
+  // gros pour risquer un gros saut d'utilisation, on reduit la requete sur le compte COURANT au
+  // lieu de basculer -> le compte actif dure plus longtemps. Opt-in (cc.dynamicThreshold), mode
+  // natif seulement (clear_tool_uses = 0 token, pas d'appel Haiku), pas de marqueur memoire
+  // (aucun compte quitte a resumer). C'est ce que l'utilisateur veut : "rester sur la meme cle".
+  if (!compact && cc.dynamicThreshold && cc.mode !== "strip") {
+    const curName = (conf.tokens[newIdx] || {}).name;
+    const curU5 = curName && state.pct && state.pct[curName] ? state.pct[curName].h5 : null;
+    const dyn = comp.dynamicThreshold(model, bodyObj, { safetyBufferPoints: cc.dynamicSafetyBufferPoints });
+    if (curU5 != null && curU5 >= dyn && curU5 < thr) { compact = true; inPlace = true; reason = "dynamic-inplace@" + curU5 + ">=" + dyn + "%"; }
+  }
   if (!compact) return null;
-  // Cooldown : une fois tous les comptes au-dessus de leur seuil, pickRoute (a raison, pour
-  // le failover) continue d'alterner sur celui qui a le u5 le plus bas -> sans ce garde-fou on
-  // recompacterait (et rappellerait Haiku) a CHAQUE requete. Le cooldown lisse ce ping-pong :
-  // on ne recompacte pas plus souvent que compactionCooldownMs, quel que soit le nombre de
-  // bascules entre-temps. Applique aussi en dry-run pour que les logs reproduisent fidelement
-  // ce qui se passerait une fois active.
-  const cooldownMs = num(cc.compactionCooldownMs, 600000);
-  const last = state.lastCompactAt || 0;
-  if (cooldownMs > 0 && now() - last < cooldownMs) return null;
-  return { compact: true, reason, dryRun: !cc.enabled && !!cc.dryRun, mode: cc.mode === "strip" ? "strip" : "native", keepToolUses: num(cc.keepToolUses, 10), triggerTokens: num(cc.triggerTokens, 2000) };
+  // Cooldown (uniquement pour la compaction liee a un SWITCH/resume) : une fois tous les comptes
+  // au-dessus de leur seuil, pickRoute (a raison, pour le failover) continue d'alterner -> sans
+  // ce garde-fou on recompacterait (et rappellerait Haiku) a CHAQUE requete. La compaction EN
+  // PLACE n'a pas ce probleme (0 token, pas de Haiku, on veut justement reduire chaque requete),
+  // donc elle n'est PAS soumise au cooldown.
+  if (!inPlace) {
+    const cooldownMs = num(cc.compactionCooldownMs, 600000);
+    const last = state.lastCompactAt || 0;
+    if (cooldownMs > 0 && now() - last < cooldownMs) return null;
+  }
+  return { compact: true, inPlace, reason, dryRun: !cc.enabled && !!cc.dryRun, mode: cc.mode === "strip" ? "strip" : "native", keepToolUses: num(cc.keepToolUses, 10), triggerTokens: num(cc.triggerTokens, 2000) };
 }
 
 // ----- coeur : route puis (forward | wait->forward), avec rejeu sur rejet -----
@@ -346,9 +359,9 @@ function serve(creq, cres) {
       // Only for the real /v1/messages endpoint (never count_tokens or other JSON paths).
       const isMsgs = String(creq.url || "").split("?")[0] === "/v1/messages";
       const compactInfo = isMsgs ? decideCompaction(conf, state, bodyObj, prevActive, route.idx, ctx, switching) : null;
-      if (compactInfo && compactInfo.compact) {
-        // toujours tamponne (reel ou dry-run) : c'est ce que le cooldown de decideCompaction lit
-        // pour eviter de recompacter a chaque requete pendant un ping-pong entre comptes chauds.
+      if (compactInfo && compactInfo.compact && !compactInfo.inPlace) {
+        // compaction liee a un SWITCH/resume : tamponne (reel ou dry-run) pour le cooldown, et
+        // ecrit le marqueur memoire (le hook resumera le compte quitte via Haiku).
         state.lastCompactAt = now();
         if (!compactInfo.dryRun) {
           state.compaction = { at: now(), from: (conf.tokens[prevActive] || {}).name, to: (conf.tokens[route.idx] || {}).name, model: bodyObj && bodyObj.model, reason: compactInfo.reason };

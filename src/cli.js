@@ -144,6 +144,24 @@ function stopProxy(cb) {
   }, 1000);
 }
 
+// Auto-restart the proxy after a setting that only takes effect at BOOT (the port it binds, the
+// live-poll cadence). Most settings (compaction, policy thresholds...) are re-read from
+// tokens.json on every request, so they need NO restart -- those commands say so directly.
+// PID-based liveness is port-independent, so this still works right after the port just changed.
+function restartIfRunning(savedMsg, extraNote) {
+  let pid = null;
+  try { pid = parseInt(fs.readFileSync(PIDFILE, "utf8").trim(), 10); } catch (e) {}
+  if (!(pid && pidAlive(pid))) {
+    console.log(savedMsg + " (le proxy est à l'arrêt — réglage pris au prochain `cqr start`).");
+    if (extraNote) console.log(extraNote);
+    return;
+  }
+  stopProxy(() => setTimeout(() => startProxyAndVerify((ok) => {
+    if (ok) { console.log(savedMsg + " — proxy redémarré automatiquement."); if (extraNote) console.log(extraNote); }
+    else { reportStartFailure(); process.exit(1); }
+  }), 800));
+}
+
 // strip known bare flags before positional destructuring, so `cqr add --paste` doesn't
 // treat "--paste" as the account name.
 const [cmd, a1, a2, a3] = process.argv.slice(2).filter((x) => x !== "--paste");
@@ -287,7 +305,8 @@ switch (cmd) {
         s.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:" + newPort;
         fs.writeFileSync(SETTINGS, JSON.stringify(s, null, 2));
       }
-      console.log("Port changé pour " + newPort + " (tokens.json + settings.json mis à jour). Redémarrez : cqr restart");
+      restartIfRunning("Port changé pour " + newPort + " (tokens.json + settings.json mis à jour)",
+        "Pensez à redémarrer Claude Code : il lit le port depuis settings.json à son démarrage.");
       break;
     }
     else { console.error("Clé inconnue :", a1); process.exit(1); }
@@ -297,8 +316,8 @@ switch (cmd) {
   case "live": {
     // Background quota poll (statusline "live" refresh) -- see src/proxy.js startLivePolling.
     const c = readConf();
-    if (a1 === "off") { c.livePollMs = 0; writeConf(c); console.log("Rafraîchissement live désactivé (le quota ne se met à jour qu'avec de vraies requêtes). Redémarrez le proxy : cqr restart"); }
-    else if (a1 && /^\d+$/.test(a1)) { c.livePollMs = Number(a1) * 1000; writeConf(c); console.log("Rafraîchissement toutes les " + a1 + "s. Redémarrez le proxy : cqr restart"); }
+    if (a1 === "off") { c.livePollMs = 0; writeConf(c); restartIfRunning("Rafraîchissement live désactivé (le quota ne se met à jour qu'avec de vraies requêtes)"); }
+    else if (a1 && /^\d+$/.test(a1)) { c.livePollMs = Number(a1) * 1000; writeConf(c); restartIfRunning("Rafraîchissement toutes les " + a1 + "s"); }
     else if (!a1 || a1 === "status") { console.log("livePollMs :", c.livePollMs == null ? "45000 (défaut)" : c.livePollMs, "-- sonde en arrière-plan (quasi gratuite : ~8 tokens d'entrée, 0 en sortie) qui garde le quota des DEUX comptes à jour pour la statusline, même à l'arrêt"); }
     else console.error("Usage : cqr live [status|<secondes>|off]");
     break;
@@ -306,7 +325,7 @@ switch (cmd) {
   case "compact": {
     const c = readConf(); c.compaction = c.compaction || {};
     const cc = c.compaction;
-    if (a1 === "on") { cc.enabled = true; cc.dryRun = false; writeConf(c); console.log("Auto-compaction activée (clear_tool_uses natif + mémoire par projet). Redémarrez le proxy : cqr restart"); }
+    if (a1 === "on") { cc.enabled = true; cc.dryRun = false; writeConf(c); console.log("Auto-compaction activée (clear_tool_uses natif + mémoire par projet). Effet immédiat, aucun redémarrage nécessaire."); }
     else if (a1 === "off") { cc.enabled = false; cc.dryRun = false; writeConf(c); console.log("Auto-compaction désactivée."); }
     else if (a1 === "dry-run" || a1 === "dryrun") { cc.enabled = false; cc.dryRun = true; writeConf(c); console.log("Mode simulation : le proxy LOGUE seulement ce qu'il compacterait (rien ne change) ; la mémoire se construit quand même. Voir : proxy.log"); }
     else if (a1 === "mode") { cc.mode = a2 === "strip" ? "strip" : "native"; writeConf(c); console.log("Mode de compaction = " + cc.mode + (cc.mode === "strip" ? " (le proxy tronque lui-même les vieux résultats ; utile si Claude Code n'aime pas le mode natif)" : " (context-editing natif Anthropic, 0 token)")); }
@@ -319,13 +338,19 @@ switch (cmd) {
       const m = String(a2 || "").toLowerCase(); const pct = Number(a3);
       if (!models.includes(m) || !(pct >= 50 && pct <= 100)) { console.error("Usage : cqr compact threshold <fable|opus|sonnet|haiku|default> <50-100>"); process.exit(1); }
       cc.thresholds = Object.assign({}, comp.DEFAULT_THRESHOLDS, cc.thresholds || {}); cc.thresholds[m] = pct;
-      writeConf(c); console.log("Seuil " + m + " = " + pct + "% (bascule + compaction quand le compte actif dépasse ce % sur 5h). Redémarrez : cqr restart");
+      writeConf(c); console.log("Seuil " + m + " = " + pct + "% (bascule + compaction quand le compte actif dépasse ce % sur 5h). Effet immédiat.");
     }
     else if (a1 === "dynamic") {
-      // Seuil dynamique (baisse le point de bascule quand le contexte est deja gros). Opt-in :
-      // trop agressif avec la compaction active (elle reduit deja la requete). Defaut = off.
-      if (a2 === "on") { cc.dynamicThreshold = true; writeConf(c); console.log("Seuil dynamique ACTIVÉ : la bascule peut se déclencher plus tôt que le seuil statique si le contexte est déjà très gros (ex. Opus à ~800k tokens -> ~68%). Redémarrez : cqr restart"); }
-      else if (a2 === "off") { cc.dynamicThreshold = false; writeConf(c); console.log("Seuil dynamique désactivé : la bascule utilise le seuil statique par modèle (Opus 89%, etc.). Redémarrez : cqr restart"); }
+      // Compaction dynamique : quand le contexte est deja gros, on REDUIT la requete sur le MEME
+      // compte (0 token, pas de switch) au lieu de basculer. Opt-in. N'a de sens que si la
+      // compaction agit -> l'activer active aussi la compaction (tache 1).
+      if (a2 === "on") {
+        cc.dynamicThreshold = true;
+        if (!cc.enabled) { cc.enabled = true; cc.dryRun = false; }
+        writeConf(c);
+        console.log("Compaction dynamique ACTIVÉE (auto-compaction activée aussi). Quand le contexte devient gros, le proxy réduit la requête sur le MÊME compte (0 token, sans changer de clé) au lieu de basculer. Effet immédiat.");
+      }
+      else if (a2 === "off") { cc.dynamicThreshold = false; writeConf(c); console.log("Compaction dynamique désactivée : la réduction n'a lieu qu'au changement de compte. Effet immédiat."); }
       else console.error("Usage : cqr compact dynamic on|off");
     }
     else if (a1 === "memory") {
@@ -340,8 +365,8 @@ switch (cmd) {
       console.log("reprise  :", cc.compactBeforeResume !== false ? "compacte avant de reprendre après une attente" : "désactivé");
       console.log("cooldown :", Math.round((cc.compactionCooldownMs == null ? 600000 : cc.compactionCooldownMs) / 60000) + "min (évite de recompacter à chaque ping-pong une fois les 2 comptes chauds)");
       console.log("seuils   :", JSON.stringify(Object.assign({}, comp.DEFAULT_THRESHOLDS, cc.thresholds || {})), "(% de bascule/compaction par modèle -- cqr compact threshold <modèle> <pct>)");
-      console.log("dynamique:", cc.dynamicThreshold ? "ACTIVÉ (peut baisser le seuil si le contexte est déjà gros)" : "désactivé (bascule au seuil statique ci-dessus)", "-- cqr compact dynamic on|off");
-      if (cc.dynamicThreshold) console.log("marge    :", (cc.dynamicSafetyBufferPoints == null ? 4 : cc.dynamicSafetyBufferPoints) + " points (marge du seuil dynamique)");
+      console.log("dynamique:", cc.dynamicThreshold ? "ACTIVÉ (gros contexte -> réduit la requête sur le MÊME compte, sans basculer)" : "désactivé (réduction seulement au changement de compte)", "-- cqr compact dynamic on|off");
+      if (cc.dynamicThreshold) console.log("marge    :", (cc.dynamicSafetyBufferPoints == null ? 4 : cc.dynamicSafetyBufferPoints) + " points (marge de la compaction en place)");
       console.log("mémoire  :", cc.memoryFile || ".cqr-memory.md", "(par projet, max " + (cc.memoryMaxLines || 400) + " lignes)");
     }
     else console.error("Usage : cqr compact [status|on|off|dry-run|mode native|strip|keep <n>|cooldown <min>|threshold <modèle> <pct>|dynamic on|off|buffer <points>|memory]");
@@ -374,5 +399,46 @@ switch (cmd) {
   case "start": health((h) => { if (h) console.log("Déjà en cours."); else startProxyAndVerify((ok) => { if (ok) console.log("Proxy démarré et opérationnel."); else { reportStartFailure(); process.exit(1); } }); }); break;
   case "stop": stopProxy((ok) => console.log(ok === true ? "Proxy arrêté." : ok === "unknown" ? "Le proxy répond mais aucun fichier PID (démarré hors du CLI ?)." : "Aucun proxy en cours.")); break;
   case "restart": stopProxy(() => setTimeout(() => { startProxyAndVerify((ok) => { if (ok) console.log("Proxy redémarré et opérationnel."); else { reportStartFailure(); process.exit(1); } }); }, 800)); break;
-  default: console.error("Commande inconnue. Voir l'en-tête de cli.js ou le README."); process.exit(1);
+  case "help": case "--help": case "-h": printHelp(); break;
+  default: console.error("Commande inconnue : " + cmd + "\n"); printHelp(); process.exit(1);
+}
+
+function printHelp() {
+  console.log([
+    "cqr — proxy de bascule entre plusieurs comptes Claude. Commandes :",
+    "",
+    "État",
+    "  cqr status                 quota par compte (5h/7j), resets, attente en cours",
+    "  cqr list                   liste les comptes (clés masquées)",
+    "  cqr help                   cette aide",
+    "",
+    "Comptes",
+    "  cqr add [nom] [--paste]    ajoute un compte (navigateur, ou --paste pour coller)",
+    "  cqr login <nom> [--paste]  reconnecte un compte",
+    "  cqr set <nom> <clé>        met une clé directement, sans question",
+    "  cqr remove <nom>           retire un compte (alias : rm)",
+    "  cqr sync-env               recopie la 1re clé dans settings.json",
+    "",
+    "Proxy",
+    "  cqr start | stop | restart démarre / arrête / redémarre le proxy",
+    "  cqr use <nom|index>        force un compte précis",
+    "  cqr auto                   revient au choix automatique",
+    "  cqr reset                  oublie l'état 'épuisé' (re-teste tout)",
+    "",
+    "Réglages (pris en compte immédiatement, sauf port/live qui redémarrent le proxy tout seuls)",
+    "  cqr policy                 voir/changer switch, block7d, waitsoft, maxwait",
+    "  cqr policy port <n>        change le port (redémarre proxy + demande de relancer Claude Code)",
+    "  cqr live [<s>|off]         rafraîchissement de la statusline en arrière-plan",
+    "",
+    "Auto-compaction (réduit les tokens ; active par défaut)",
+    "  cqr compact                état + tous les réglages",
+    "  cqr compact on | off       active / désactive",
+    "  cqr compact threshold <modèle> <pct>   % de bascule par modèle",
+    "  cqr compact dynamic on|off réduit sur le MÊME compte quand le contexte est gros",
+    "  cqr compact mode native|strip · keep <n> · cooldown <min> · buffer <pts> · memory",
+    "",
+    "Garde-fou workflow",
+    "  cqr preflight              est-ce prudent de lancer un gros workflow ?",
+    "  cqr guard [ask|deny|off|<pct>]   avertissement avant un workflow risqué",
+  ].join("\n"));
 }

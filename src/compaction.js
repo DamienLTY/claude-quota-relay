@@ -81,20 +81,6 @@ function dynamicThreshold(model, bodyObj, opts) {
   return Math.max(50, Math.min(99, Math.round(t)));
 }
 
-// Seuil EFFECTIF utilise a la fois par le routage (pickRoute) et la compaction. Par defaut :
-// le seuil STATIQUE par modele (Opus 89%, etc.). Le seuil DYNAMIQUE (qui baisse le point de
-// bascule quand le contexte est deja tres gros) est OPT-IN (cc.dynamicThreshold === true) car
-// il est trop agressif une fois la compaction active : la compaction reduit deja la requete
-// envoyee au compte frais, donc pas besoin de switcher aussi tot. Sur un gros contexte Opus
-// (~800k tokens) le dynamique tombait a ~68% -> bascule surprenante, signalee par un
-// utilisateur. Quand il est active, on prend le plus prudent (le plus bas) des deux.
-function effectiveSwitchThreshold(cc, model, bodyObj, opts) {
-  const stat = modelThreshold(model, cc && cc.thresholds);
-  if (!cc || !cc.dynamicThreshold) return stat;
-  const dyn = dynamicThreshold(model, bodyObj, Object.assign({ safetyBufferPoints: cc.dynamicSafetyBufferPoints }, opts));
-  return Math.min(stat, dyn);
-}
-
 // The context-editing edit that clears old tool results, keeping the N most recent.
 // An explicit low `trigger` is important: the API's DEFAULT trigger only fires around
 // ~100k input tokens, so a switch below that would clear nothing. We inject this ONLY
@@ -145,4 +131,4 @@ function stripOldToolResults(bodyObj, keep) {
   return { body: bodyObj, stubbed };
 }
 
-module.exports = { BETA, EDIT_TYPE, DEFAULT_THRESHOLDS, MODEL_WEIGHT, HAIKU_TOKENS_PER_POINT, modelThreshold, modelWeight, estimateTokens, dynamicThreshold, effectiveSwitchThreshold, buildEdit, injectNative, mergeBeta, stripOldToolResults };
+module.exports = { BETA, EDIT_TYPE, DEFAULT_THRESHOLDS, MODEL_WEIGHT, HAIKU_TOKENS_PER_POINT, modelThreshold, modelWeight, estimateTokens, dynamicThreshold, buildEdit, injectNative, mergeBeta, stripOldToolResults };

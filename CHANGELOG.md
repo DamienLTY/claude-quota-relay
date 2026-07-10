@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.0
+
+- **Compaction dynamique = sur le MÊME compte, sans basculer.** Avant, un très gros contexte faisait *basculer* de compte plus tôt (jusqu'à ~68 % sur Opus). Désormais, quand la compaction dynamique est active, le proxy **réduit la requête sur le compte que vous utilisez déjà** (0 token, `clear_tool_uses` natif) au lieu de changer de clé — le compte actif dure plus longtemps. La bascule, elle, se fait toujours au seuil statique par modèle (Opus 89 %). Pas d'appel Haiku ni de résumé mémoire pour cette compaction en place.
+- **`cqr compact dynamic on` active aussi l'auto-compaction** (elle n'aurait aucun effet sinon).
+- **`cqr help`** : liste toutes les commandes, groupées. Une commande inconnue affiche cette aide.
+- **Plus de « puis redémarrez » à taper.** Les réglages (compaction, seuils, politique) sont relus à chaque requête → pris en compte immédiatement. Les deux qui ont besoin d'un redémarrage (le **port** et la **cadence de la statusline**) **redémarrent le proxy automatiquement**. Pour un changement de port, il reste juste à relancer Claude Code (il lit le port à son démarrage).
+- Retrait de `effectiveSwitchThreshold` (le seuil dynamique n'avance plus la bascule ; sa logique vit maintenant dans la décision de compaction en place). Nouvelles suites de tests (`cli-commands.test.js` + cas compaction en place). 20 suites au total, toutes vertes.
+
 ## 0.7.0
 
 - **Auto-compaction ACTIVE par défaut** (nouvelles installs) : mode natif `clear_tool_uses` (0 token), n'agit qu'au moment d'un changement de compte, donc l'usage normal est inchangé. Les installs existantes gardent leur réglage — pour l'activer : `cqr compact on`.

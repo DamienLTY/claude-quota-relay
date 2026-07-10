@@ -57,14 +57,19 @@ Actif   : compte-1
    [1] compte-2   on  quota:5h=9%  7d=1%   reset5h~4h05
 ```
 
+Pour tout revoir d'un coup : `cqr help` liste toutes les commandes.
+
 Le reste est optionnel :
 
 ```bash
+cqr help                 # liste toutes les commandes
 cqr list                 # liste les comptes (clés masquées)
 cqr start | stop | restart   # gère le programme
 cqr use <nom>            # force un compte précis
 cqr auto                 # revient au choix automatique
 ```
+
+> Les réglages (compaction, seuils, politique) sont pris en compte **tout de suite**, sans rien redémarrer. Les deux seuls qui ont besoin d'un redémarrage — le **port** et la **cadence de la statusline** — redémarrent le proxy **automatiquement** pour vous.
 
 **Gérer les comptes :**
 
@@ -116,13 +121,16 @@ cqr compact threshold opus 89  # % de quota qui déclenche la bascule pour Opus 
 Change-les avec `cqr compact threshold <modèle> <pourcentage>`.
 
 <details>
-<summary>Réglage « seuil dynamique » (avancé, désactivé par défaut)</summary>
+<summary>Réglage « compaction dynamique » (avancé, désactivé par défaut)</summary>
 
-Le programme peut aussi **avancer** la bascule quand la conversation est déjà énorme (car une requête géante consomme beaucoup d'un coup). Sur un très gros contexte Opus (~800 000 tokens), ça faisait basculer dès ~68 % au lieu de 89 %. C'est mathématiquement prudent, mais **trop agressif** puisque l'auto-compaction réduit déjà la requête. Donc **désactivé par défaut**. Pour l'activer :
+Quand la conversation devient énorme (contexte de plusieurs centaines de milliers de tokens), une seule requête consomme beaucoup d'un coup. La compaction dynamique **allège alors la requête sur le compte que vous utilisez déjà — sans changer de compte**. Vous restez sur la même clé, elle dure juste plus longtemps.
+
+C'est **désactivé par défaut**. L'activer active aussi l'auto-compaction (sinon ça n'aurait aucun effet) :
 
 ```bash
-cqr compact dynamic on
-cqr compact buffer 4     # marge de sécurité, en points
+cqr compact dynamic on     # active la compaction dynamique (+ l'auto-compaction)
+cqr compact buffer 4       # marge de sécurité, en points
+cqr compact dynamic off    # revient à : on n'allège qu'au changement de compte
 ```
 </details>
 
@@ -170,7 +178,7 @@ curl -s -D - -o /dev/null -X POST https://api.anthropic.com/v1/messages/count_to
 
 Le programme a planté au démarrage. `cqr start` vous montre alors la cause. Les plus fréquentes :
 
-- **Le port est déjà pris** (message `EADDRINUSE`). Si vous utilisez Cloudflare Workers, `wrangler dev` prend le même port par défaut. → Changez-en un : `cqr policy port 8788`, puis `cqr restart`.
+- **Le port est déjà pris** (message `EADDRINUSE`). Si vous utilisez Cloudflare Workers, `wrangler dev` prend le même port par défaut. → Changez-en un : `cqr policy port 8788` (le proxy redémarre tout seul ; pensez juste à relancer Claude Code, qui lit le port à son démarrage).
 - **Un fichier manque ou est abîmé** → relancez `node src/install.js`.
 - **Un antivirus d'entreprise** bloque les programmes en arrière-plan → lancez-le au premier plan pour voir l'erreur : `node ~/.claude/claude-quota-relay/proxy.js`.
 

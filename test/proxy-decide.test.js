@@ -140,19 +140,40 @@ const rState = (h5a, h5b) => ({ activeIndex: 0, exhausted: {}, pct: { a: { h5: h
   assert.strictEqual(route.idx, 1, "fable @90%: switches away well before the old flat 94% threshold");
 }
 {
-  // DYNAMIC OFF (default): a huge Opus context does NOT trigger an early switch -- it waits
-  // for the static per-model threshold (89%). This is the reported "switched at 68% instead
-  // of 89% on Opus" case: with dynamic off (the new default), it stays until 89%.
-  const conf = twoTokens(); // compaction.enabled true, no dynamicThreshold flag -> off
+  // pickRoute ALWAYS switches at the STATIC per-model threshold now (89% Opus), whether or not
+  // dynamic is on -- the reported "switched at 68% instead of 89%" is fixed: a huge Opus context
+  // no longer causes an early SWITCH. (The dynamic effect moved to in-place compaction below.)
   const bigOpus = { model: "claude-opus-4-8", messages: [{ role: "user", content: "x".repeat(Math.round(829_000 * 3.5)) }] };
-  assert.strictEqual(pickRoute(conf, rState(68, 40), bigOpus).idx, 0, "dynamic off: Opus @68% with huge context STAYS (waits for static 89%)");
-  assert.strictEqual(pickRoute(conf, rState(90, 40), bigOpus).idx, 1, "dynamic off: Opus @90% (>=89 static) switches");
+  const off = twoTokens();                                              // dynamic off
+  const on = twoTokens(); on.compaction = { enabled: true, dynamicThreshold: true, thresholds: {} }; // dynamic on
+  assert.strictEqual(pickRoute(off, rState(68, 40), bigOpus).idx, 0, "dynamic off: Opus @68% huge context STAYS (static 89)");
+  assert.strictEqual(pickRoute(on,  rState(68, 40), bigOpus).idx, 0, "dynamic on: Opus @68% huge context STILL stays (no early switch anymore)");
+  assert.strictEqual(pickRoute(off, rState(90, 40), bigOpus).idx, 1, "Opus @90% (>=89) switches either way");
 }
 {
-  // DYNAMIC ON (opt-in): the same huge Opus context lowers the switch point to ~68%.
-  const conf = twoTokens(); conf.compaction = { enabled: true, dynamicThreshold: true, thresholds: {} };
+  // Task 3: dynamic ON triggers IN-PLACE compaction on the SAME account (no switch) when the
+  // context is big and the current account is between the dynamic point (~68%) and the static
+  // switch threshold (89%). from==to (newIdx===prevActive), inPlace flag set, no memory marker.
+  const conf = twoTokens(); conf.compaction = { enabled: true, dynamicThreshold: true, mode: "native", thresholds: {} };
   const bigOpus = { model: "claude-opus-4-8", messages: [{ role: "user", content: "x".repeat(Math.round(829_000 * 3.5)) }] };
-  assert.strictEqual(pickRoute(conf, rState(68, 40), bigOpus).idx, 1, "dynamic on: Opus @68% with huge context switches early");
+  const d = decideCompaction(conf, rState(75, 40), bigOpus, 0, 0, { resumed: false }, false); // not switching
+  assert.ok(d && d.compact && d.inPlace, "dynamic on, big context, current @75%: compacts IN PLACE without switching");
+  assert.ok(d.reason.startsWith("dynamic-inplace"), "reason marks in-place: " + d.reason);
+}
+{
+  // dynamic OFF: same situation -> NO in-place compaction (only switch/resume compacts).
+  const conf = twoTokens(); // dynamic off
+  const bigOpus = { model: "claude-opus-4-8", messages: [{ role: "user", content: "x".repeat(Math.round(829_000 * 3.5)) }] };
+  const d = decideCompaction(conf, rState(75, 40), bigOpus, 0, 0, { resumed: false }, false);
+  assert.strictEqual(d, null, "dynamic off: no in-place compaction");
+}
+{
+  // in-place only BELOW the static switch threshold; at/above it, the normal switch+compact path
+  // takes over (so we don't in-place-compact when we should be switching).
+  const conf = twoTokens(); conf.compaction = { enabled: true, dynamicThreshold: true, mode: "native", thresholds: {} };
+  const bigOpus = { model: "claude-opus-4-8", messages: [{ role: "user", content: "x".repeat(Math.round(829_000 * 3.5)) }] };
+  const d = decideCompaction(conf, rState(92, 40), bigOpus, 0, 0, { resumed: false }, false);
+  assert.strictEqual(d, null, "current @92% (>=89 static) is not in-place territory -- switching handles it");
 }
 {
   // compaction disabled entirely -> behavior is EXACTLY the old flat switchAtPercent (94%),
