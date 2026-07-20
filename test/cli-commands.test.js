@@ -49,5 +49,21 @@ const conf = () => JSON.parse(fs.readFileSync(p.join(DIR, "tokens.json"), "utf8"
   assert.strictEqual(cc.enabled, true, "compaction stays enabled");
 }
 
+// task B (visibilite) : `cqr compact` affiche la derniere compaction lue depuis state.json
+{
+  fs.writeFileSync(p.join(DIR, "state.json"), JSON.stringify({ activeIndex: 0, compaction: { at: Date.now() - 120000, from: "1", to: "2", model: "claude-opus-4-8", reason: "switch@95>=89%" } }));
+  const r = run("compact");
+  assert.strictEqual(r.status, 0, "compact status exits 0");
+  assert.ok(/dernière/.test(r.stdout), "montre la derniere compaction");
+  assert.ok(r.stdout.includes("1->2"), "montre le sens du changement (1->2)");
+  assert.ok(/il y a 2min/.test(r.stdout), "montre l'anciennete relative");
+}
+// sans marqueur -> message explicite (au lieu de rien -> repond au 'je ne le vois pas')
+{
+  fs.writeFileSync(p.join(DIR, "state.json"), JSON.stringify({ activeIndex: 0 }));
+  const r = run("compact");
+  assert.ok(/dernière : aucune encore/.test(r.stdout), "sans compaction: message explicite");
+}
+
 fs.rmSync(DIR, { recursive: true, force: true });
-console.log("PASS — cqr help lists commands; compact dynamic on auto-enables compaction; unknown -> help");
+console.log("PASS — cqr help lists commands; compact dynamic on auto-enables compaction; unknown -> help; derniere compaction visible");

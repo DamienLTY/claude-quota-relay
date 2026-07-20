@@ -120,7 +120,15 @@ function pickRoute(conf, state, bodyObj) {
   // decideCompaction). Ne change RIEN pour les installs sans compaction (comportement inchange).
   const compActive = conf.compaction && (conf.compaction.enabled || conf.compaction.dryRun);
   const SW = (compActive && bodyObj && bodyObj.model) ? comp.modelThreshold(bodyObj.model, conf.compaction.thresholds) : conf.switchAtPercent;
-  const BLOCK = conf.sevenDayBlockPercent, SOFT = conf.waitAtSoftPercent;
+  const BLOCK = conf.sevenDayBlockPercent;
+  // Reserve de compaction (plafond non-desactivable) : quand la compaction agit REELLEMENT (enabled ;
+  // pas dry-run, qui ne doit rien changer au routage), un compte a >= RESERVE_CEILING% de 5h n'est
+  // plus une cible immediate -> on bascule vers un compte plus frais, sinon on ATTEND. Sans ca,
+  // waitAtSoftPercent=null ("utiliser la marge jusqu'au rejet 100%") ferait rejeter (429) la requete
+  // qui PORTE la compaction -> compaction perdue. On peut abaisser waitAtSoftPercent (plus prudent)
+  // mais pas depasser ce plafond. Aucun effet si la compaction est off (comportement inchange).
+  let SOFT = conf.waitAtSoftPercent;
+  if (conf.compaction && conf.compaction.enabled) SOFT = Math.min(SOFT == null ? 100 : SOFT, comp.COMPACTION_RESERVE_CEILING);
 
   // override manuel (claude-auth use) : on force ce token, sans regle ni attente
   if (state.forceIndex != null) {

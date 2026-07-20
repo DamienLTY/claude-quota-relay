@@ -192,4 +192,38 @@ const rState = (h5a, h5b) => ({ activeIndex: 0, exhausted: {}, pct: { a: { h5: h
   assert.strictEqual(route.idx, 0, "no model known: falls back to flat switchAtPercent (94)");
 }
 
-console.log("PASS — proxy decideCompaction: switch/threshold/resume/dry-run/strip/disabled/cooldown + pickRoute model-aware threshold");
+// --- reserve de compaction : compaction ON ne route/ride JAMAIS au-dela de RESERVE_CEILING (97%),
+// meme si waitAtSoftPercent=null (=utiliser la marge jusqu'au rejet). Garantit que la requete
+// compactee arrive sur un compte qui l'accepte (sinon 429 -> compaction perdue avec la requete). ---
+const { COMPACTION_RESERVE_CEILING } = require("../src/compaction.js");
+assert.strictEqual(COMPACTION_RESERVE_CEILING, 97, "plafond de reserve = 97%");
+const bigBody = { model: "claude-opus-4-8", messages: [{ role: "user", content: "x" }] };
+{
+  // les deux comptes au plafond (>=97) -> ATTENTE (aucune cible), pas de ping-pong de 429
+  const route = pickRoute(twoTokens(), rState(98, 99), bigBody);
+  assert.ok(route.wait, "compaction on: deux comptes >=97% -> attente (reserve), pas de route qui rejetterait");
+}
+{
+  // un compte au plafond, l'autre frais -> route vers le frais (la compaction y atterrit proprement)
+  const route = pickRoute(twoTokens(), rState(98, 50), bigBody);
+  assert.strictEqual(route.idx, 1, "compaction on: compte a 98% exclu -> route vers le frais (50%)");
+}
+{
+  // juste SOUS le plafond (96 < 97) : encore utilisable (la reserve ne bride pas trop tot)
+  const route = pickRoute(twoTokens(), rState(96, 99), bigBody);
+  assert.strictEqual(route.idx, 0, "96% < plafond -> encore routable");
+}
+{
+  // compaction OFF : waitAtSoftPercent=null ride jusqu'au rejet -> a 98% on ROUTE (aucune reserve).
+  const conf = twoTokens(); conf.compaction = { enabled: false };
+  const route = pickRoute(conf, rState(98, 99), bigBody);
+  assert.ok(!route.wait && route.idx != null, "compaction off: pas de reserve, ride jusqu'a 100%");
+}
+{
+  // dry-run ne doit PAS modifier le routage (reserve gated sur enabled, pas dryRun)
+  const conf = twoTokens(); conf.compaction = { enabled: false, dryRun: true };
+  const route = pickRoute(conf, rState(98, 99), bigBody);
+  assert.ok(!route.wait && route.idx != null, "dry-run: pas de reserve (routage inchange)");
+}
+
+console.log("PASS — proxy decideCompaction: switch/threshold/resume/dry-run/strip/disabled/cooldown + pickRoute model-aware threshold + reserve ceiling");

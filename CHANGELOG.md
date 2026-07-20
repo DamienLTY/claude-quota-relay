@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.0
+
+- **Plafond de réserve pour fiabiliser la compaction (garde-fou non-désactivable).** La compaction native s'attache à la requête envoyée au compte cible ; si la politique autorisait à monter jusqu'à 100 % (`waitAtSoftPercent` désactivé = « utiliser la marge jusqu'au rejet »), cette requête se faisait **rejeter (429) et la compaction partait avec elle — perdue**. Désormais, **quand la compaction est active, on ne route/ride jamais un compte au-delà de 97 % de 5h** : au-delà, on bascule vers un compte plus frais, sinon on attend un reset. Il reste ainsi toujours de la marge pour que la requête compactée soit acceptée. On peut être *plus* prudent (`cqr policy waitsoft <N>` plus bas) mais pas dépasser ce plafond. Aucun effet si la compaction est désactivée (comportement inchangé).
+- **Migration douce — on demande, on ne force pas.** À la mise à jour (`git pull` + `node src/install.js`), si le compactage entre comptes est **déjà désactivé** sur le PC, l'installeur **le signale et demande** s'il faut le réactiver (au lieu de le laisser silencieusement off à cause du bug ci-dessous). En mode non-interactif, il est laissé tel quel et le message final rappelle `cqr compact on`.
+- **Fix — « ON par défaut » ne touchait jamais les mises à jour.** Le backfill de config (`Object.assign(défaut, config-existante)`) laissait l'ancien `enabled:false` **écraser** le nouveau défaut ON. Résultat : tout PC ayant déjà `enabled:false` (ou installé avant la v0.7) restait OFF à chaque `git pull`, alors que le message d'install annonçait « auto-compaction ACTIVE ». La migration ci-dessus corrige ce trou.
+- **Compaction visible.** `cqr status` et `cqr compact` affichent maintenant la **dernière compaction** (« il y a X min, compte 1→2, modèle »), lue depuis `state.json` — fini le « je ne le vois pas ». (Les compactions *en place* ne sont pas tracées, seulement les changements de compte ; détail complet toujours dans `proxy.log`.)
+- Nouveau `test/compaction-migrate.test.js` + cas de réserve (`proxy-decide`) et de visibilité (`cli-commands`). 22 suites, toutes vertes.
+
 ## 0.8.0
 
 - **Compaction dynamique = sur le MÊME compte, sans basculer.** Avant, un très gros contexte faisait *basculer* de compte plus tôt (jusqu'à ~68 % sur Opus). Désormais, quand la compaction dynamique est active, le proxy **réduit la requête sur le compte que vous utilisez déjà** (0 token, `clear_tool_uses` natif) au lieu de changer de clé — le compte actif dure plus longtemps. La bascule, elle, se fait toujours au seuil statique par modèle (Opus 89 %). Pas d'appel Haiku ni de résumé mémoire pour cette compaction en place.

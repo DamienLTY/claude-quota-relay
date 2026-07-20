@@ -24,6 +24,14 @@ const EDIT_TYPE = "clear_tool_uses_20250919";
 // 85% -> 100% in one big request, hence the lowest bar; Haiku is cheap, highest bar.
 const DEFAULT_THRESHOLDS = { fable: 85, opus: 89, sonnet: 90, haiku: 95, default: 88 };
 
+// Plafond de routage NON-DESACTIVABLE quand la compaction est active : on ne route/ride jamais un
+// compte au-dela de ce % de 5h. Garantit qu'il reste de la marge pour que la requete compactee
+// (attachee a la requete envoyee au compte cible) soit ACCEPTEE plutot que rejetee (429) -- sinon la
+// compaction partirait avec la requete rejetee et serait perdue. ~3% suffisent (une requete
+// compactee est minuscule) + marge pour le polling non temps-reel. L'utilisateur peut etre PLUS
+// prudent (waitAtSoftPercent plus bas) mais pas depasser ce plafond tant que la compaction agit.
+const COMPACTION_RESERVE_CEILING = 97;
+
 function modelThreshold(model, thr) {
   const t = Object.assign({}, DEFAULT_THRESHOLDS, thr || {});
   const m = String(model || "").toLowerCase();
@@ -131,4 +139,4 @@ function stripOldToolResults(bodyObj, keep) {
   return { body: bodyObj, stubbed };
 }
 
-module.exports = { BETA, EDIT_TYPE, DEFAULT_THRESHOLDS, MODEL_WEIGHT, HAIKU_TOKENS_PER_POINT, modelThreshold, modelWeight, estimateTokens, dynamicThreshold, buildEdit, injectNative, mergeBeta, stripOldToolResults };
+module.exports = { BETA, EDIT_TYPE, DEFAULT_THRESHOLDS, COMPACTION_RESERVE_CEILING, MODEL_WEIGHT, HAIKU_TOKENS_PER_POINT, modelThreshold, modelWeight, estimateTokens, dynamicThreshold, buildEdit, injectNative, mergeBeta, stripOldToolResults };

@@ -180,6 +180,22 @@ function eta(ms) {
   const m = Math.round(d / 60000);
   return m >= 60 ? Math.floor(m / 60) + "h" + String(m % 60).padStart(2, "0") : m + "min";
 }
+// "il y a X" pour un instant PASSE (epoch ms) -- rend visible la derniere compaction.
+function ago(ms) {
+  if (!ms) return "";
+  const d = Date.now() - ms; if (d < 0) return "à l'instant";
+  const m = Math.round(d / 60000);
+  if (m < 1) return "il y a moins d'1min";
+  return m >= 60 ? "il y a " + Math.floor(m / 60) + "h" + String(m % 60).padStart(2, "0") : "il y a " + m + "min";
+}
+function lastCompactStr(s) {
+  const k = s && s.compaction;
+  if (!k || !k.at) return null;
+  // from==to = reprise sur le meme compte apres une attente (pas un vrai changement) -> "1->1"
+  // serait trompeur pour un non-dev ; on ecrit "reprise".
+  const where = (k.from && k.to && k.from !== k.to) ? k.from + "->" + k.to : (k.to || k.from || "?") + " (reprise)";
+  return ago(k.at) + " (" + where + (k.model ? ", " + k.model : "") + ")";
+}
 function showStatus() {
   let c, s;
   try { c = readConf(); } catch (e) { console.error("Aucun tokens.json dans " + DIR + " — lancez d'abord l'installeur."); process.exit(1); }
@@ -191,6 +207,8 @@ function showStatus() {
     const pin = s.forceIndex != null && c.tokens[s.forceIndex] ? " [ÉPINGLÉ: " + c.tokens[s.forceIndex].name + "]" : "";
     console.log("Actif      :", ((c.tokens[s.activeIndex] && c.tokens[s.activeIndex].name) || "?") + pin);
     if (s.waiting) console.log("ATTENTE    : " + s.waiting.reason + " -> '" + s.waiting.target + "' reprend dans ~" + eta(Date.parse(s.waiting.until)));
+    const lc = lastCompactStr(s);
+    if (lc) console.log("Compaction : dernière " + lc);
     console.log("");
     c.tokens.forEach((t, i) => {
       const act = i === s.activeIndex ? ">" : " ";
@@ -368,6 +386,8 @@ switch (cmd) {
       console.log("dynamique:", cc.dynamicThreshold ? "ACTIVÉ (gros contexte -> réduit la requête sur le MÊME compte, sans basculer)" : "désactivé (réduction seulement au changement de compte)", "-- cqr compact dynamic on|off");
       if (cc.dynamicThreshold) console.log("marge    :", (cc.dynamicSafetyBufferPoints == null ? 4 : cc.dynamicSafetyBufferPoints) + " points (marge de la compaction en place)");
       console.log("mémoire  :", cc.memoryFile || ".cqr-memory.md", "(par projet, max " + (cc.memoryMaxLines || 400) + " lignes)");
+      const lc = lastCompactStr(readState());
+      console.log("dernière :", lc ? lc + " -- détail dans proxy.log" : "aucune encore enregistrée (une ligne apparaîtra ici au 1er changement de compte compacté ; les compactions en place ne sont pas tracées -- voir proxy.log)");
     }
     else console.error("Usage : cqr compact [status|on|off|dry-run|mode native|strip|keep <n>|cooldown <min>|threshold <modèle> <pct>|dynamic on|off|buffer <points>|memory]");
     break;

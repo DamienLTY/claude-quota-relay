@@ -178,7 +178,13 @@ function setupStatusline(settings) {
   return original ? "wrapped" : "added";
 }
 
-(async () => {
+// Reponse "oui" a la question de reactivation (vide = oui : on recommande ON).
+function wantsReactivate(answer) {
+  const a = String(answer || "").trim().toLowerCase();
+  return a === "" || a.startsWith("o") || a.startsWith("y");
+}
+
+async function main() {
   console.log(bold("claude-quota-relay") + dim("  —  installeur"));
   info(CONFIG_DIR + "  (port " + PORT + ")");
 
@@ -194,6 +200,15 @@ function setupStatusline(settings) {
     // backfill any missing compaction/guard defaults (older configs gain new keys)
     conf.compaction = Object.assign({}, COMPACTION_DEFAULT, conf.compaction || {});
     conf.workflowGuard = Object.assign({}, WORKFLOW_GUARD_DEFAULT, conf.workflowGuard || {});
+    // Migration : la compaction entre comptes est OFF (choix explicite, ou install d'avant qu'elle
+    // devienne ON par defaut). On NE FORCE JAMAIS -> on DEMANDE. Non-interactif : on laisse tel quel
+    // (le message final dit comment l'activer). Une config SANS bloc compaction a ete backfillee a
+    // enabled:true juste au-dessus -> ne matche pas ici, donc pas de question inutile aux neufs.
+    if (conf.compaction.enabled === false && !NO_INTERACTIVE) {
+      const ans = await prompt1("\n  " + bold("Le compactage entre comptes est actuellement DÉSACTIVÉ sur ce PC.") +
+        "\n  Le réactiver ? Il réduit les tokens à chaque changement de compte (natif Anthropic, 0 token). [O/n] ");
+      if (wantsReactivate(ans)) { conf.compaction.enabled = true; conf.compaction.dryRun = false; }
+    }
     fs.writeFileSync(tokensPath, JSON.stringify(conf, null, 2));
     tokensLine = (conf.tokens || []).length + " compte(s), conservés";
   } else {
@@ -227,5 +242,10 @@ function setupStatusline(settings) {
   if (alias.changed) console.log("  2. Ouvrez un " + bold("nouveau terminal") + " et lancez : " + bold("cqr status"));
   else console.log("  2. Lancez : " + bold("cqr status"));
   console.log("");
-  info("l'auto-compaction est ACTIVE par défaut (réduit les tokens lors d'un changement de compte, 0 token). Réglages : cqr compact — pour la couper : cqr compact off");
-})().catch((e) => { console.error("\nÉchec de l'installation : " + e.message); process.exit(1); });
+  if (conf.compaction && conf.compaction.enabled) info("l'auto-compaction est ACTIVE (réduit les tokens à chaque changement de compte, 0 token) — réglages : cqr compact, pour la couper : cqr compact off");
+  else info("l'auto-compaction est DÉSACTIVÉE sur ce PC — pour l'activer : cqr compact on");
+}
+
+if (require.main === module) main().catch((e) => { console.error("\nÉchec de l'installation : " + e.message); process.exit(1); });
+
+module.exports = { wantsReactivate };
