@@ -20,7 +20,7 @@ fs.writeFileSync(p.join(CFG, "settings.json"), JSON.stringify({
 }));
 
 // CQR_SKIP_PATH_REGISTER: test seam — never mutate the real Windows registry / shell rc file.
-function install() { return cp.spawnSync(process.execPath, [INSTALLER, "--no-interactive", "--config-dir", CFG], { encoding: "utf8", env: Object.assign({}, process.env, { CQR_SKIP_PATH_REGISTER: "1" }) }); }
+function install(extraEnv) { return cp.spawnSync(process.execPath, [INSTALLER, "--no-interactive", "--config-dir", CFG], { encoding: "utf8", env: Object.assign({}, process.env, { CQR_SKIP_PATH_REGISTER: "1" }, extraEnv || {}) }); }
 const rd = (f) => JSON.parse(fs.readFileSync(f, "utf8"));
 const count = (obj, re) => (JSON.stringify(obj).match(re) || []).length;
 
@@ -62,5 +62,33 @@ assert.strictEqual(count(s2.hooks, /memory-hook\.js/g), 3, "memory hooks still 3
 assert.strictEqual(count(s2.hooks, /cqr-workflow-guard\.js/g), 1, "guard still once (no dup)");
 assert.strictEqual(rd(p.join(IDIR, "statusline.json")).original.command, "echo MINE", "not re-wrapped (original intact)");
 
+// --- mise a jour avec un proxy EN COURS : les fichiers copies ne servent a rien tant que le
+// process n'a pas redemarre (il garde l'ancien code en memoire). L'installeur doit s'en charger.
+// Ici on verifie surtout qu'un PID mort ou absent ne casse ni ne bloque l'installation.
+{
+  const r3 = install();
+  assert.strictEqual(r3.status, 0, "sans proxy.pid : install OK, aucun redemarrage tente");
+  assert.ok(!/redémarré sur le nouveau code/.test(r3.stdout), "rien a redemarrer -> aucun message trompeur");
+  fs.writeFileSync(p.join(IDIR, "proxy.pid"), "999999"); // PID qui n'existe pas
+  const r4 = install();
+  assert.strictEqual(r4.status, 0, "PID mort : install OK (pas de plantage, pas d'attente)");
+  assert.ok(!/redémarré sur le nouveau code/.test(r4.stdout), "PID mort -> pas de faux 'redémarré'");
+  // un vrai proxy en cours : le redemarrage est tente et signale
+  const OFFLINE = { CQR_UPSTREAM_HOST: "127.0.0.1", CQR_UPSTREAM_PORT: "9", CQR_UPSTREAM_HTTP: "1" }; // aucune sonde reseau reelle
+  const proxy = cp.spawn(process.execPath, [p.join(IDIR, "proxy.js")], { stdio: "ignore", windowsHide: true, detached: false, env: Object.assign({}, process.env, OFFLINE) });
+  try {
+    let up = false;
+    for (let i = 0; i < 40 && !up; i++) { up = fs.existsSync(p.join(IDIR, "proxy.pid")) && fs.readFileSync(p.join(IDIR, "proxy.pid"), "utf8").trim() === String(proxy.pid); if (!up) cp.spawnSync(process.execPath, ["-e", "setTimeout(()=>{},150)"]); }
+    if (up) {
+      const r5 = install(OFFLINE);
+      assert.strictEqual(r5.status, 0, "proxy en cours : install OK");
+      assert.ok(/redémarré sur le nouveau code|cqr restart/.test(r5.stdout), "proxy en cours -> redemarrage tente et signale: " + r5.stdout);
+    }
+  } finally {
+    try { process.kill(proxy.pid); } catch (e) {}
+    try { const pid = parseInt(fs.readFileSync(p.join(IDIR, "proxy.pid"), "utf8").trim(), 10); if (pid && pid !== proxy.pid) process.kill(pid); } catch (e) {}
+  }
+}
+
 fs.rmSync(CFG, { recursive: true, force: true });
-console.log("PASS — upgrade v1->current: preserves config, adds new hooks + statusline, idempotent");
+console.log("PASS — upgrade v1->current: preserves config, adds new hooks + statusline, idempotent, proxy redemarre sur le nouveau code");

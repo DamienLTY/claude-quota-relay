@@ -183,6 +183,21 @@ function setupStatusline(settings) {
   return original ? "wrapped" : "added";
 }
 
+// Le proxy tourne peut-etre DEJA, avec l'ANCIEN code : copier les fichiers ne suffit pas, un
+// process Node garde en memoire la version chargee a son demarrage. Sans ce redemarrage, une mise
+// a jour reste sans effet (piege reel vecu sur un 2e PC : credits invisibles, requetes retenues,
+// alors que les fichiers etaient bien a jour). On redemarre donc AUTOMATIQUEMENT s'il tourne.
+// Renvoie true (redemarre), false (echec) ou null (aucun proxy en cours -> rien a faire).
+function restartProxyIfRunning() {
+  const pidFile = p.join(INSTALL_DIR, "proxy.pid");
+  let pid = null;
+  try { pid = parseInt(fs.readFileSync(pidFile, "utf8").trim(), 10); } catch (e) { return null; }
+  if (!pid) return null;
+  try { process.kill(pid, 0); } catch (e) { if (e.code !== "EPERM") return null; } // pas vivant -> rien
+  const r = require("child_process").spawnSync(process.execPath, [p.join(INSTALL_DIR, "cli.js"), "restart"], { encoding: "utf8", windowsHide: true });
+  return r.status === 0;
+}
+
 // Reponse "oui" a la question de reactivation (vide = oui : on recommande ON).
 function wantsReactivate(answer) {
   const a = String(answer || "").trim().toLowerCase();
@@ -257,6 +272,9 @@ async function main() {
   ok("Claude Code configuré : routage, timeouts" + (res.hooksAdded ? ", hooks" : "") + " (tout automatique)");
   ok("statusline " + (res.statusline === "kept" ? "déjà en place" : res.statusline === "wrapped" ? "ajoutée (la vôtre est conservée)" : "ajoutée"));
   ok("commande `cqr` " + (alias.skipped ? "scripts prêts" : alias.changed ? "ajoutée à votre PATH" : "déjà disponible"));
+  const restarted = restartProxyIfRunning();
+  if (restarted === true) ok("proxy redémarré sur le nouveau code (sinon il aurait continué avec l'ancien)");
+  else if (restarted === false) warn("le proxy tournait mais n'a pas pu redémarrer — faites-le à la main : cqr restart");
   if (res.targetApiUrl) ok("réseau d'entreprise détecté (ANTHROPIC_TARGET_API_URL = " + res.targetApiUrl + ") — le proxy passera automatiquement par là");
 
   section("Prochaines étapes");
