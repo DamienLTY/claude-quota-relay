@@ -188,6 +188,12 @@ function wantsReactivate(answer) {
   const a = String(answer || "").trim().toLowerCase();
   return a === "" || a.startsWith("o") || a.startsWith("y");
 }
+// Credits d'usage supplementaire : de l'ARGENT peut etre en jeu -> vide = NON (l'inverse de
+// la compaction, qui est gratuite). Il faut un "oui" explicite.
+function wantsCredits(answer) {
+  const a = String(answer || "").trim().toLowerCase();
+  return a.startsWith("o") || a.startsWith("y");
+}
 
 async function main() {
   console.log(bold("claude-quota-relay") + dim("  —  installeur"));
@@ -226,6 +232,19 @@ async function main() {
     tokensLine = (conf.tokens || []).length + " compte(s), configurés";
   }
 
+  // Crédits d'usage supplémentaire : proposés UNE seule fois (puis `overage.asked` empêche de
+  // reposer la question à chaque mise à jour), défaut NON — ils peuvent être facturés, donc jamais
+  // activés sans un oui explicite. Non-interactif : rien n'est demandé ni activé.
+  if (!conf.overage.use && !conf.overage.asked && !NO_INTERACTIVE) {
+    const ans = await prompt1("\n  " + bold("Utiliser vos crédits d'usage supplémentaire (« extra usage ») ?") +
+      "\n  Quand PLUS AUCUN compte n'a de forfait, le relais continue sur les crédits au lieu d'attendre le" +
+      "\n  reset — ils couvrent aussi la limite hebdomadaire (sinon : plusieurs jours d'attente)." +
+      "\n  " + yellow("Selon votre offre Anthropic, ces crédits peuvent être facturés.") + " Modifiable après : cqr credits on|off. [o/N] ");
+    conf.overage.asked = true;
+    if (wantsCredits(ans)) conf.overage.use = true;
+    fs.writeFileSync(tokensPath, JSON.stringify(conf, null, 2));
+  }
+
   const res = patchSettings(conf);
   // CQR_SKIP_PATH_REGISTER=1 is a test seam: writes the wrapper scripts but never touches the
   // real registry / shell rc file (used by the automated test suite; never set this yourself).
@@ -257,4 +276,4 @@ async function main() {
 
 if (require.main === module) main().catch((e) => { console.error("\nÉchec de l'installation : " + e.message); process.exit(1); });
 
-module.exports = { wantsReactivate };
+module.exports = { wantsReactivate, wantsCredits };

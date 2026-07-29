@@ -3,7 +3,7 @@
 // quel et on explique comment l'activer. Run: node test/compaction-migrate.test.js
 const assert = require("assert");
 const fs = require("fs"), os = require("os"), p = require("path"), cp = require("child_process");
-const { wantsReactivate } = require("../src/install.js"); // require ne lance PAS l'install (guard require.main)
+const { wantsReactivate, wantsCredits } = require("../src/install.js"); // require ne lance PAS l'install (guard require.main)
 
 // parsing oui/non (defaut vide = reactiver, on recommande ON)
 ["", "o", "O", "oui", "Oui", "y", "yes"].forEach((a) => assert.strictEqual(wantsReactivate(a), true, "'" + a + "' -> reactiver"));
@@ -34,5 +34,12 @@ const r2 = cp.spawnSync(process.execPath, [p.join(__dirname, "..", "src", "insta
 assert.strictEqual(r2.status, 0, "installer (cfg2) exits 0: " + (r2.stderr || ""));
 assert.strictEqual(JSON.parse(fs.readFileSync(p.join(IDIR2, "tokens.json"), "utf8")).compaction.enabled, true, "config sans compaction -> ON par defaut");
 
+// credits : de l'ARGENT -> il faut un OUI explicite (vide = non, contrairement a la compaction)
+["o", "O", "oui", "y", "yes"].forEach((a) => assert.strictEqual(wantsCredits(a), true, "'" + a + "' -> credits ON"));
+["", " ", "n", "non", "no", "nope", "peut-etre"].forEach((a) => assert.strictEqual(wantsCredits(a), false, "'" + a + "' -> credits OFF"));
+// non-interactif : jamais actives tout seuls, et la question reste a poser (asked non pose)
+assert.strictEqual(conf.overage.use, false, "non-interactif : credits jamais actives sans accord");
+assert.ok(!conf.overage.asked, "non-interactif : la question sera posee a la prochaine install interactive");
+
 fs.rmSync(CFG, { recursive: true, force: true });
-console.log("PASS — migration compaction: OFF preservee en non-interactif + guidage; wantsReactivate OK; neuf -> ON");
+console.log("PASS — migration compaction: OFF preservee en non-interactif + guidage; wantsReactivate OK; neuf -> ON; credits jamais actives sans oui explicite");
