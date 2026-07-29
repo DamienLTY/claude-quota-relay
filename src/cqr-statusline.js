@@ -76,19 +76,18 @@ if (accts.length) {
   else { nextReset = soonest(accts, "reset7"); weeklyWait = nextReset != null; }
   const sep = col(90, " │ ");
   const seg7 = accts.map((a) => tag(a.idx) + " " + bar(a.d7, 4) + " " + col(hcol(a.d7), (a.d7 == null ? "?" : a.d7) + "%")).join(sep);
-  // Credits d'usage supplementaire : affiches seulement s'ils sont AUTORISES (cqr credits on) et
-  // connus -- sinon aucun bruit visuel pour ceux qui ne s'en servent pas. On montre l'ARGENT qui
-  // reste (somme sur les comptes utilisables) des que le montant est connu ; a defaut, le % .
+  // Pastille "crédits d'usage supplémentaire" : dit d'un coup d'oeil si le travail EN COURS est
+  // facturé aux crédits. VERT = oui, le compte actif est servi sur les crédits ; ROUGE = non, on
+  // consomme le forfait normal. Le montant, lui, n'est pas affichable : Anthropic refuse de le
+  // donner a nos cles (403, scope user:profile) -- voir lib.creditsRemaining. Affichee seulement
+  // si les credits sont autorises (cqr credits on), sinon aucun bruit visuel.
   const ovConf = conf.overage || {};
   let crSeg = "";
   if (ovConf.use) {
-    const usable = accts.filter((a) => lib.overageUsable(a.ov, ovConf.maxPercent));
-    if (usable.length) {
-      const rem = usable.map((a) => lib.creditsRemaining(a.ov, ovConf, a.name)).filter((v) => v != null);
-      const worst = Math.max.apply(null, usable.map((a) => (a.ov.u == null ? 0 : a.ov.u)));
-      const txt = rem.length ? lib.fmtMoney(rem.reduce((x, y) => x + y, 0), ovConf.currency) : worst + "%";
-      crSeg = sep + col(hcol(worst), "cr " + txt);
-    }
+    const act = accts.find((a) => a.idx === (state.activeIndex || 0)) || accts[0];
+    const on = !!(act && act.ov && (act.ov.onCredits || act.ov.inUse));
+    // pastille PLEINE (vert) / CREUSE (rouge) : la forme porte l'info meme sans couleur (NO_COLOR)
+    crSeg = sep + col(on ? 32 : 31, "cr " + (on ? "●" : "○"));
   }
   ours = "5h " + bar5 + " " + col(hcol(mean), (mean == null ? "?" : mean) + "%") + " " + col(90, "↻" + (weeklyWait ? "7j" : "")) + " "
     + (weeklyWait ? clockDay(nextReset) : clock(nextReset)) + sep + "7j " + seg7 + crSeg;

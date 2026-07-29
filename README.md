@@ -163,14 +163,21 @@ cqr credits max 50       # n'en consommer que la moitié, puis se remettre à at
 cqr credits off          # revenir au comportement d'origine (attendre le reset)
 ```
 
-**Voir l'argent qui reste (`cr 18,40 €` dans la statusline).** Anthropic ne nous donne pas le montant : l'endpoint qui le contient (`/api/oauth/usage`, champs `monthly_limit` / `used_credits` / `currency`) **refuse nos clés** — celles de `claude setup-token` n'ont pas le droit de lire la facturation (`403 : scope user:profile`). En revanche, chaque réponse indique le **pourcentage consommé**. Donnez donc le montant **une seule fois** et le relais fait la conversion :
+**Dans la statusline : une pastille, rien de plus.** Une fois les crédits autorisés, la barre d'état se termine par `cr ●` (vert, plein) ou `cr ○` (rouge, creux) :
+
+| Pastille | Ce que ça veut dire |
+|---|---|
+| `cr ○` rouge | vous consommez votre **forfait** normal — les crédits ne sont pas touchés |
+| `cr ●` vert | le compte utilisé en ce moment est **servi sur les crédits** |
+
+La forme change en même temps que la couleur, donc ça reste lisible sans couleurs (`NO_COLOR`).
+
+**Pourquoi pas le montant restant ?** Anthropic ne nous le donne pas : l'endpoint qui le contient (`/api/oauth/usage` → `monthly_limit` / `used_credits` / `currency`) **refuse nos clés** — celles de `claude setup-token` n'ont pas le droit de lire la facturation (`403 : scope user:profile`). Seul le **pourcentage consommé** nous parvient. Si vous connaissez votre montant, donnez-le une fois et `cqr credits` / `cqr status` afficheront l'argent restant (la statusline, elle, garde la pastille) :
 
 ```bash
 cqr credits budget 20 EUR        # 20 € pour tous les comptes
 cqr credits budget compte-2 50   # montant propre à un compte
 ```
-
-Sans montant, la statusline affiche le pourcentage consommé (`cr 8 %`) plutôt que rien.
 
 Règles appliquées :
 

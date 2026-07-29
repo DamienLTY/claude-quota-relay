@@ -321,7 +321,13 @@ function applyQuota(st, name, q) {
   if (q.max != null) { st.pct = st.pct || {}; st.pct[name] = { max: q.max, h5: q.u5h, d7: q.u7d, at: ts() }; }
   if (q.r5) { st.reset5h = st.reset5h || {}; st.reset5h[name] = q.r5; }
   if (q.r7) { st.reset7d = st.reset7d || {}; st.reset7d[name] = q.r7; }
-  if (q.ovStatus) { st.overage = st.overage || {}; st.overage[name] = { status: q.ovStatus, u: q.ovU, uRaw: q.ovURaw, reset: q.ovReset, reason: q.ovReason, inUse: q.ovInUse, at: ts() }; }
+  if (q.ovStatus) {
+    st.overage = st.overage || {};
+    // onCredits = meme calcul que Claude Code (isUsingOverage) : le forfait est annonce epuise ET
+    // les credits couvrent -> cette reponse a ete facturee aux credits. C'est ce qui allume la
+    // pastille verte de la statusline.
+    st.overage[name] = { status: q.ovStatus, u: q.ovU, uRaw: q.ovURaw, reset: q.ovReset, reason: q.ovReason, inUse: q.ovInUse, onCredits: q.statuses.indexOf("rejected") >= 0 && q.ovAllowed, at: ts() };
+  }
 }
 function logRate(headers, statusCode, name) {
   const rl = {}; for (const k of Object.keys(headers)) if (/^anthropic-ratelimit/i.test(k) || k === "retry-after") rl[k] = headers[k];

@@ -211,7 +211,8 @@ function creditsStr(ov, ovConf, name) {
   const left = rem != null
     ? lib.fmtMoney(rem, (ovConf || {}).currency) + " restants sur " + lib.fmtMoney(lib.creditsBudget(ovConf, name), (ovConf || {}).currency)
     : (ov.u == null ? "disponibles" : ov.u + "% utilisés (montant inconnu — cqr credits budget <montant> pour l'afficher en €)");
-  return "crédits: " + left + (ov.reset ? " (recharge dans " + eta(ov.reset) + ")" : "");
+  const now = (ov.onCredits || ov.inUse) ? " [EN COURS D'UTILISATION]" : "";
+  return "crédits: " + left + (ov.reset ? " (recharge dans " + eta(ov.reset) + ")" : "") + now;
 }
 function showStatus() {
   let c, s;

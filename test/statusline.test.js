@@ -77,21 +77,26 @@ function run(DIR) {
   assert.ok(/↻7j (dim|lun|mar|mer|jeu|ven|sam) \d\dh\d\d/.test(out), "reset hebdo date (jour + heure)");
 }
 
-// Case E: credits d'usage supplementaire -- rien ne s'affiche tant qu'ils ne sont pas autorises ;
-// une fois autorises on montre l'ARGENT qui reste (le % seulement si le montant est inconnu).
+// Case E: pastille credits -- rien tant qu'ils ne sont pas autorises ; puis VERT si le compte
+// ACTIF est servi sur les credits, ROUGE sinon (aucun pourcentage, aucun montant : illisible /
+// indisponible). On teste sur la sortie COLOREE (c'est la couleur qui porte l'information).
 {
-  const st = { overage: { compte1: { status: "allowed", u: 8, uRaw: 0.08 }, compte2: { status: "rejected", reason: "org_level_disabled" } } };
-  assert.ok(!/cr /.test(strip(run(setup({ original: null }, { state: st })))), "credits non autorises -> aucun affichage");
-  const noBudget = strip(run(setup({ original: null }, { state: st, conf: { overage: { use: true, maxPercent: 100 } } })));
-  assert.ok(/cr 8%/.test(noBudget), "montant inconnu -> repli sur le % consomme: " + noBudget);
-  const out = strip(run(setup({ original: null }, { state: st, conf: { overage: { use: true, maxPercent: 100, budget: 20, currency: "EUR" } } })));
-  assert.ok(/cr 18,40 €/.test(out), "montant connu -> argent restant (20 - 8%) = 18,40 €: " + out);
-  // plusieurs comptes avec des credits : on additionne ce qui reste (vue "sous disponibles")
-  const two = strip(run(setup({ original: null }, {
-    state: { overage: { compte1: { status: "allowed", uRaw: 0.5 }, compte2: { status: "allowed", uRaw: 0 } } },
-    conf: { overage: { use: true, budget: 10, currency: "EUR" } },
-  })));
-  assert.ok(/cr 15,00 €/.test(two), "somme des restes (5 + 10): " + two);
+  const st = { activeIndex: 0, overage: { compte1: { status: "allowed", u: 8, onCredits: false }, compte2: { status: "allowed", u: 0, onCredits: true } } };
+  assert.ok(!/cr /.test(strip(run(setup({ original: null }, { state: st })))), "credits non autorises -> aucune pastille");
+  const conf = { overage: { use: true, maxPercent: 100 } };
+  const red = run(setup({ original: null }, { state: st, conf }));
+  assert.ok(/\x1b\[31mcr ○/.test(red), "compte actif sur le forfait -> pastille ROUGE et creuse");
+  assert.ok(!/\d+\s*%/.test(strip(red).split("│").pop()), "aucun pourcentage dans le segment credits");
+  // le compte actif (index 1) est servi sur les credits -> vert
+  const green = run(setup({ original: null }, { state: Object.assign({}, st, { activeIndex: 1 }), conf }));
+  assert.ok(/\x1b\[32mcr ●/.test(green), "compte actif sur les credits -> pastille VERTE et pleine");
+  // overage-in-use suffit aussi (autre signal renvoye par l'API)
+  const green2 = run(setup({ original: null }, { state: { activeIndex: 0, overage: { compte1: { status: "allowed", inUse: true } } }, conf }));
+  assert.ok(/\x1b\[32mcr ●/.test(green2), "overage-in-use:true -> pastille VERTE aussi");
+  // sans couleur (NO_COLOR), la FORME porte encore l'information
+  const DIRp = setup({ original: null }, { state: st, conf });
+  const plain = cp.spawnSync(process.execPath, [SCRIPT], { input: "{}", env: Object.assign({}, process.env, { CQR_DIR: DIRp, NO_COLOR: "1" }), encoding: "utf8" }).stdout;
+  assert.ok(/cr ○/.test(plain) && !/\x1b\[/.test(plain), "NO_COLOR : pastille creuse lisible sans couleur: " + plain);
 }
 
 // lib : conversion % -> argent (l'API ne donne pas le montant a nos tokens, l'utilisateur le saisit)
