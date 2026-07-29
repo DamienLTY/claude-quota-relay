@@ -163,12 +163,12 @@ cqr credits max 50       # n'en consommer que la moitié, puis se remettre à at
 cqr credits off          # revenir au comportement d'origine (attendre le reset)
 ```
 
-**Dans la statusline : une pastille, rien de plus.** Une fois les crédits autorisés, la barre d'état se termine par `cr ●` (vert, plein) ou `cr ○` (rouge, creux) :
+**Dans la statusline : une pastille, rien de plus.** Une fois les crédits autorisés, la barre d'état se termine par `crédits ●` (vert, plein) ou `crédits ○` (rouge, creux) :
 
 | Pastille | Ce que ça veut dire |
 |---|---|
-| `cr ○` rouge | vous consommez votre **forfait** normal — les crédits ne sont pas touchés |
-| `cr ●` vert | le compte utilisé en ce moment est **servi sur les crédits** |
+| `crédits ○` rouge | vous consommez votre **forfait** normal — les crédits ne sont pas touchés |
+| `crédits ●` vert | le compte utilisé en ce moment est **servi sur les crédits** |
 
 La forme change en même temps que la couleur, donc ça reste lisible sans couleurs (`NO_COLOR`).
 

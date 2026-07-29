@@ -82,21 +82,21 @@ function run(DIR) {
 // indisponible). On teste sur la sortie COLOREE (c'est la couleur qui porte l'information).
 {
   const st = { activeIndex: 0, overage: { compte1: { status: "allowed", u: 8, onCredits: false }, compte2: { status: "allowed", u: 0, onCredits: true } } };
-  assert.ok(!/cr /.test(strip(run(setup({ original: null }, { state: st })))), "credits non autorises -> aucune pastille");
+  assert.ok(!/crédits /.test(strip(run(setup({ original: null }, { state: st })))), "credits non autorises -> aucune pastille");
   const conf = { overage: { use: true, maxPercent: 100 } };
   const red = run(setup({ original: null }, { state: st, conf }));
-  assert.ok(/\x1b\[31mcr ○/.test(red), "compte actif sur le forfait -> pastille ROUGE et creuse");
+  assert.ok(/\x1b\[31mcrédits ○/.test(red), "compte actif sur le forfait -> pastille ROUGE et creuse");
   assert.ok(!/\d+\s*%/.test(strip(red).split("│").pop()), "aucun pourcentage dans le segment credits");
   // le compte actif (index 1) est servi sur les credits -> vert
   const green = run(setup({ original: null }, { state: Object.assign({}, st, { activeIndex: 1 }), conf }));
-  assert.ok(/\x1b\[32mcr ●/.test(green), "compte actif sur les credits -> pastille VERTE et pleine");
+  assert.ok(/\x1b\[32mcrédits ●/.test(green), "compte actif sur les credits -> pastille VERTE et pleine");
   // overage-in-use suffit aussi (autre signal renvoye par l'API)
   const green2 = run(setup({ original: null }, { state: { activeIndex: 0, overage: { compte1: { status: "allowed", inUse: true } } }, conf }));
-  assert.ok(/\x1b\[32mcr ●/.test(green2), "overage-in-use:true -> pastille VERTE aussi");
+  assert.ok(/\x1b\[32mcrédits ●/.test(green2), "overage-in-use:true -> pastille VERTE aussi");
   // sans couleur (NO_COLOR), la FORME porte encore l'information
   const DIRp = setup({ original: null }, { state: st, conf });
   const plain = cp.spawnSync(process.execPath, [SCRIPT], { input: "{}", env: Object.assign({}, process.env, { CQR_DIR: DIRp, NO_COLOR: "1" }), encoding: "utf8" }).stdout;
-  assert.ok(/cr ○/.test(plain) && !/\x1b\[/.test(plain), "NO_COLOR : pastille creuse lisible sans couleur: " + plain);
+  assert.ok(/crédits ○/.test(plain) && !/\x1b\[/.test(plain), "NO_COLOR : pastille creuse lisible sans couleur: " + plain);
 }
 
 // lib : conversion % -> argent (l'API ne donne pas le montant a nos tokens, l'utilisateur le saisit)

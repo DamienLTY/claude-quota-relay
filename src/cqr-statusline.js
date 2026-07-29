@@ -87,7 +87,7 @@ if (accts.length) {
     const act = accts.find((a) => a.idx === (state.activeIndex || 0)) || accts[0];
     const on = !!(act && act.ov && (act.ov.onCredits || act.ov.inUse));
     // pastille PLEINE (vert) / CREUSE (rouge) : la forme porte l'info meme sans couleur (NO_COLOR)
-    crSeg = sep + col(on ? 32 : 31, "cr " + (on ? "●" : "○"));
+    crSeg = sep + col(on ? 32 : 31, "crédits " + (on ? "●" : "○"));
   }
   ours = "5h " + bar5 + " " + col(hcol(mean), (mean == null ? "?" : mean) + "%") + " " + col(90, "↻" + (weeklyWait ? "7j" : "")) + " "
     + (weeklyWait ? clockDay(nextReset) : clock(nextReset)) + sep + "7j " + seg7 + crSeg;
