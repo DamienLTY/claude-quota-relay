@@ -65,5 +65,47 @@ const conf = () => JSON.parse(fs.readFileSync(p.join(DIR, "tokens.json"), "utf8"
   assert.ok(/dernière : aucune encore/.test(r.stdout), "sans compaction: message explicite");
 }
 
+// --- credits d'usage supplementaire (extra usage) ---
+// Argent : jamais consommes sans accord explicite -> off par defaut, on/off/max pilotables.
+{
+  const r = run("credits");
+  assert.strictEqual(r.status, 0, "cqr credits exits 0: " + r.stderr);
+  assert.ok(/autorisés\s*: non/.test(r.stdout), "off par defaut: " + r.stdout);
+  assert.ok(/plafond/.test(r.stdout), "montre le plafond");
+  assert.ok(/hebdomadaire/.test(r.stdout), "explique que les credits couvrent aussi la limite 7j");
+}
+{
+  const r = run("credits", "on");
+  assert.strictEqual(r.status, 0, "credits on exits 0");
+  assert.strictEqual(conf().overage.use, true, "overage.use = true");
+  assert.ok(/facturés/.test(r.stdout), "previent que ca peut etre facture");
+  assert.ok(/AUCUN compte n'a plus de forfait/.test(r.stdout), "dit que c'est le dernier recours");
+}
+{
+  const r = run("credits", "max", "50");
+  assert.strictEqual(r.status, 0, "credits max exits 0");
+  assert.strictEqual(conf().overage.maxPercent, 50, "plafond enregistre");
+  assert.strictEqual(run("credits", "max", "150").status, 1, "plafond hors bornes refuse");
+}
+// etat par compte : lu depuis state.overage (ce que le proxy a vu dans les en-tetes)
+{
+  fs.writeFileSync(p.join(DIR, "state.json"), JSON.stringify({ activeIndex: 0, overage: { 1: { status: "allowed", u: 12, reset: Date.now() + 3600000 } } }));
+  const r = run("credits");
+  assert.ok(/12% utilisés/.test(r.stdout), "montre la part de credits consommee: " + r.stdout);
+  // au-dessus du plafond (12% < 50% ici : on repasse le plafond a 10 pour verifier le blocage)
+  run("credits", "max", "10");
+  assert.ok(/plafond atteint/.test(run("credits").stdout), "signale quand le plafond bloque");
+}
+// raison d'indisponibilite traduite (cas reel : usage supplementaire desactive sur le compte)
+{
+  fs.writeFileSync(p.join(DIR, "state.json"), JSON.stringify({ activeIndex: 0, overage: { 1: { status: "rejected", reason: "org_level_disabled" } } }));
+  const r = run("credits");
+  assert.ok(/indisponibles/.test(r.stdout), "dit indisponible");
+  assert.ok(/claude\.ai\/settings\/usage/.test(r.stdout), "explique OU les activer");
+}
+{ // help
+  assert.ok(run("help").stdout.includes("cqr credits"), "help mentionne cqr credits");
+}
+
 fs.rmSync(DIR, { recursive: true, force: true });
-console.log("PASS — cqr help lists commands; compact dynamic on auto-enables compaction; unknown -> help; derniere compaction visible");
+console.log("PASS — cqr help lists commands; compact dynamic on auto-enables compaction; unknown -> help; derniere compaction visible; credits on/off/max + etat par compte");

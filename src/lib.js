@@ -195,10 +195,46 @@ function fmtDur(ms) {
 // quota view from proxy state. Used by the statusline, the workflow guard, and `cqr preflight`.
 function accounts(conf, state) {
   const pct = (state && state.pct) || {}, r5 = (state && state.reset5h) || {}, r7 = (state && state.reset7d) || {};
+  const ov = (state && state.overage) || {};
   return (conf.tokens || []).map((t, i) => ({
     idx: i, name: t.name, enabled: t.enabled !== false, placeholder: isPlaceholder(t),
     h5: (pct[t.name] || {}).h5, d7: (pct[t.name] || {}).d7, reset5: r5[t.name], reset7: r7[t.name],
+    ov: ov[t.name] || null,
   })).filter((x) => !x.placeholder);
+}
+
+// ---- Credits d'usage supplementaire ("extra usage" / overage) ----
+// Anthropic sert la requete MEME quand le forfait (5h ou 7j) est epuise, si le compte a des
+// credits : la reponse est alors un 200 normal avec anthropic-ratelimit-unified-status:rejected
+// ET anthropic-ratelimit-unified-overage-status:allowed (c'est exactement ce que Claude Code lit
+// pour afficher "usage credits"). Un compte dans cet etat est donc ENCORE UTILISABLE, alors que
+// le relais, lui, le mettait en quarantaine et attendait le reset.
+// ov = { status, u (0-100 % des credits consommes), reset, reason, inUse }.
+function overageUsable(ov, maxPercent) {
+  if (!ov || !/^allowed/.test(String(ov.status || ""))) return false; // allowed | allowed_warning
+  const cap = maxPercent == null ? 100 : Number(maxPercent);
+  if (!isFinite(cap)) return true;
+  return ov.u == null || ov.u < cap; // u inconnu -> on tente (le serveur tranchera)
+}
+
+// Pourquoi les credits sont indisponibles, en francais simple (valeurs renvoyees par l'API).
+const OVERAGE_REASONS = {
+  org_level_disabled: "l'usage supplémentaire est désactivé sur ce compte (à activer sur claude.ai/settings/usage)",
+  org_level_disabled_until: "l'usage supplémentaire est suspendu jusqu'à la prochaine période",
+  org_spend_cap_reached: "le plafond de dépense de l'organisation est atteint",
+  out_of_credits: "plus de crédits disponibles",
+  seat_tier_level_disabled: "désactivé pour ce type de siège",
+  member_level_disabled: "désactivé pour ce membre",
+  seat_tier_zero_credit_limit: "limite de crédits à zéro pour ce siège",
+  group_zero_credit_limit: "limite de crédits à zéro pour ce groupe",
+  member_zero_credit_limit: "limite de crédits à zéro pour ce membre",
+  org_service_level_disabled: "désactivé au niveau du service",
+  no_limits_configured: "aucune limite de crédits configurée",
+  fetch_error: "état des crédits indisponible (erreur réseau)",
+};
+function overageReasonFr(reason) {
+  if (!reason) return null;
+  return OVERAGE_REASONS[reason] || reason;
 }
 
 // Lowest 5h utilization among usable accounts (the "freshest" account), or null if unknown.
@@ -207,4 +243,4 @@ function bestHeadroom(conf, state) {
   return vals.length ? Math.min.apply(null, vals) : null;
 }
 
-module.exports = { TOKEN_RE, isPlaceholder, mask, configDir, settingsPath, readConf, writeConf, ask, findClaude, captureSetupToken, pasteTokenManually, syncAuthToken, healthiestToken, preferredCompactionToken, anthropicPost, haikuSummarize, fmtDur, accounts, bestHeadroom, resolveUpstream };
+module.exports = { TOKEN_RE, isPlaceholder, mask, configDir, settingsPath, readConf, writeConf, ask, findClaude, captureSetupToken, pasteTokenManually, syncAuthToken, healthiestToken, preferredCompactionToken, anthropicPost, haikuSummarize, fmtDur, accounts, bestHeadroom, resolveUpstream, overageUsable, overageReasonFr, OVERAGE_REASONS };

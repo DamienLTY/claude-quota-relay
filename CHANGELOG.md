@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.10.0
+
+- **Fix — un compte qui répond était mis en quarantaine.** Quand un compte a des **crédits d'usage supplémentaire** (« extra usage »), Anthropic **sert quand même la requête** une fois le forfait épuisé : la réponse est un `200` normal, mais avec `anthropic-ratelimit-unified-status: rejected` **et** `anthropic-ratelimit-unified-overage-status: allowed` (exactement ce que Claude Code lit pour afficher « usage credits »). Le relais, lui, ne regardait que le `rejected` : il mettait le compte en pause et attendait un reset **alors que le compte répondait parfaitement**. Corrigé côté requêtes *et* côté sonde de quota, sans réglage à activer.
+- **Nouveau : `cqr credits`** — les crédits comme **dernier recours**, uniquement si vous l'autorisez (ils peuvent être facturés, donc **off par défaut**). `cqr credits on|off`, `cqr credits max <pct>` (n'en consommer qu'une partie), `cqr credits` (état par compte : disponibles / % consommé / date de recharge, ou la raison traduite quand ils sont indisponibles).
+  - jamais utilisés tant qu'un compte a encore du forfait gratuit ;
+  - ils **franchissent la limite hebdomadaire (7 j)** — c'est le seul moyen de continuer quand la semaine est épuisée au lieu d'attendre plusieurs jours ;
+  - un vrai `429` reste un vrai refus (mise en pause du compte, comme avant) ;
+  - `overage.use` absent/false ⇒ routage **strictement identique** à la 0.9.0.
+- **Statusline — l'heure de reset ne ment plus.** L'heure affichée après `↻` ne considère que les comptes ayant encore du quota **hebdomadaire** : un compte à 100 % sur 7 j ne redevient pas utilisable à son reset 5 h, l'afficher donnait un faux espoir. Si **aucun** compte n'a de quota hebdomadaire, c'est le reset **hebdomadaire le plus proche** qui s'affiche, marqué et daté (`↻7j sam 02h00`). Les crédits autorisés apparaissent en fin de ligne (`cr 8 %`).
+- `cqr status` affiche l'état des crédits, compte par compte. `proxy.log` trace `OVERAGE` (routage sur crédits / requête servie sur crédits).
+- Nouveaux tests : en-têtes overage, palier de routage crédits (6 cas), e2e « 200 servi sur crédits », statusline (reset hebdo + crédits), `cqr credits`. 22 suites, toutes vertes.
+
 ## 0.9.0
 
 - **Plafond de réserve pour fiabiliser la compaction (garde-fou non-désactivable).** La compaction native s'attache à la requête envoyée au compte cible ; si la politique autorisait à monter jusqu'à 100 % (`waitAtSoftPercent` désactivé = « utiliser la marge jusqu'au rejet »), cette requête se faisait **rejeter (429) et la compaction partait avec elle — perdue**. Désormais, **quand la compaction est active, on ne route/ride jamais un compte au-delà de 97 % de 5h** : au-delà, on bascule vers un compte plus frais, sinon on attend un reset. Il reste ainsi toujours de la marge pour que la requête compactée soit acceptée. On peut être *plus* prudent (`cqr policy waitsoft <N>` plus bas) mais pas dépasser ce plafond. Aucun effet si la compaction est désactivée (comportement inchangé).

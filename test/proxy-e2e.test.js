@@ -29,6 +29,9 @@ function health(port) {
 // AND returns rate-limit headers whose value increments on every hit (per-token counter) --
 // lets the live-poll test detect that a token got probed AGAIN (a changed % = a new probe).
 const probeHits = {};
+// mockMode="overage" : rejoue le cas reel "forfait epuise mais credits disponibles" -- Anthropic
+// repond 200 (la requete EST servie, facturee aux credits) avec unified-status:rejected.
+let mockMode = null;
 function startMock() {
   return new Promise((resolve) => {
     const srv = http.createServer((req, res) => {
@@ -36,12 +39,19 @@ function startMock() {
         let body = {}; try { body = JSON.parse(b); } catch (e) {}
         const auth = req.headers["authorization"] || "";
         probeHits[auth] = (probeHits[auth] || 0) + 1;
-        res.writeHead(200, {
+        res.writeHead(200, Object.assign({
           "content-type": "application/json",
           "anthropic-ratelimit-unified-5h-utilization": String(Math.min(0.99, probeHits[auth] * 0.01)),
           "anthropic-ratelimit-unified-7d-utilization": "0.5",
           "anthropic-ratelimit-unified-status": "allowed",
-        });
+        }, mockMode === "overage" ? {
+          "anthropic-ratelimit-unified-status": "rejected",
+          "anthropic-ratelimit-unified-5h-status": "rejected",
+          "anthropic-ratelimit-unified-5h-utilization": "1.0",
+          "anthropic-ratelimit-unified-overage-status": "allowed",
+          "anthropic-ratelimit-unified-overage-utilization": "0.03",
+          "anthropic-ratelimit-unified-overage-in-use": "true",
+        } : null));
         res.end(JSON.stringify({ echo: { has_cm: !!body.context_management, edits: (body.context_management || {}).edits || null, beta: req.headers["anthropic-beta"] || null }, usage: { input_tokens: 10, output_tokens: 1 } }));
       });
     });
@@ -61,9 +71,11 @@ function seedState(dir) {
 function writeConf(dir, compaction, opts) {
   opts = opts || {};
   fs.writeFileSync(p.join(dir, "tokens.json"), JSON.stringify({
-    port: PROXY_PORT, switchAtPercent: 94, sevenDayBlockPercent: 99, waitAtSoftPercent: null, maxWaitMs: 600000, pollMs: 15000,
+    port: PROXY_PORT, switchAtPercent: 94, sevenDayBlockPercent: 99,
+    waitAtSoftPercent: opts.waitAtSoftPercent === undefined ? null : opts.waitAtSoftPercent,
+    maxWaitMs: 600000, pollMs: 15000,
     livePollMs: opts.livePollMs,
-    compaction,
+    compaction, overage: opts.overage,
     tokens: [{ name: "account1", token: opts.tokenAccount1 || FAKE, enabled: opts.bothEnabled ? true : false }, { name: "account2", token: FAKE, enabled: true }],
   }));
 }
@@ -114,6 +126,38 @@ function writeConf(dir, compaction, opts) {
     assert.strictEqual(r4.json.echo.has_cm, false, "count_tokens: not compacted (gated to /v1/messages)");
 
     console.log("PASS — proxy e2e: native inject (+beta merge), dry-run no-op, strip mode, count_tokens skipped");
+
+    // --- credits d'usage supplementaire : le cas REEL "forfait epuise, credits dispo" ---
+    // Anthropic renvoie 200 (requete servie sur les credits) avec unified-status:rejected.
+    // Avant : le relais lisait "rejected" -> quarantaine du compte + attente d'un reset qui ne
+    // sert a rien. Maintenant : reponse rendue au client, compte NON bloque, credits enregistres.
+    mockMode = "overage";
+    writeConf(DIR, { enabled: false }, { bothEnabled: true });
+    seedState(DIR);
+    const r5 = await post(PROXY_PORT, "/v1/messages", bigBody());
+    assert.strictEqual(r5.status, 200, "credits: la reponse servie sur les credits est rendue au client");
+    assert.ok(r5.json && r5.json.echo, "credits: corps de reponse intact");
+    const sOv = JSON.parse(fs.readFileSync(p.join(DIR, "state.json"), "utf8"));
+    const exhausted = Object.keys(sOv.exhausted || {}).filter((k) => sOv.exhausted[k] > Date.now());
+    assert.strictEqual(exhausted.length, 0, "credits: aucun compte mis en quarantaine (il repond !): " + JSON.stringify(sOv.exhausted));
+    assert.ok(sOv.overage && Object.keys(sOv.overage).length, "credits: etat des credits enregistre");
+    const anyOv = sOv.overage[Object.keys(sOv.overage)[0]];
+    assert.strictEqual(anyOv.status, "allowed", "credits: statut lu depuis les en-tetes");
+    assert.strictEqual(anyOv.u, 3, "credits: 0.03 -> 3% consommes");
+
+    // ... et quand PLUS AUCUN compte n'a de forfait (waitAtSoftPercent atteint), la requete passe
+    // par les credits au lieu d'etre retenue des heures.
+    writeConf(DIR, { enabled: false }, { bothEnabled: true, waitAtSoftPercent: 95, overage: { use: true, maxPercent: 100 } });
+    fs.writeFileSync(p.join(DIR, "state.json"), JSON.stringify({
+      activeIndex: 0, exhausted: {}, reset5h: { account1: Date.now() + 3600000, account2: Date.now() + 3600000 }, reset7d: {},
+      pct: { account1: { h5: 100, d7: 50 }, account2: { h5: 100, d7: 50 } },
+      overage: { account1: { status: "allowed", u: 3 }, account2: { status: "allowed", u: 3 } },
+    }));
+    const r6 = await Promise.race([post(PROXY_PORT, "/v1/messages", bigBody()), sleep(5000).then(() => ({ held: true }))]);
+    assert.ok(!r6.held, "credits autorises: la requete passe (pas de mise en attente) alors que les 2 comptes sont a 100%");
+    assert.strictEqual(r6.status, 200, "credits: 200 rendu au client");
+    mockMode = null;
+    console.log("PASS — proxy e2e credits: 200 sur credits rendu au client sans quarantaine + routage credits au lieu d'attendre");
 
     // --- live poll: BOTH accounts' quota keeps refreshing in state.json with ZERO client
     // requests (the fix for "statusline only updates the active account, goes stale while

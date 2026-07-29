@@ -142,7 +142,32 @@ Une ligne toujours visible dans Claude Code, montrant le quota de tous vos compt
 5h █████████░ 84% ↻ 19h30 │ 7j ① ███░ 86% │ ② ████ 99%
 ```
 
+L'heure après le `↻` est celle du **prochain reset 5 h utile** : elle ne tient compte que des comptes qui ont encore du quota **hebdomadaire**. Un compte dont la semaine est finie ne redevient pas utilisable à son reset 5 h — afficher son heure serait un faux espoir. Si plus **aucun** compte n'a de quota hebdomadaire, c'est le reset **hebdomadaire** le plus proche qui s'affiche, marqué et daté : `↻7j sam 02h00`.
+
 Elle se met à jour **toute seule toutes les ~45 secondes**, même quand vous ne faites rien et attendez qu'un quota revienne — grâce à une petite vérification quasi gratuite (0 token de sortie). Réglage : `cqr live 30` (secondes) ou `cqr live off`. Si vous aviez déjà une barre d'état, la vôtre est gardée et la nôtre ajoutée à côté.
+
+### Les crédits d'usage supplémentaire (« extra usage ») — désactivés par défaut
+
+Si Anthropic vous a donné (ou vous a vendu) des **crédits d'usage supplémentaire**, votre compte continue de répondre **même une fois le forfait épuisé** : Anthropic sert la requête et la facture aux crédits. Techniquement, la réponse arrive en `200` avec l'en-tête `anthropic-ratelimit-unified-status: rejected` **et** `anthropic-ratelimit-unified-overage-status: allowed`.
+
+Deux conséquences, traitées séparément :
+
+1. **Le compte n'est plus mis en quarantaine à tort.** Une réponse servie sur les crédits est une réponse *réussie* : le relais la rend au client et n'attend aucun reset. C'est corrigé pour tout le monde, sans réglage.
+2. **Les crédits peuvent servir de dernier recours** — mais uniquement si vous le demandez, parce qu'ils peuvent être **facturés** :
+
+```bash
+cqr credits            # ai-je des crédits ? combien en ai-je consommé ?
+cqr credits on         # autoriser leur usage quand plus AUCUN compte n'a de forfait
+cqr credits max 50     # n'en consommer que la moitié, puis se remettre à attendre
+cqr credits off        # revenir au comportement d'origine (attendre le reset)
+```
+
+Règles appliquées :
+
+- **jamais avant d'avoir épuisé le forfait gratuit** — tant qu'un compte a du quota, c'est lui qui sert ;
+- **les crédits couvrent aussi la limite hebdomadaire (7 j)** : c'est le seul moyen de continuer quand la semaine est finie, au lieu d'attendre plusieurs jours ;
+- un vrai refus du serveur (`429`) reste un refus : le compte passe en pause, comme avant ;
+- si `cqr credits` affiche « indisponibles — l'usage supplémentaire est désactivé sur ce compte », c'est un réglage **de votre compte Anthropic**, à activer sur [claude.ai/settings/usage](https://claude.ai/settings/usage).
 
 ### Le garde-fou « workflow »
 
@@ -225,7 +250,7 @@ Tout est dans `~/.claude/claude-quota-relay/tokens.json` :
 }
 ```
 
-Les blocs `compaction` et `workflowGuard` sont ajoutés automatiquement.
+Les blocs `compaction`, `workflowGuard` et `overage` sont ajoutés automatiquement. Le bloc `overage` pilote les crédits d'usage supplémentaire (`{ "use": false, "maxPercent": 100 }` par défaut — voir plus haut) ; réglez-le avec `cqr credits` plutôt qu'à la main.
 
 ### Les timeouts (pourquoi l'attente marche)
 

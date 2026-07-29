@@ -27,6 +27,7 @@ const https = require("https");
 const fs = require("fs");
 const path = require("path");
 const comp = require("./compaction.js");
+const lib = require("./lib.js"); // overageUsable : meme regle "credits utilisables" pour le routage et l'affichage
 
 const DIR = __dirname;
 const CONF = path.join(DIR, "tokens.json");
@@ -76,6 +77,9 @@ function readConf() {
   c.switchAtPercent = num(c.switchAtPercent, 98);          // 5h : seuil de preference
   c.sevenDayBlockPercent = num(c.sevenDayBlockPercent, 99); // 7j : on ne route jamais au-dela
   c.waitAtSoftPercent = c.waitAtSoftPercent == null ? null : num(c.waitAtSoftPercent, null); // null=utiliser la marge
+  // credits d'usage supplementaire : OFF par defaut (ils peuvent etre payants -> jamais depenses
+  // sans accord explicite). `cqr credits on` les autorise, en DERNIER recours seulement.
+  c.overage = Object.assign({ use: false, maxPercent: 100 }, c.overage || {});
   c.pollMs = num(c.pollMs, 15000);
   c.maxWaitMs = num(c.maxWaitMs, 6 * 60 * 60 * 1000);       // plafond d'attente d'une requete
   return c;
@@ -169,6 +173,31 @@ function pickRoute(conf, state, bodyObj) {
     return { idx: fresh[0].i };
   }
 
+  // --- palier "credits d'usage supplementaire" (avant d'attendre) ---
+  // Aucun compte n'a de forfait disponible. Si l'utilisateur a explicitement autorise les credits
+  // (conf.overage.use), un compte dont l'API annonce overage-status=allowed peut ENCORE servir :
+  // Anthropic facture la requete aux credits au lieu de la refuser. On passe donc par la plutot
+  // que d'attendre des heures. Deux points volontaires :
+  //   - ce palier n'est JAMAIS prefere a un compte avec du forfait (il est apres le bloc "fresh"),
+  //     donc on ne depense jamais de credits tant qu'il reste du quota gratuit ;
+  //   - il ignore sevenDayBlockPercent : les credits couvrent aussi la limite HEBDOMADAIRE, c'est
+  //     precisement le cas ou attendre couterait plusieurs JOURS. Les comptes en cooldown apres un
+  //     VRAI 429 restent exclus (le serveur a refuse pour de bon : credits epuises, plafond...).
+  // conf.overage.use absent/false -> ce bloc ne s'execute pas : routage strictement inchange.
+  const ovConf = conf.overage || {};
+  if (ovConf.use) {
+    const ovMax = num(ovConf.maxPercent, 100);
+    const credit = items.filter((x) => !x.exUntil && lib.overageUsable((state.overage || {})[x.name], ovMax));
+    if (credit.length) {
+      // le compte dont les credits sont le moins entames d'abord, puis le moins charge en 5h
+      credit.sort((a, b) => {
+        const ua = ((state.overage || {})[a.name] || {}).u, ub = ((state.overage || {})[b.name] || {}).u;
+        return (ua == null ? 0 : ua) - (ub == null ? 0 : ub) || (a.u5 == null ? 0 : a.u5) - (b.u5 == null ? 0 : b.u5);
+      });
+      return { idx: credit[0].i, overage: true };
+    }
+  }
+
   // il faut attendre : cible = eligible dont la fenetre 5h revient en premier
   if (eligible.length) {
     const cand = eligible.map((x) => ({ i: x.i, until: x.wake5h || x.r5 || (t0 + FIVE_H_MS) }));
@@ -206,14 +235,15 @@ function probeToken(conf, idx, done) {
     pres.resume();
     const q = readQuotaHeaders(pres.headers);
     const st = readState();
-    if (q.max != null) { st.pct = st.pct || {}; st.pct[tok.name] = { max: q.max, h5: q.u5h, d7: q.u7d, at: ts() }; }
-    if (q.r5) { st.reset5h = st.reset5h || {}; st.reset5h[tok.name] = q.r5; }
-    if (q.r7) { st.reset7d = st.reset7d || {}; st.reset7d[tok.name] = q.r7; }
+    applyQuota(st, tok.name, q);
     st.exhausted = st.exhausted || {};
-    const allowed = pres.statusCode === 200 && q.statuses.indexOf("rejected") < 0;
+    // forfait epuise MAIS credits disponibles = le compte repond encore (voir readQuotaHeaders)
+    const onCredits = q.statuses.indexOf("rejected") >= 0 && q.ovAllowed;
+    const allowed = pres.statusCode === 200 && (q.statuses.indexOf("rejected") < 0 || onCredits);
     if (allowed) {
-      if (st.exhausted[tok.name]) { delete st.exhausted[tok.name]; log("PROBE", tok.name, "OK -> deblocage anticipe (5h=" + q.u5h + "% 7j=" + q.u7d + "%)"); }
-      else log("PROBE", tok.name, "5h=" + q.u5h + "% 7j=" + q.u7d + "%");
+      const cr = onCredits ? " [forfait épuisé -> crédits" + (q.ovU == null ? "" : " " + q.ovU + "% utilisés") + "]" : "";
+      if (st.exhausted[tok.name]) { delete st.exhausted[tok.name]; log("PROBE", tok.name, "OK -> deblocage anticipe (5h=" + q.u5h + "% 7j=" + q.u7d + "%)" + cr); }
+      else log("PROBE", tok.name, "5h=" + q.u5h + "% 7j=" + q.u7d + "%" + cr);
     } else if (pres.statusCode === 429) {
       const until = q.retryAfterMs || q.r5 || (now() + TRANSIENT_COOLDOWN_MS);
       st.exhausted[tok.name] = until;
@@ -261,6 +291,11 @@ function readQuotaHeaders(headers) {
   const u7 = Number(headers["anthropic-ratelimit-unified-7d-utilization"]);
   const ug = Number(headers["anthropic-ratelimit-unified-utilization"]);
   const utils = [u5, u7, ug].filter((x) => !isNaN(x));
+  // Credits d'usage supplementaire ("extra usage"). Anthropic les expose sur CHAQUE reponse ;
+  // overage-status=allowed veut dire "quand le forfait sera epuise, la requete passera quand
+  // meme, sur les credits". overage-utilization = part des credits deja consommee (0.0 = intacts).
+  const ovStatus = headers["anthropic-ratelimit-unified-overage-status"] ? String(headers["anthropic-ratelimit-unified-overage-status"]).toLowerCase() : null;
+  const ovU = Number(headers["anthropic-ratelimit-unified-overage-utilization"]);
   return {
     statuses: [headers["anthropic-ratelimit-unified-status"], headers["anthropic-ratelimit-unified-5h-status"], headers["anthropic-ratelimit-unified-7d-status"]]
       .filter(Boolean).map((s) => String(s).toLowerCase()),
@@ -270,7 +305,22 @@ function readQuotaHeaders(headers) {
     r5: parseEpochMs(headers["anthropic-ratelimit-unified-5h-reset"]),
     r7: parseEpochMs(headers["anthropic-ratelimit-unified-7d-reset"]),
     retryAfterMs: (() => { const ra = Number(headers["retry-after"]); return isNaN(ra) ? null : now() + ra * 1000; })(),
+    ovStatus,
+    ovAllowed: /^allowed/.test(ovStatus || ""), // allowed | allowed_warning
+    ovU: isNaN(ovU) ? null : Math.round(ovU * 100),
+    ovReset: parseEpochMs(headers["anthropic-ratelimit-unified-overage-reset"]),
+    ovReason: headers["anthropic-ratelimit-unified-overage-disabled-reason"] || null,
+    ovInUse: String(headers["anthropic-ratelimit-unified-overage-in-use"] || "") === "true",
   };
+}
+
+// Recopie la vue quota d'une reponse dans l'etat partage (meme traitement pour une vraie
+// requete et pour une sonde) -- sans ca, les credits ne seraient connus que d'un seul chemin.
+function applyQuota(st, name, q) {
+  if (q.max != null) { st.pct = st.pct || {}; st.pct[name] = { max: q.max, h5: q.u5h, d7: q.u7d, at: ts() }; }
+  if (q.r5) { st.reset5h = st.reset5h || {}; st.reset5h[name] = q.r5; }
+  if (q.r7) { st.reset7d = st.reset7d || {}; st.reset7d[name] = q.r7; }
+  if (q.ovStatus) { st.overage = st.overage || {}; st.overage[name] = { status: q.ovStatus, u: q.ovU, reset: q.ovReset, reason: q.ovReason, inUse: q.ovInUse, at: ts() }; }
 }
 function logRate(headers, statusCode, name) {
   const rl = {}; for (const k of Object.keys(headers)) if (/^anthropic-ratelimit/i.test(k) || k === "retry-after") rl[k] = headers[k];
@@ -361,6 +411,12 @@ function serve(creq, cres) {
       // route immediate
       const prevActive = state.activeIndex || 0;
       const switching = prevActive !== route.idx;
+      // routage sur les credits : trace une fois par requete (sinon 1 ligne par tentative)
+      if (route.overage && !ctx.overageLogged) {
+        ctx.overageLogged = true;
+        const ovU = ((state.overage || {})[(conf.tokens[route.idx] || {}).name] || {}).u;
+        log("OVERAGE route ->", (conf.tokens[route.idx] || {}).name, "aucun forfait dispo, credits autorises" + (ovU == null ? "" : " (" + ovU + "% consommes)"));
+      }
       if (state.waiting) { delete state.waiting; }
       if (switching) { state.activeIndex = route.idx; }
       // decide compaction BEFORE overwriting the "previous account" utilization view.
@@ -477,11 +533,16 @@ function serve(creq, cres) {
         logRate(pres.headers, pres.statusCode, tok.name);
         const q = readQuotaHeaders(pres.headers);
         const st = readState();
-        if (q.max != null) { st.pct = st.pct || {}; st.pct[tok.name] = { max: q.max, h5: q.u5h, d7: q.u7d, at: ts() }; }
-        if (q.r5) { st.reset5h = st.reset5h || {}; st.reset5h[tok.name] = q.r5; }
-        if (q.r7) { st.reset7d = st.reset7d || {}; st.reset7d[tok.name] = q.r7; }
+        applyQuota(st, tok.name, q);
 
-        const rejected = pres.statusCode === 429 || q.statuses.indexOf("rejected") >= 0;
+        // Forfait epuise MAIS credits disponibles : Anthropic a SERVI la requete (200) et l'a
+        // facturee aux credits d'usage supplementaire. Le marquer "epuise" ici mettrait en
+        // quarantaine un compte qui repond parfaitement -- et ferait attendre le reset 5h alors
+        // qu'il n'y a rien a attendre. Un vrai 429 reste un vrai rejet (credits epuises, plafond
+        // de depense, limite par minute...) et garde le comportement d'origine.
+        const onCredits = pres.statusCode < 400 && q.statuses.indexOf("rejected") >= 0 && q.ovAllowed;
+        if (onCredits) log("OVERAGE", tok.name, "forfait epuise -> servi sur les credits" + (q.ovU == null ? "" : " (" + q.ovU + "% consommes)") + (q.ovReset ? " reset " + new Date(q.ovReset).toISOString() : ""));
+        const rejected = pres.statusCode === 429 || (q.statuses.indexOf("rejected") >= 0 && !onCredits);
         const authFail = pres.statusCode === 401 || pres.statusCode === 403;
         const overloaded = pres.statusCode === 529; // serveur Anthropic surcharge : rien a voir avec le quota
 
@@ -577,6 +638,7 @@ if (require.main === module) {
   server.listen(conf0.port, "127.0.0.1", () => {
     log("PROXY v3 up http://127.0.0.1:" + conf0.port,
       "switch=" + conf0.switchAtPercent + "% bloc7j=" + conf0.sevenDayBlockPercent + "% softWait=" + conf0.waitAtSoftPercent + " maxWait=" + Math.round(conf0.maxWaitMs / 60000) + "min",
+      "credits=" + (conf0.overage.use ? "autorises (max " + conf0.overage.maxPercent + "%)" : "non utilises"),
       "tokens=" + conf0.tokens.map((t) => t.name + (isPlaceholder(t) ? "(vide)" : "")).join(","),
       "upstream=" + UPSTREAM_HOST + ":" + UPSTREAM_PORT);
     // sonde de demarrage : etat reel des quotas sans attendre la 1re vraie reponse

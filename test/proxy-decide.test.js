@@ -226,4 +226,108 @@ const bigBody = { model: "claude-opus-4-8", messages: [{ role: "user", content: 
   assert.ok(!route.wait && route.idx != null, "dry-run: pas de reserve (routage inchange)");
 }
 
-console.log("PASS — proxy decideCompaction: switch/threshold/resume/dry-run/strip/disabled/cooldown + pickRoute model-aware threshold + reserve ceiling");
+// --- credits d'usage supplementaire (extra usage / overage) ---
+// Anthropic SERT la requete quand le forfait est epuise si le compte a des credits : la reponse
+// est un 200 avec unified-status:rejected ET overage-status:allowed. Le relais doit (1) ne pas
+// mettre ce compte en quarantaine, (2) pouvoir router dessus plutot que d'attendre -- mais
+// seulement si l'utilisateur l'a autorise, et jamais avant d'avoir epuise le forfait gratuit.
+const { readQuotaHeaders } = require("../src/proxy.js");
+const lib = require("../src/lib.js");
+{
+  const q = readQuotaHeaders({
+    "anthropic-ratelimit-unified-status": "rejected",
+    "anthropic-ratelimit-unified-5h-status": "rejected",
+    "anthropic-ratelimit-unified-5h-utilization": "1.0",
+    "anthropic-ratelimit-unified-7d-utilization": "0.62",
+    "anthropic-ratelimit-unified-overage-status": "allowed",
+    "anthropic-ratelimit-unified-overage-utilization": "0.07",
+    "anthropic-ratelimit-unified-overage-reset": "1785542400",
+    "anthropic-ratelimit-unified-overage-in-use": "true",
+  });
+  assert.strictEqual(q.ovAllowed, true, "overage-status allowed -> credits utilisables");
+  assert.strictEqual(q.ovU, 7, "overage-utilization 0.07 -> 7%");
+  assert.strictEqual(q.ovInUse, true, "overage-in-use lu");
+  assert.strictEqual(q.ovReset, 1785542400000, "overage-reset en ms");
+  assert.ok(q.statuses.indexOf("rejected") >= 0, "le forfait est bien annonce epuise");
+}
+{
+  const q = readQuotaHeaders({
+    "anthropic-ratelimit-unified-status": "allowed",
+    "anthropic-ratelimit-unified-overage-status": "rejected",
+    "anthropic-ratelimit-unified-overage-disabled-reason": "org_level_disabled",
+  });
+  assert.strictEqual(q.ovAllowed, false, "overage rejected -> pas de credits");
+  assert.strictEqual(q.ovReason, "org_level_disabled", "raison conservee");
+  assert.ok(/claude\.ai\/settings\/usage/.test(lib.overageReasonFr(q.ovReason)), "raison traduite avec la marche a suivre");
+}
+{ // en-tetes sans aucun champ overage (ancienne reponse) -> tout null, rien ne casse
+  const q = readQuotaHeaders({ "anthropic-ratelimit-unified-5h-utilization": "0.5" });
+  assert.strictEqual(q.ovStatus, null);
+  assert.strictEqual(q.ovAllowed, false);
+  assert.strictEqual(q.ovU, null);
+}
+
+// pickRoute : palier credits
+const ovState = (h5a, h5b, ovA, ovB) => ({
+  activeIndex: 0, exhausted: {}, pct: { a: { h5: h5a, d7: 0 }, b: { h5: h5b, d7: 0 } },
+  reset5h: { a: Date.now() + 3600000, b: Date.now() + 7200000 }, reset7d: {},
+  overage: Object.assign({}, ovA ? { a: ovA } : null, ovB ? { b: ovB } : null),
+});
+const ALLOWED = { status: "allowed", u: 0 };
+{
+  // credits NON autorises (defaut) : comportement strictement inchange -> on attend
+  const conf = twoTokens(); // compaction ON (defaut) -> plafond 97% : a 100% aucun compte n'est "frais"
+  const route = pickRoute(conf, ovState(100, 100, ALLOWED, ALLOWED), bigBody);
+  assert.ok(route.wait, "credits off (defaut) : on attend le reset, jamais de depense");
+}
+{
+  // credits autorises : plutot que d'attendre, on route sur le compte qui a des credits
+  const conf = twoTokens(); conf.overage = { use: true, maxPercent: 100 };
+  const route = pickRoute(conf, ovState(100, 100, null, ALLOWED), bigBody);
+  assert.ok(!route.wait, "credits on : ne doit plus attendre");
+  assert.strictEqual(route.idx, 1, "route vers le compte qui a des credits");
+  assert.strictEqual(route.overage, true, "marque le routage 'credits'");
+}
+{
+  // jamais de credits tant qu'un compte a du forfait gratuit
+  const conf = twoTokens(); conf.overage = { use: true };
+  const route = pickRoute(conf, ovState(100, 30, ALLOWED, ALLOWED), bigBody);
+  assert.strictEqual(route.idx, 1, "forfait dispo -> on l'utilise, pas les credits");
+  assert.ok(!route.overage, "pas marque credits");
+}
+{
+  // quota HEBDOMADAIRE epuise sur les deux comptes : sans credits on attend des JOURS ; avec
+  // credits on continue (c'est le cas que l'utilisateur voulait couvrir).
+  const conf = twoTokens(); conf.overage = { use: true };
+  const st = ovState(20, 20, null, ALLOWED);
+  st.pct.a.d7 = 100; st.pct.b.d7 = 100;
+  st.reset7d = { a: Date.now() + 4 * 86400000, b: Date.now() + 5 * 86400000 };
+  const without = pickRoute(Object.assign({}, conf, { overage: { use: false } }), st, bigBody);
+  assert.ok(without.wait && without.reason === "7d", "sans credits : attente du reset hebdo");
+  const route = pickRoute(conf, st, bigBody);
+  assert.strictEqual(route.idx, 1, "avec credits : le blocage 7j est franchi sur le compte qui en a");
+  assert.strictEqual(route.overage, true, "marque credits");
+}
+{
+  // plafond de credits atteint -> on retombe sur l'attente (l'utilisateur garde la main)
+  const conf = twoTokens(); conf.overage = { use: true, maxPercent: 50 };
+  const route = pickRoute(conf, ovState(100, 100, null, { status: "allowed", u: 50 }), bigBody);
+  assert.ok(route.wait, "credits a 50% avec plafond 50% -> attente");
+  assert.ok(!pickRoute(conf, ovState(100, 100, null, { status: "allowed", u: 49 }), bigBody).wait, "49% < 50% -> encore utilisable");
+}
+{
+  // un VRAI 429 (credits epuises cote serveur, plafond de depense...) met le compte en cooldown :
+  // le palier credits ne doit pas le contourner, sinon boucle de rejets.
+  const conf = twoTokens(); conf.overage = { use: true };
+  const st = ovState(100, 100, null, ALLOWED);
+  st.exhausted = { b: Date.now() + 600000 };
+  assert.ok(pickRoute(conf, st, bigBody).wait, "compte en cooldown apres 429 : exclu meme avec credits");
+}
+{
+  // credits refuses par l'API (usage supplementaire desactive sur le compte) -> attente
+  const conf = twoTokens(); conf.overage = { use: true };
+  const route = pickRoute(conf, ovState(100, 100, { status: "rejected", reason: "org_level_disabled" }, { status: "rejected", reason: "out_of_credits" }), bigBody);
+  assert.ok(route.wait, "aucun credit utilisable -> attente (comportement d'origine)");
+}
+
+console.log("PASS — proxy decideCompaction: switch/threshold/resume/dry-run/strip/disabled/cooldown + pickRoute model-aware threshold + reserve ceiling + credits (overage)");

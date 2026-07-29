@@ -34,6 +34,12 @@ function clock(ms) {
   const d = new Date(ms);
   return String(d.getHours()).padStart(2, "0") + "h" + String(d.getMinutes()).padStart(2, "0");
 }
+// Un reset 7j peut tomber dans plusieurs JOURS : l'heure seule serait ambigue -> jour + heure.
+const DAYS = ["dim", "lun", "mar", "mer", "jeu", "ven", "sam"];
+function clockDay(ms) {
+  if (ms == null) return "--h--";
+  return DAYS[new Date(ms).getDay()] + " " + clock(ms);
+}
 const CIRC = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨"];
 const tag = (i) => CIRC[i] || "(" + (i + 1) + ")";
 
@@ -57,11 +63,28 @@ if (accts.length) {
   const bar5 = accts.map((a) => bar(a.h5, segW)).join("");                    // cumulative 5h bar
   const h5s = accts.map((a) => a.h5).filter((v) => v != null);
   const mean = h5s.length ? Math.round(h5s.reduce((x, y) => x + y, 0) / h5s.length) : null;
-  const resets = accts.map((a) => a.reset5).filter((v) => v != null).sort((x, y) => x - y);
-  const nextReset = resets.length ? resets[0] : null;
+  // Heure de reset affichee : elle ne doit porter QUE sur les comptes qui ont encore du quota
+  // HEBDOMADAIRE. Un compte a 100% de 7j ne redevient pas utilisable a son reset 5h -> afficher
+  // son heure donne un faux espoir (c'est le bug signale). Si AUCUN compte n'a de quota hebdo,
+  // la vraie echeance est le reset 7j le plus proche : on l'affiche, marque "7j" et date (jour +
+  // heure), parce qu'il peut tomber dans plusieurs jours.
+  const block7 = conf.sevenDayBlockPercent == null ? 99 : Number(conf.sevenDayBlockPercent);
+  const soonest = (arr, key) => { const v = arr.map((a) => a[key]).filter((x) => x != null).sort((x, y) => x - y); return v.length ? v[0] : null; };
+  const withWeekly = accts.filter((a) => a.d7 == null || a.d7 < block7);
+  let nextReset = null, weeklyWait = false;
+  if (withWeekly.length) nextReset = soonest(withWeekly, "reset5");
+  else { nextReset = soonest(accts, "reset7"); weeklyWait = nextReset != null; }
   const sep = col(90, " │ ");
   const seg7 = accts.map((a) => tag(a.idx) + " " + bar(a.d7, 4) + " " + col(hcol(a.d7), (a.d7 == null ? "?" : a.d7) + "%")).join(sep);
-  ours = "5h " + bar5 + " " + col(hcol(mean), (mean == null ? "?" : mean) + "%") + " " + col(90, "↻") + " " + clock(nextReset) + sep + "7j " + seg7;
+  // Credits d'usage supplementaire : affiches seulement s'ils sont AUTORISES (cqr credits on) et
+  // connus -- sinon aucun bruit visuel pour ceux qui ne s'en servent pas.
+  const ovMax = (conf.overage || {}).maxPercent;
+  const ovU = conf.overage && conf.overage.use
+    ? accts.map((a) => (lib.overageUsable(a.ov, ovMax) ? (a.ov.u == null ? 0 : a.ov.u) : null)).filter((v) => v != null).sort((x, y) => y - x)[0]
+    : undefined;
+  const crSeg = ovU == null ? "" : sep + col(hcol(ovU), "cr " + ovU + "%");
+  ours = "5h " + bar5 + " " + col(hcol(mean), (mean == null ? "?" : mean) + "%") + " " + col(90, "↻" + (weeklyWait ? "7j" : "")) + " "
+    + (weeklyWait ? clockDay(nextReset) : clock(nextReset)) + sep + "7j " + seg7 + crSeg;
 }
 
 const line = prefix ? (ours ? prefix + " │ " + ours : prefix) : ours;

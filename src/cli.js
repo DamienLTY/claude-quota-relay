@@ -12,6 +12,7 @@
  *   cqr login <nom> [--paste]  recapture un token (navigateur, ou --paste pour le coller soi-meme)
  *   cqr add [nom] [--paste]    ajoute un compte (navigateur, ou --paste pour le coller soi-meme)
  *   cqr policy [<cle> <val>]   affiche/modifie la politique (switch|block7d|waitsoft|maxwait)
+ *   cqr credits [on|off|max]   credits d'usage supplementaire (extra usage) : OFF par defaut
  *   cqr start|stop|restart     gere le process proxy (portable, via PID file)
  *
  * Portable : Windows / macOS / Linux (arret via PID file + process.kill, pas de netstat/lsof).
@@ -196,6 +197,17 @@ function lastCompactStr(s) {
   const where = (k.from && k.to && k.from !== k.to) ? k.from + "->" + k.to : (k.to || k.from || "?") + " (reprise)";
   return ago(k.at) + " (" + where + (k.model ? ", " + k.model : "") + ")";
 }
+// Credits d'usage supplementaire d'un compte, en une ligne lisible.
+// ov = { status, u, reset, reason } tel que renvoye par l'API (voir proxy.js readQuotaHeaders).
+function creditsStr(ov, ovConf) {
+  if (!ov) return null;
+  if (!lib.overageUsable(ov, (ovConf || {}).maxPercent)) {
+    const why = lib.overageReasonFr(ov.reason);
+    if (/^allowed/.test(String(ov.status || ""))) return "crédits: plafond atteint (" + ov.u + "% >= " + ((ovConf || {}).maxPercent == null ? 100 : ovConf.maxPercent) + "%)";
+    return "crédits: indisponibles" + (why ? " — " + why : "");
+  }
+  return "crédits: " + (ov.u == null ? "disponibles" : ov.u + "% utilisés") + (ov.reset ? " (recharge dans " + eta(ov.reset) + ")" : "");
+}
 function showStatus() {
   let c, s;
   try { c = readConf(); } catch (e) { console.error("Aucun tokens.json dans " + DIR + " — lancez d'abord l'installeur."); process.exit(1); }
@@ -209,6 +221,10 @@ function showStatus() {
     if (s.waiting) console.log("ATTENTE    : " + s.waiting.reason + " -> '" + s.waiting.target + "' reprend dans ~" + eta(Date.parse(s.waiting.until)));
     const lc = lastCompactStr(s);
     if (lc) console.log("Compaction : dernière " + lc);
+    const ovc = c.overage || {};
+    console.log("Crédits    :", ovc.use
+      ? "AUTORISÉS (utilisés seulement quand plus aucun compte n'a de forfait ; plafond " + (ovc.maxPercent == null ? 100 : ovc.maxPercent) + "%) — pour couper : cqr credits off"
+      : "non utilisés (le proxy attend le reset plutôt que de consommer des crédits) — pour les autoriser : cqr credits on");
     console.log("");
     c.tokens.forEach((t, i) => {
       const act = i === s.activeIndex ? ">" : " ";
@@ -217,6 +233,8 @@ function showStatus() {
       const r5 = s.reset5h && s.reset5h[t.name]; const r7 = s.reset7d && s.reset7d[t.name];
       const resets = [r5 ? "reset5h~" + eta(r5) : "", r7 ? "reset7d~" + eta(r7) : ""].filter(Boolean).join(" ");
       console.log(` ${act} [${i}] ${t.name.padEnd(12)} ${t.enabled ? "on " : "off"} ${mask(t.token).padEnd(22)} quota:${fmtPct(s.pct && s.pct[t.name])}  ${resets}${exTxt}`);
+      const cr = creditsStr((s.overage || {})[t.name], ovc);
+      if (cr) console.log("            " + cr);
     });
   });
 }
@@ -392,6 +410,39 @@ switch (cmd) {
     else console.error("Usage : cqr compact [status|on|off|dry-run|mode native|strip|keep <n>|cooldown <min>|threshold <modèle> <pct>|dynamic on|off|buffer <points>|memory]");
     break;
   }
+  case "credits": case "credit": {
+    // Credits d'usage supplementaire ("extra usage" cote Anthropic). Ils peuvent etre PAYANTS :
+    // on ne les consomme jamais sans accord explicite -> OFF par defaut, et uniquement en dernier
+    // recours (aucun compte n'a plus de forfait), sinon on continue d'attendre le reset.
+    const c = readConf();
+    c.overage = Object.assign({ use: false, maxPercent: 100 }, c.overage || {});
+    const ov = c.overage;
+    if (a1 === "on") {
+      ov.use = true; writeConf(c);
+      console.log("Crédits d'usage supplémentaire AUTORISÉS. Le proxy ne les utilise que lorsqu'AUCUN compte n'a plus de forfait (5h ou 7j) : au lieu d'attendre le reset, il continue sur les crédits. Effet immédiat, aucun redémarrage.");
+      console.log("Attention : selon votre offre Anthropic, ces crédits peuvent être facturés. Plafond actuel : " + ov.maxPercent + "% (cqr credits max <pct>).");
+    } else if (a1 === "off") {
+      ov.use = false; writeConf(c);
+      console.log("Crédits d'usage supplémentaire NON utilisés : quand tous les comptes sont à sec, le proxy attend le reset (comportement d'origine). Effet immédiat.");
+    } else if (a1 === "max") {
+      const pct = Number(a2);
+      if (!(pct >= 0 && pct <= 100)) { console.error("Usage : cqr credits max <0-100>   (ex. 50 = n'utiliser que la moitié des crédits)"); process.exit(1); }
+      ov.maxPercent = pct; writeConf(c);
+      console.log("Plafond de consommation des crédits = " + pct + "% (au-delà, le proxy se remet à attendre le reset). Effet immédiat.");
+    } else if (!a1 || a1 === "status") {
+      const s = readState();
+      console.log("autorisés :", ov.use ? "OUI — utilisés seulement quand plus aucun compte n'a de forfait" : "non — le proxy attend le reset (cqr credits on pour changer)");
+      console.log("plafond   :", (ov.maxPercent == null ? 100 : ov.maxPercent) + "% des crédits (cqr credits max <pct>)");
+      console.log("");
+      lib.accounts(c, s).forEach((a) => {
+        const cr = creditsStr(a.ov, ov);
+        console.log(" [" + a.idx + "] " + a.name.padEnd(12) + (cr || "crédits: inconnus (aucune réponse d'Anthropic lue pour l'instant — lancez le proxy et faites une requête)"));
+      });
+      console.log("");
+      console.log("Rappel : les crédits couvrent AUSSI la limite hebdomadaire (7j). C'est le seul moyen de continuer quand le quota de la semaine est épuisé.");
+    } else { console.error("Usage : cqr credits [status|on|off|max <pct>]"); process.exit(1); }
+    break;
+  }
   case "preflight": {
     // Is it safe to launch a big Workflow? Exit 0 if a fresh-enough account exists, else 1.
     const c = readConf(); const s = readState();
@@ -456,6 +507,11 @@ function printHelp() {
     "  cqr compact threshold <modèle> <pct>   % de bascule par modèle",
     "  cqr compact dynamic on|off réduit sur le MÊME compte quand le contexte est gros",
     "  cqr compact mode native|strip · keep <n> · cooldown <min> · buffer <pts> · memory",
+    "",
+    "Crédits d'usage supplémentaire (extra usage — non utilisés par défaut)",
+    "  cqr credits                état des crédits, compte par compte",
+    "  cqr credits on | off       autoriser / interdire leur usage quand tout est à sec",
+    "  cqr credits max <pct>      n'en consommer qu'une partie (ex. 50)",
     "",
     "Garde-fou workflow",
     "  cqr preflight              est-ce prudent de lancer un gros workflow ?",

@@ -25,6 +25,10 @@
     "mode": "ask",
     "percent": 50
   },
+  "overage": {
+    "use": false,
+    "maxPercent": 100
+  },
   "tokens": [
     { "name": "account-1", "token": "PASTE_TOKEN_FROM_claude_setup-token", "enabled": true },
     { "name": "account-2", "token": "PASTE_TOKEN_FROM_claude_setup-token", "enabled": true },

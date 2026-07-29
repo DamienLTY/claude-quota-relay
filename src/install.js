@@ -53,6 +53,11 @@ const COMPACTION_DEFAULT = {
   memoryFile: ".cqr-memory.md", memoryMaxLines: 400, archiveDir: ".cqr-archive",
 };
 
+// Credits d'usage supplementaire ("extra usage") : OFF par defaut, volontairement. Ils peuvent
+// etre FACTURES selon l'offre -> on ne depense jamais l'argent de quelqu'un sans accord explicite.
+// `cqr credits on` les autorise ; ils ne servent alors qu'en dernier recours (plus aucun forfait).
+const OVERAGE_DEFAULT = { use: false, maxPercent: 100 };
+
 // Timeouts injected into settings.json env. These are what let a held request survive until a 5h
 // window resets instead of being cut. CLAUDE_STREAM_IDLE_TIMEOUT_MS is the critical one (the CLI's
 // semantic idle watchdog defaults to a 5-minute floor that SSE keepalive does NOT reset).
@@ -200,6 +205,7 @@ async function main() {
     // backfill any missing compaction/guard defaults (older configs gain new keys)
     conf.compaction = Object.assign({}, COMPACTION_DEFAULT, conf.compaction || {});
     conf.workflowGuard = Object.assign({}, WORKFLOW_GUARD_DEFAULT, conf.workflowGuard || {});
+    conf.overage = Object.assign({}, OVERAGE_DEFAULT, conf.overage || {}); // ne reactive jamais tout seul
     // Migration : la compaction entre comptes est OFF (choix explicite, ou install d'avant qu'elle
     // devienne ON par defaut). On NE FORCE JAMAIS -> on DEMANDE. Non-interactif : on laisse tel quel
     // (le message final dit comment l'activer). Une config SANS bloc compaction a ete backfillee a
@@ -215,6 +221,7 @@ async function main() {
     conf = await collectTokens();
     conf.compaction = Object.assign({}, COMPACTION_DEFAULT, conf.compaction || {});
     conf.workflowGuard = Object.assign({}, WORKFLOW_GUARD_DEFAULT, conf.workflowGuard || {});
+    conf.overage = Object.assign({}, OVERAGE_DEFAULT, conf.overage || {});
     fs.writeFileSync(tokensPath, JSON.stringify(conf, null, 2));
     tokensLine = (conf.tokens || []).length + " compte(s), configurés";
   }
@@ -244,6 +251,8 @@ async function main() {
   console.log("");
   if (conf.compaction && conf.compaction.enabled) info("l'auto-compaction est ACTIVE (réduit les tokens à chaque changement de compte, 0 token) — réglages : cqr compact, pour la couper : cqr compact off");
   else info("l'auto-compaction est DÉSACTIVÉE sur ce PC — pour l'activer : cqr compact on");
+  if (conf.overage && conf.overage.use) info("les crédits d'usage supplémentaire sont AUTORISÉS (utilisés seulement quand plus aucun compte n'a de forfait) — état : cqr credits");
+  else info("crédits d'usage supplémentaire : NON utilisés (le proxy attend le reset). Si Anthropic vous en a donné, `cqr credits on` permet de continuer à travailler même quota hebdomadaire épuisé — voir : cqr credits");
 }
 
 if (require.main === module) main().catch((e) => { console.error("\nÉchec de l'installation : " + e.message); process.exit(1); });
