@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.11.0
+
+- **Une panne d'Anthropic ne fait plus perdre la requête.** Un `API Error: 500` (ou 502/503/504) n'a **aucun en-tête de quota** : ce n'est pas une limite, c'est le serveur qui a un problème — et c'est souvent **intermittent** (relevé le 29/07/2026 dans le journal : un `200` et un `500` à 10 s d'écart pendant l'incident). Avant, l'erreur était relayée telle quelle et la requête était perdue (deux compactions perdues ce jour-là). Maintenant le relais **rejoue la requête** sur le même compte avec un délai croissant (2 s, 4 s, 8 s… plafonné à 1 min), la connexion tenue ouverte par le keepalive habituel.
+  - Aucune page de statut à interroger : **c'est la tentative qui aboutit qui prouve que c'est réparé** (status.claude.com retarde et reste au rouge alors que le service remarche).
+  - Borne volontaire : `serverErrorMaxMs` (15 min par défaut, `0` = ne rien retenter). Passé ce délai, la vraie erreur est rendue au client — une requête que le serveur refuse *systématiquement* ne doit pas rester suspendue indéfiniment.
+  - `529` (surcharge) garde son traitement d'origine : mise en pause courte du compte + bascule sur l'autre.
+
 ## 0.10.0
 
 - **Fix — un compte qui répond était mis en quarantaine.** Quand un compte a des **crédits d'usage supplémentaire** (« extra usage »), Anthropic **sert quand même la requête** une fois le forfait épuisé : la réponse est un `200` normal, mais avec `anthropic-ratelimit-unified-status: rejected` **et** `anthropic-ratelimit-unified-overage-status: allowed` (exactement ce que Claude Code lit pour afficher « usage credits »). Le relais, lui, ne regardait que le `rejected` : il mettait le compte en pause et attendait un reset **alors que le compte répondait parfaitement**. Corrigé côté requêtes *et* côté sonde de quota, sans réglage à activer.

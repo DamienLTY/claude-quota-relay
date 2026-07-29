@@ -95,6 +95,8 @@ cqr policy                     # voir les réglages
 cqr policy waitsoft 85         # attendre dès 85 % au lieu d'aller jusqu'à 100 %
 ```
 
+**Panne chez Anthropic (« API Error: 500 »).** Un `500` n'est pas une limite de quota, c'est un serveur qui a un problème — et c'est souvent intermittent (une requête passe, la suivante échoue). Le programme **retente automatiquement** la même requête, en espaçant les essais (2 s, 4 s, 8 s… jusqu'à 1 min), pendant **15 minutes** par défaut. Pas besoin de savoir quand la panne est réparée : c'est l'essai qui aboutit qui le prouve. Si ça échoue encore au bout des 15 minutes, la vraie erreur vous est rendue (une requête que le serveur refuse *toujours* ne doit pas rester suspendue). Réglable par `serverErrorMaxMs` dans la config (`0` = ne rien retenter).
+
 ### L'auto-compaction (active par défaut)
 
 **Quand le programme change de compte, il allège la requête envoyée au nouveau compte** — sans rien perdre. Il demande à Anthropic d'effacer les vieux résultats d'outils de la conversation (en gardant les plus récents), une fonction officielle qui **ne coûte aucun token**. Résultat : le compte tout neuf se remplit beaucoup plus lentement. Mesuré jusqu'à **-98 %** de tokens.
@@ -259,6 +261,7 @@ Tout est dans `~/.claude/claude-quota-relay/tokens.json` :
   "sevenDayBlockPercent": 99,  // ne jamais utiliser un compte au-delà de ce % sur 7j
   "waitAtSoftPercent": null,   // null = consommer jusqu'à 100 % avant d'attendre
   "maxWaitMs": 604800000,      // attente maximale d'une requête (7 jours)
+  "serverErrorMaxMs": 900000,  // durée de retry sur panne Anthropic 5xx (15 min ; 0 = coupé)
   "livePollMs": 45000,         // rafraîchissement de la statusline (0 = coupé)
   "tokens": [
     { "name": "compte-1", "token": "sk-ant-oat01-…", "enabled": true },

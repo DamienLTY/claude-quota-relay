@@ -82,6 +82,9 @@ function readConf() {
   c.overage = Object.assign({ use: false, maxPercent: 100 }, c.overage || {});
   c.pollMs = num(c.pollMs, 15000);
   c.maxWaitMs = num(c.maxWaitMs, 6 * 60 * 60 * 1000);       // plafond d'attente d'une requete
+  // panne serveur Anthropic (500/502/503/504) : duree pendant laquelle on retente avant de
+  // rendre l'erreur au client. 0 = desactive (on relaie l'erreur tout de suite, comportement v1).
+  c.serverErrorMaxMs = num(c.serverErrorMaxMs, 15 * 60 * 1000);
   return c;
 }
 function num(v, d) { const n = Number(v); return isNaN(n) ? d : n; }
@@ -396,6 +399,21 @@ function serve(creq, cres) {
     const isStream = !!(bodyObj && bodyObj.stream === true);
     const ctx = { tried: new Set(), waitStart: 0, polls: 0, sse: false, ka: null, netRetries: 0, resumed: false };
     function stopKeepalive() { if (ctx.ka) { clearInterval(ctx.ka); ctx.ka = null; } }
+    // garde la connexion client ouverte pendant qu'on retente (quota, coupure reseau, panne
+    // serveur) : en streaming, Claude coupe au bout de ~5 min sans octet -> commentaires SSE.
+    function holdOpen(msg) {
+      if (isStream && !ctx.sse) {
+        ctx.sse = true;
+        try {
+          cres.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache", "connection": "keep-alive" });
+          cres.write(": claude-auth-proxy: " + msg + "\n\n");
+        } catch (e) {}
+      }
+      if (ctx.sse && !ctx.ka) ctx.ka = setInterval(() => {
+        if (clientGone) { stopKeepalive(); return; }
+        try { cres.write(": keepalive\n\n"); } catch (e) {}
+      }, 20000);
+    }
     function sseError(msg) {
       try {
         cres.write("event: error\ndata: " + JSON.stringify({ type: "error", error: { type: "overloaded_error", message: msg } }) + "\n\n");
@@ -463,19 +481,7 @@ function serve(creq, cres) {
       if (ctx.polls === 0) log("WAIT", route.reason, "jusqu'a", untilISO, "(token", tName + ") - hold de la requete" + (isStream ? " (keepalive SSE)" : ""));
       ctx.polls++;
       // streaming : on garde la connexion vivante par des commentaires SSE (sinon Claude coupe ~5min)
-      if (isStream) {
-        if (!ctx.sse) {
-          ctx.sse = true;
-          try {
-            cres.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache", "connection": "keep-alive" });
-            cres.write(": claude-auth-proxy: attente de quota, reprise automatique\n\n");
-          } catch (e) {}
-        }
-        if (!ctx.ka) ctx.ka = setInterval(() => {
-          if (clientGone) { stopKeepalive(); return; }
-          try { cres.write(": keepalive\n\n"); } catch (e) {}
-        }, 20000);
-      }
+      holdOpen("attente de quota, reprise automatique");
       // dort jusqu'au reset (borné par pollMs pour re-évaluer / detecter un override manuel)
       // jitter aleatoire : plusieurs requetes retenues ne doivent pas repartir au meme instant (rafale -> 429)
       const jitter = 1500 + Math.floor(Math.random() * 3000);
@@ -542,6 +548,33 @@ function serve(creq, cres) {
         const st = readState();
         applyQuota(st, tok.name, q);
 
+        // Panne serveur Anthropic (500/502/503/504) : aucun rapport avec le quota (la reponse
+        // n'a meme pas d'en-tete ratelimit). C'est passager et souvent INTERMITTENT -- le
+        // 29/07/2026, un 200 et un 500 a 10 s d'ecart pendant l'incident. Avant, on relayait
+        // l'erreur telle quelle et la requete etait perdue (ex. une compaction qui echoue).
+        // Maintenant : on retente le MEME compte avec un backoff court, sous keepalive, tant
+        // que serverErrorMaxMs n'est pas epuise. Inutile de savoir quand la panne est reparee :
+        // c'est la tentative qui aboutit qui le prouve (la page de statut, elle, retarde).
+        // Borne volontaire : une requete que le serveur refuse SYSTEMATIQUEMENT (corps invalide,
+        // trop grosse...) doit finir par rendre son erreur, pas rester suspendue indefiniment.
+        // 529 (surcharge) garde son traitement propre : cooldown + bascule de compte.
+        const serverError = pres.statusCode >= 500 && pres.statusCode !== 529;
+        if (serverError && !lastResort && !clientGone) {
+          if (!ctx.srvStart) ctx.srvStart = now();
+          const budget = num(conf.serverErrorMaxMs, 15 * 60 * 1000);
+          const elapsed = now() - ctx.srvStart;
+          if (budget > 0 && elapsed < budget) {
+            ctx.srvRetries = (ctx.srvRetries || 0) + 1;
+            const delay = Math.min(60000, 2000 * Math.pow(2, ctx.srvRetries - 1));
+            log("SERVER err http" + pres.statusCode, "token=" + tok.name, "panne Anthropic -> tentative #" + ctx.srvRetries, "dans", Math.round(delay / 1000) + "s");
+            pres.resume(); // draine la reponse d'erreur
+            holdOpen("erreur serveur Anthropic (http " + pres.statusCode + "), nouvelle tentative automatique");
+            setTimeout(() => { if (!clientGone) forward(conf, idx, lastResort, compactInfo); }, delay);
+            return;
+          }
+          log("SERVER err http" + pres.statusCode, "token=" + tok.name, "abandon apres", Math.round(elapsed / 1000) + "s et", ctx.srvRetries || 0, "tentatives -> erreur rendue au client");
+        }
+
         // Forfait epuise MAIS credits disponibles : Anthropic a SERVI la requete (200) et l'a
         // facturee aux credits d'usage supplementaire. Le marquer "epuise" ici mettrait en
         // quarantaine un compte qui repond parfaitement -- et ferait attendre le reset 5h alors
@@ -576,7 +609,7 @@ function serve(creq, cres) {
             pres.pipe(cres);
           } else {
             pres.resume();
-            sseError("limite atteinte (http " + pres.statusCode + ")");
+            sseError((pres.statusCode >= 500 ? "erreur serveur Anthropic" : "limite atteinte") + " (http " + pres.statusCode + ")");
           }
         } else {
           if (!cres.headersSent) cres.writeHead(pres.statusCode, pres.headers);
@@ -595,17 +628,7 @@ function serve(creq, cres) {
           ctx.netRetries = (ctx.netRetries || 0) + 1;
           const delay = Math.min(30000, 2000 * Math.pow(2, ctx.netRetries - 1));
           log("NETWORK err", e.message, "token=" + tok.name, "retry #" + ctx.netRetries, "in", Math.round(delay / 1000) + "s");
-          if (isStream && !ctx.sse) {
-            ctx.sse = true;
-            try {
-              cres.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache", "connection": "keep-alive" });
-              cres.write(": claude-auth-proxy: coupure reseau detectee, nouvelle tentative automatique\n\n");
-            } catch (x) {}
-          }
-          if (!ctx.ka && ctx.sse) ctx.ka = setInterval(() => {
-            if (clientGone) { stopKeepalive(); return; }
-            try { cres.write(": keepalive\n\n"); } catch (x) {}
-          }, 20000);
+          holdOpen("coupure reseau detectee, nouvelle tentative automatique");
           setTimeout(() => { if (!clientGone) forward(conf, idx, lastResort, compactInfo); }, delay);
           return;
         }

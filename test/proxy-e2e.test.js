@@ -32,6 +32,9 @@ const probeHits = {};
 // mockMode="overage" : rejoue le cas reel "forfait epuise mais credits disponibles" -- Anthropic
 // repond 200 (la requete EST servie, facturee aux credits) avec unified-status:rejected.
 let mockMode = null;
+// mockMode="500" : panne serveur Anthropic. `fail500` = nombre de reponses 500 restantes a
+// servir (Infinity = panne permanente). Chaque 500 servi est compte dans hits500.
+let fail500 = 0, hits500 = 0;
 function startMock() {
   return new Promise((resolve) => {
     const srv = http.createServer((req, res) => {
@@ -39,6 +42,7 @@ function startMock() {
         let body = {}; try { body = JSON.parse(b); } catch (e) {}
         const auth = req.headers["authorization"] || "";
         probeHits[auth] = (probeHits[auth] || 0) + 1;
+        if (fail500 > 0) { fail500--; hits500++; res.writeHead(500, { "content-type": "application/json" }); res.end(JSON.stringify({ type: "error", error: { type: "api_error", message: "Internal server error" } })); return; }
         res.writeHead(200, Object.assign({
           "content-type": "application/json",
           "anthropic-ratelimit-unified-5h-utilization": String(Math.min(0.99, probeHits[auth] * 0.01)),
@@ -73,7 +77,7 @@ function writeConf(dir, compaction, opts) {
   fs.writeFileSync(p.join(dir, "tokens.json"), JSON.stringify({
     port: PROXY_PORT, switchAtPercent: 94, sevenDayBlockPercent: 99,
     waitAtSoftPercent: opts.waitAtSoftPercent === undefined ? null : opts.waitAtSoftPercent,
-    maxWaitMs: 600000, pollMs: 15000,
+    maxWaitMs: 600000, pollMs: 15000, serverErrorMaxMs: opts.serverErrorMaxMs,
     livePollMs: opts.livePollMs,
     compaction, overage: opts.overage,
     tokens: [{ name: "account1", token: opts.tokenAccount1 || FAKE, enabled: opts.bothEnabled ? true : false }, { name: "account2", token: FAKE, enabled: true }],
@@ -158,6 +162,31 @@ function writeConf(dir, compaction, opts) {
     assert.strictEqual(r6.status, 200, "credits: 200 rendu au client");
     mockMode = null;
     console.log("PASS — proxy e2e credits: 200 sur credits rendu au client sans quarantaine + routage credits au lieu d'attendre");
+
+    // --- panne serveur Anthropic (500) : la requete est REJOUEE, pas perdue ---
+    // Cas reel du 29/07/2026 : deux compactions perdues sur "API Error: 500". Le 500 n'a aucun
+    // en-tete de quota -> ce n'est pas une limite, c'est une panne, et elle est intermittente.
+    writeConf(DIR, { enabled: false }, { bothEnabled: true });
+    seedState(DIR);
+    hits500 = 0; fail500 = 1;          // une panne passagere : le 1er appel echoue, le 2e passe
+    const t0 = Date.now();
+    const r7 = await post(PROXY_PORT, "/v1/messages", bigBody());
+    assert.strictEqual(r7.status, 200, "500 passager : la requete est rejouee et aboutit (pas d'erreur rendue au client)");
+    assert.ok(r7.json && r7.json.echo, "500 passager : corps de reponse intact apres retry");
+    assert.strictEqual(hits500, 1, "500 passager : le mock a bien servi une erreur avant de repondre");
+    assert.ok(Date.now() - t0 >= 1500, "500 passager : le retry attend (backoff) au lieu de marteler le serveur");
+
+    // ... mais une panne PERMANENTE ne doit pas suspendre la requete indefiniment : au bout du
+    // budget (ici 0 = desactive), la vraie erreur est rendue au client.
+    writeConf(DIR, { enabled: false }, { bothEnabled: true, serverErrorMaxMs: 0 });
+    seedState(DIR);
+    hits500 = 0; fail500 = Infinity;
+    const r8 = await Promise.race([post(PROXY_PORT, "/v1/messages", bigBody()), sleep(8000).then(() => ({ held: true }))]);
+    assert.ok(!r8.held, "500 permanent : la requete n'est pas suspendue pour toujours");
+    assert.strictEqual(r8.status, 500, "500 permanent : la vraie erreur est rendue au client");
+    assert.strictEqual(hits500, 1, "serverErrorMaxMs=0 : aucun retry (comportement d'origine preserve)");
+    fail500 = 0; hits500 = 0;
+    console.log("PASS — proxy e2e panne serveur: 500 passager rejoue et servi, 500 permanent rendu au client (jamais suspendu)");
 
     // --- live poll: BOTH accounts' quota keeps refreshing in state.json with ZERO client
     // requests (the fix for "statusline only updates the active account, goes stale while
