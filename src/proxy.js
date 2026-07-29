@@ -66,7 +66,9 @@ const TRANSIENT_COOLDOWN_MS = 90 * 1000; // 429 sans aucune info de fenetre -> t
 // pause, puisqu'elle passe alors que les vraies requetes sont refusees (releve le 29/07/2026 :
 // PROBE OK -> deblocage -> 529 -> pause -> PROBE OK -> ... en boucle toutes les 45 s).
 const OVERLOAD_BASE_MS = 90 * 1000;               // 1er 529 : 90 s (inchange)
-const OVERLOAD_MAX_MS = 10 * 60 * 1000;           // puis 3 min, 6 min... plafonne a 10 min
+// Plafond a 5 min : au-dela, la pause depasse la duree de vie d'une requete cliente (Claude Code
+// abandonne vers 5 min sur les requetes non-stream) -- attendre plus longtemps ne sert plus a rien.
+const OVERLOAD_MAX_MS = 5 * 60 * 1000;            // 90 s, 3 min, puis 5 min
 const OVERLOAD_STREAK_RESET_MS = 10 * 60 * 1000;  // 10 min sans 529 = surcharge passee, compteur remis a zero
 
 function ts() { return new Date().toISOString(); }
@@ -266,7 +268,8 @@ function probeToken(conf, idx, done) {
     const onCredits = q.statuses.indexOf("rejected") >= 0 && q.ovAllowed;
     const allowed = pres.statusCode === 200 && (q.statuses.indexOf("rejected") < 0 || onCredits);
     if (allowed) {
-      const cr = onCredits ? " [forfait épuisé -> crédits" + (q.ovU == null ? "" : " " + q.ovU + "% utilisés") + "]" : "";
+      // journal sans accents : lu tel quel par PowerShell/cmd (encodage ANSI -> "Ã©")
+      const cr = onCredits ? " [forfait epuise -> credits" + (q.ovU == null ? "" : " " + q.ovU + "% utilises") + "]" : "";
       if (st.exhausted[tok.name] && overloadActive(st, tok.name)) {
         log("PROBE", tok.name, "OK mais surcharge serveur en cours -> pause maintenue jusqu'a", new Date(st.overload[tok.name].until).toISOString());
       } else if (st.exhausted[tok.name]) { delete st.exhausted[tok.name]; log("PROBE", tok.name, "OK -> deblocage anticipe (5h=" + q.u5h + "% 7j=" + q.u7d + "%)" + cr); }

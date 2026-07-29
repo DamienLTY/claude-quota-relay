@@ -341,10 +341,10 @@ const ALLOWED = { status: "allowed", u: 0 };
   const u2 = noteOverload(st, "a", T + 1000);
   assert.strictEqual(u2 - (T + 1000), 180000, "2e 529 d'affilee : 3 min");
   const u3 = noteOverload(st, "a", T + 2000);
-  assert.strictEqual(u3 - (T + 2000), 360000, "3e : 6 min");
+  assert.strictEqual(u3 - (T + 2000), 300000, "3e : plafonne a 5 min (au-dela, le client a deja abandonne)");
   noteOverload(st, "a", T + 3000); noteOverload(st, "a", T + 4000);
   const u6 = noteOverload(st, "a", T + 5000);
-  assert.strictEqual(u6 - (T + 5000), 600000, "plafonne a 10 min (on n'attend jamais indefiniment)");
+  assert.strictEqual(u6 - (T + 5000), 300000, "reste plafonne (on n'attend jamais indefiniment)");
 
   // la sonde qui passe ne doit pas lever une pause de surcharge encore active
   assert.strictEqual(overloadActive(st, "a", T + 6000), true, "surcharge encore active -> pause maintenue");

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.11.2
+
+- **Statusline : trois états de crédits au lieu de deux.** `crédits ●` vert = servi sur les crédits en ce moment ; `crédits ◐` jaune = **crédits disponibles, pas encore utilisés** ; `crédits ○` rouge = plus rien d'utilisable (épuisés, désactivés, ou au-delà de votre plafond `cqr credits max`). Avant, un compte avec 57 € prêts à servir et un compte à sec affichaient le même rond rouge.
+- Surcharge `529` : plafond de pause ramené de 10 min à **5 min** — au-delà, Claude Code a déjà abandonné la requête (relevé : `CLIENT close` à 4 min 53 s), attendre plus longtemps ne sert plus à rien.
+- Journal sans accents sur la ligne des crédits (PowerShell lit le fichier en ANSI et affichait `forfait Ã©puisÃ©`).
+
 ## 0.11.1
 
 - **Fin de la boucle sur surcharge Anthropic (529).** Relevé le 29/07/2026 : `529` → pause de 90 s → la **sonde de quota** (une requête de 8 tokens) passe → « déblocage anticipé » → on relâche la vraie requête → `529` … en boucle toutes les 45 s, sans jamais espacer. Deux corrections :

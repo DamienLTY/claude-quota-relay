@@ -85,9 +85,14 @@ if (accts.length) {
   let crSeg = "";
   if (ovConf.use) {
     const act = accts.find((a) => a.idx === (state.activeIndex || 0)) || accts[0];
-    const on = !!(act && act.ov && (act.ov.onCredits || act.ov.inUse));
-    // pastille PLEINE (vert) / CREUSE (rouge) : la forme porte l'info meme sans couleur (NO_COLOR)
-    crSeg = sep + col(on ? 32 : 31, "crédits " + (on ? "●" : "○"));
+    const ov = act && act.ov;
+    const on = !!(ov && (ov.onCredits || ov.inUse));
+    // "disponibles mais pas encore utilises" merite son propre etat : sinon un compte qui a de
+    // quoi tenir et un compte a sec affichent le meme rond rouge.
+    const ready = !on && lib.overageUsable(ov, ovConf.maxPercent == null ? 100 : Number(ovConf.maxPercent));
+    // PLEINE (vert) = en cours / DEMI (jaune) = dispo, pas utilises / CREUSE (rouge) = plus rien.
+    // La forme porte l'info meme sans couleur (NO_COLOR).
+    crSeg = sep + col(on ? 32 : ready ? 33 : 31, "crédits " + (on ? "●" : ready ? "◐" : "○"));
   }
   ours = "5h " + bar5 + " " + col(hcol(mean), (mean == null ? "?" : mean) + "%") + " " + col(90, "↻" + (weeklyWait ? "7j" : "")) + " "
     + (weeklyWait ? clockDay(nextReset) : clock(nextReset)) + sep + "7j " + seg7 + crSeg;

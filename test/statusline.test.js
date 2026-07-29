@@ -77,26 +77,35 @@ function run(DIR) {
   assert.ok(/↻7j (dim|lun|mar|mer|jeu|ven|sam) \d\dh\d\d/.test(out), "reset hebdo date (jour + heure)");
 }
 
-// Case E: pastille credits -- rien tant qu'ils ne sont pas autorises ; puis VERT si le compte
-// ACTIF est servi sur les credits, ROUGE sinon (aucun pourcentage, aucun montant : illisible /
-// indisponible). On teste sur la sortie COLOREE (c'est la couleur qui porte l'information).
+// Case E: pastille credits -- rien tant qu'ils ne sont pas autorises ; puis TROIS etats sur le
+// compte ACTIF : VERT plein = servi sur les credits, JAUNE demi = credits disponibles mais pas
+// encore utilises, ROUGE creux = plus rien d'utilisable. Sans les 3 etats, "57 EUR prets a
+// servir" et "compte a sec" affichaient le meme rond rouge. Aucun pourcentage, aucun montant
+// (l'API les refuse a nos cles). La FORME porte l'info, la couleur la double.
 {
   const st = { activeIndex: 0, overage: { compte1: { status: "allowed", u: 8, onCredits: false }, compte2: { status: "allowed", u: 0, onCredits: true } } };
   assert.ok(!/crédits /.test(strip(run(setup({ original: null }, { state: st })))), "credits non autorises -> aucune pastille");
   const conf = { overage: { use: true, maxPercent: 100 } };
-  const red = run(setup({ original: null }, { state: st, conf }));
-  assert.ok(/\x1b\[31mcrédits ○/.test(red), "compte actif sur le forfait -> pastille ROUGE et creuse");
-  assert.ok(!/\d+\s*%/.test(strip(red).split("│").pop()), "aucun pourcentage dans le segment credits");
+  // compte actif sur le forfait MAIS credits disponibles -> jaune, demi-pastille
+  const ready = run(setup({ original: null }, { state: st, conf }));
+  assert.ok(/\x1b\[33mcrédits ◐/.test(ready), "credits disponibles non utilises -> pastille JAUNE et demi: " + ready);
+  assert.ok(!/\d+\s*%/.test(strip(ready).split("│").pop()), "aucun pourcentage dans le segment credits");
   // le compte actif (index 1) est servi sur les credits -> vert
   const green = run(setup({ original: null }, { state: Object.assign({}, st, { activeIndex: 1 }), conf }));
   assert.ok(/\x1b\[32mcrédits ●/.test(green), "compte actif sur les credits -> pastille VERTE et pleine");
   // overage-in-use suffit aussi (autre signal renvoye par l'API)
   const green2 = run(setup({ original: null }, { state: { activeIndex: 0, overage: { compte1: { status: "allowed", inUse: true } } }, conf }));
   assert.ok(/\x1b\[32mcrédits ●/.test(green2), "overage-in-use:true -> pastille VERTE aussi");
+  // plus aucun credit utilisable (cas reel : out_of_credits) -> rouge, creux
+  const dry = run(setup({ original: null }, { state: { activeIndex: 0, overage: { compte1: { status: "rejected", reason: "out_of_credits" } } }, conf }));
+  assert.ok(/\x1b\[31mcrédits ○/.test(dry), "aucun credit utilisable -> pastille ROUGE et creuse: " + dry);
+  // plafond atteint = plus utilisable non plus (l'utilisateur a limite la depense)
+  const capped = run(setup({ original: null }, { state: { activeIndex: 0, overage: { compte1: { status: "allowed", u: 60 } } }, conf: { overage: { use: true, maxPercent: 50 } } }));
+  assert.ok(/\x1b\[31mcrédits ○/.test(capped), "au-dela du plafond cqr credits max -> rouge (on n'y touchera pas)");
   // sans couleur (NO_COLOR), la FORME porte encore l'information
   const DIRp = setup({ original: null }, { state: st, conf });
   const plain = cp.spawnSync(process.execPath, [SCRIPT], { input: "{}", env: Object.assign({}, process.env, { CQR_DIR: DIRp, NO_COLOR: "1" }), encoding: "utf8" }).stdout;
-  assert.ok(/crédits ○/.test(plain) && !/\x1b\[/.test(plain), "NO_COLOR : pastille creuse lisible sans couleur: " + plain);
+  assert.ok(/crédits ◐/.test(plain) && !/\x1b\[/.test(plain), "NO_COLOR : les 3 formes restent distinctes sans couleur: " + plain);
 }
 
 // lib : conversion % -> argent (l'API ne donne pas le montant a nos tokens, l'utilisateur le saisit)
