@@ -57,6 +57,7 @@ const COMPACTION_DEFAULT = {
 // etre FACTURES selon l'offre -> on ne depense jamais l'argent de quelqu'un sans accord explicite.
 // `cqr credits on` les autorise ; ils ne servent alors qu'en dernier recours (plus aucun forfait).
 const OVERAGE_DEFAULT = { use: false, maxPercent: 100 };
+let LIVE_POLL_MIGRATED = false; // signale, en fin d'install, que la sonde continue a ete coupee
 
 // Timeouts injected into settings.json env. These are what let a held request survive until a 5h
 // window resets instead of being cut. CLAUDE_STREAM_IDLE_TIMEOUT_MS is the critical one (the CLI's
@@ -227,6 +228,10 @@ async function main() {
     conf.compaction = Object.assign({}, COMPACTION_DEFAULT, conf.compaction || {});
     conf.workflowGuard = Object.assign({}, WORKFLOW_GUARD_DEFAULT, conf.workflowGuard || {});
     conf.overage = Object.assign({}, OVERAGE_DEFAULT, conf.overage || {}); // ne reactive jamais tout seul
+    // Migration de la sonde continue : 45000 etait l'ANCIEN defaut, pas un choix. On l'aligne sur
+    // le nouveau (coupee : la barre d'etat est redessinee a chaque echange, pas en continu). Une
+    // valeur choisie par l'utilisateur (autre que 45000) est laissee telle quelle.
+    if (conf.livePollMs === 45000) { conf.livePollMs = 0; LIVE_POLL_MIGRATED = true; }
     // Migration : la compaction entre comptes est OFF (choix explicite, ou install d'avant qu'elle
     // devienne ON par defaut). On NE FORCE JAMAIS -> on DEMANDE. Non-interactif : on laisse tel quel
     // (le message final dit comment l'activer). Une config SANS bloc compaction a ete backfillee a
@@ -288,6 +293,7 @@ async function main() {
   console.log("");
   if (conf.compaction && conf.compaction.enabled) info("l'auto-compaction est ACTIVE (réduit les tokens à chaque changement de compte, 0 token) — réglages : cqr compact, pour la couper : cqr compact off");
   else info("l'auto-compaction est DÉSACTIVÉE sur ce PC — pour l'activer : cqr compact on");
+  if (LIVE_POLL_MIGRATED) info("la vérification de quota en continu (toutes les 45 s) est coupée : la barre d'état est redessinée par Claude Code à chaque échange, pas en continu. Les quotas sont mesurés à chaque requête et pendant une attente. Pour revenir au mode continu : cqr live 120");
   if (conf.overage && conf.overage.use) info("les crédits d'usage supplémentaire sont AUTORISÉS (utilisés seulement quand plus aucun compte n'a de forfait) — état : cqr credits");
   else info("crédits d'usage supplémentaire : NON utilisés (le proxy attend le reset). Si Anthropic vous en a donné, `cqr credits on` permet de continuer à travailler même quota hebdomadaire épuisé — voir : cqr credits");
 }

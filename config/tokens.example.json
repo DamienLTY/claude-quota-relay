@@ -5,7 +5,7 @@
   "waitAtSoftPercent": null,
   "maxWaitMs": 604800000,
   "pollMs": 15000,
-  "livePollMs": 45000,
+  "livePollMs": 0,
   "compaction": {
     "enabled": false,
     "dryRun": true,

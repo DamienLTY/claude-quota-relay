@@ -360,7 +360,7 @@ switch (cmd) {
     const c = readConf();
     if (a1 === "off") { c.livePollMs = 0; writeConf(c); restartIfRunning("Rafraîchissement live désactivé (le quota ne se met à jour qu'avec de vraies requêtes)"); }
     else if (a1 && /^\d+$/.test(a1)) { c.livePollMs = Number(a1) * 1000; writeConf(c); restartIfRunning("Rafraîchissement toutes les " + a1 + "s"); }
-    else if (!a1 || a1 === "status") { console.log("livePollMs :", c.livePollMs == null ? "45000 (défaut)" : c.livePollMs, "-- sonde en arrière-plan (quasi gratuite : ~8 tokens d'entrée, 0 en sortie) qui garde le quota des DEUX comptes à jour pour la statusline, même à l'arrêt"); }
+    else if (!a1 || a1 === "status") { console.log("livePollMs :", !c.livePollMs ? "0 — sonde continue coupée (défaut). Les quotas sont rafraîchis à chaque requête et pendant une attente : la barre d'état est recalculée par Claude Code à chaque échange, pas en continu" : c.livePollMs + " — sonde en arrière-plan toutes les " + Math.round(c.livePollMs / 1000) + "s (mode continu ; `cqr live off` pour revenir au défaut)"); }
     else console.error("Usage : cqr live [status|<secondes>|off]");
     break;
   }

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.12.0
+
+- **Fin de la sonde de quota en continu (−90 % de requêtes).** Mesure du 29/07/2026 sur une journée : **3310 sondes pour 268 vraies requêtes**. Claude Code ne redessine pas sa barre d'état tout seul — elle est recalculée à chaque échange — donc vérifier les quotas toutes les 45 secondes n'affichait rien de plus. Désormais :
+  - le compte qui sert la requête se renseigne par les en-têtes de sa réponse (comme avant) ;
+  - les **autres** comptes sont vérifiés à l'occasion de cette requête (une fois par 30 s au plus, pour ne pas suivre une rafale de sous-agents) ;
+  - pendant une attente de quota, une vérification part toutes les **2 minutes** (au lieu de 5) ;
+  - au repos : **zéro trafic**.
+- Migration automatique : une config restée sur l'ancienne valeur par défaut (`livePollMs: 45000`) est alignée sur le nouveau défaut, et l'installeur le signale. Une cadence que vous aviez choisie vous-même n'est pas touchée. Mode continu toujours disponible : `cqr live 120`.
+- Vérifié : les sondes ne consomment pas de quota mesurable (5 h 17 sans aucune requête cliente, 423 sondes, quota 5h passé de 36 % à 13 %) — elles ne sont pas la cause des `529`, qui n'ont aucun en-tête de limite.
+
 ## 0.11.2
 
 - **Statusline : trois états de crédits au lieu de deux.** `crédits ●` vert = servi sur les crédits en ce moment ; `crédits ◐` jaune = **crédits disponibles, pas encore utilisés** ; `crédits ○` rouge = plus rien d'utilisable (épuisés, désactivés, ou au-delà de votre plafond `cqr credits max`). Avant, un compte avec 57 € prêts à servir et un compte à sec affichaient le même rond rouge.

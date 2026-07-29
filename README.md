@@ -95,7 +95,7 @@ cqr policy                     # voir les réglages
 cqr policy waitsoft 85         # attendre dès 85 % au lieu d'aller jusqu'à 100 %
 ```
 
-**Surcharge chez Anthropic (`529`).** Le compte est mis en pause et la requête part sur l'autre compte. Si la surcharge dure, les tentatives **s'espacent** (90 s, 3 min, 6 min… jusqu'à 10 min) au lieu de marteler le serveur. Pendant ce temps la sonde de quota, qui est minuscule, peut très bien passer : elle ne lève pas la pause pour autant, sinon on relâcherait la vraie requête pour reprendre un refus.
+**Surcharge chez Anthropic (`529`).** Le compte est mis en pause et la requête part sur l'autre compte. Si la surcharge dure, les tentatives **s'espacent** (90 s, 3 min, puis 5 min au maximum) au lieu de marteler le serveur. Pendant ce temps la sonde de quota, qui est minuscule, peut très bien passer : elle ne lève pas la pause pour autant, sinon on relâcherait la vraie requête pour reprendre un refus.
 
 **Panne chez Anthropic (« API Error: 500 »).** Un `500` n'est pas une limite de quota, c'est un serveur qui a un problème — et c'est souvent intermittent (une requête passe, la suivante échoue). Le programme **retente automatiquement** la même requête, en espaçant les essais (2 s, 4 s, 8 s… jusqu'à 1 min), pendant **15 minutes** par défaut. Pas besoin de savoir quand la panne est réparée : c'est l'essai qui aboutit qui le prouve. Si ça échoue encore au bout des 15 minutes, la vraie erreur vous est rendue (une requête que le serveur refuse *toujours* ne doit pas rester suspendue). Réglable par `serverErrorMaxMs` dans la config (`0` = ne rien retenter).
 
@@ -148,7 +148,9 @@ Une ligne toujours visible dans Claude Code, montrant le quota de tous vos compt
 
 L'heure après le `↻` est celle du **prochain reset 5 h utile** : elle ne tient compte que des comptes qui ont encore du quota **hebdomadaire**. Un compte dont la semaine est finie ne redevient pas utilisable à son reset 5 h — afficher son heure serait un faux espoir. Si plus **aucun** compte n'a de quota hebdomadaire, c'est le reset **hebdomadaire** le plus proche qui s'affiche, marqué et daté : `↻7j sam 02h00`.
 
-Elle se met à jour **toute seule toutes les ~45 secondes**, même quand vous ne faites rien et attendez qu'un quota revienne — grâce à une petite vérification quasi gratuite (0 token de sortie). Réglage : `cqr live 30` (secondes) ou `cqr live off`. Si vous aviez déjà une barre d'état, la vôtre est gardée et la nôtre ajoutée à côté.
+**Quand se met-elle à jour ?** À chaque échange avec Claude Code — c'est lui qui la redessine, elle ne se rafraîchit pas toute seule entre deux messages. Le programme mesure donc les quotas là où ça compte : le compte qui sert la requête se renseigne par la réponse elle-même, les autres sont vérifiés à cette occasion (petite requête, 0 token de sortie), et pendant une attente de quota une vérification part toutes les 2 minutes. Au repos, **zéro trafic**.
+
+Si vous voulez quand même une vérification en continu (par exemple pour lire la barre d'état pendant qu'une longue tâche tourne) : `cqr live 120` (secondes), `cqr live off` pour revenir au défaut. Si vous aviez déjà une barre d'état, la vôtre est gardée et la nôtre ajoutée à côté.
 
 ### Les crédits d'usage supplémentaire (« extra usage ») — désactivés par défaut
 
@@ -265,7 +267,7 @@ Tout est dans `~/.claude/claude-quota-relay/tokens.json` :
   "waitAtSoftPercent": null,   // null = consommer jusqu'à 100 % avant d'attendre
   "maxWaitMs": 604800000,      // attente maximale d'une requête (7 jours)
   "serverErrorMaxMs": 900000,  // durée de retry sur panne Anthropic 5xx (15 min ; 0 = coupé)
-  "livePollMs": 45000,         // rafraîchissement de la statusline (0 = coupé)
+  "livePollMs": 0,             // sonde continue (0 = coupée : quotas rafraîchis à chaque requête)
   "tokens": [
     { "name": "compte-1", "token": "sk-ant-oat01-…", "enabled": true },
     { "name": "compte-2", "token": "sk-ant-oat01-…", "enabled": true }

@@ -243,7 +243,7 @@ function clearOverload(st, name) { if (st.overload && st.overload[name]) delete 
 // tous les en-tetes anthropic-ratelimit-unified-*. Sert de "half-open" du
 // circuit breaker : verifier l'etat REEL d'un token sans lacher une vraie requete.
 const PROBE_BODY = JSON.stringify({ model: "claude-haiku-4-5", max_tokens: 0, messages: [{ role: "user", content: "ping" }] });
-const PROBE_REFRESH_MS = 5 * 60 * 1000; // au plus une sonde / 5 min / token
+const PROBE_REFRESH_MS = 2 * 60 * 1000; // pendant une attente de quota : une sonde / 2 min / compte
 const lastProbeAt = {};
 
 function probeToken(conf, idx, done) {
@@ -298,7 +298,15 @@ function probeToken(conf, idx, done) {
 // 0 sortie -> quasi gratuit) pour que la statusline reste vivante sans jamais depenser de
 // vrais tokens. Gate sur state.pct[name].at (rempli aussi bien par une vraie requete que par
 // une sonde) pour ne jamais re-sonder un compte deja rafraichi tres recemment.
-const LIVE_POLL_DEFAULT_MS = 45000; // 45s (entre les 30s et 1min demandes)
+// Sonde periodique COUPEE par defaut. Claude Code ne redessine pas sa barre d'etat tout seul :
+// elle est recalculee a chaque echange. Sonder en continu n'affichait donc rien de plus -- juste
+// du trafic (mesure du 29/07/2026 : 3310 sondes pour 268 vraies requetes dans la journee).
+// Les quotas sont rafraichis la ou ca compte : a chaque requete (voir refreshOthers) et pendant
+// une attente de quota (voir enterWait). `cqr live <s>` reactive le mode continu si besoin.
+const LIVE_POLL_DEFAULT_MS = 0;
+// Anti-rafale : plusieurs sous-agents peuvent lancer 20 requetes en quelques secondes -- inutile
+// de re-sonder les autres comptes a chacune.
+const REFRESH_OTHERS_MS = 30000;
 
 function startLivePolling(confInitial) {
   const ms = num(confInitial.livePollMs, LIVE_POLL_DEFAULT_MS);
@@ -314,6 +322,18 @@ function startLivePolling(confInitial) {
       probeToken(conf, i);
     });
   }, ms);
+}
+
+// Rafraichit les comptes qui ne servent PAS la requete en cours : celui qui la sert renseigne
+// deja son quota par les en-tetes de sa reponse. Une sonde par requete cliente, pas par seconde.
+function refreshOthers(conf, activeIdx, state) {
+  const pct = (state && state.pct) || {};
+  conf.tokens.forEach((t, i) => {
+    if (i === activeIdx || !t.enabled || isPlaceholder(t)) return;
+    const lastAt = Date.parse((pct[t.name] || {}).at || 0) || 0;
+    if (now() - lastAt < REFRESH_OTHERS_MS) return;
+    probeToken(conf, i);
+  });
 }
 
 function readQuotaHeaders(headers) {
@@ -485,6 +505,7 @@ function serve(creq, cres) {
       }
       writeState(state);
       stopKeepalive();
+      refreshOthers(conf, route.idx, state); // en tache de fond : garde la barre d'etat juste
       // forced (pin manuel) -> pas de failover/attente, on rend le resultat brut
       forward(conf, route.idx, route.forced === true, compactInfo);
     }

@@ -12,7 +12,7 @@ const IDIR = p.join(CFG, "claude-quota-relay");
 fs.mkdirSync(IDIR, { recursive: true });
 
 // --- simulate a v1 install: tokens.json without compaction/guard, custom port, a v1 settings.json
-fs.writeFileSync(p.join(IDIR, "tokens.json"), JSON.stringify({ port: 9999, switchAtPercent: 94, tokens: [{ name: "a", token: FAKE, enabled: true }] }));
+fs.writeFileSync(p.join(IDIR, "tokens.json"), JSON.stringify({ port: 9999, switchAtPercent: 94, livePollMs: 45000, tokens: [{ name: "a", token: FAKE, enabled: true }] }));
 fs.writeFileSync(p.join(CFG, "settings.json"), JSON.stringify({
   env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:9999", FOO: "bar", ANTHROPIC_TARGET_API_URL: "https://claude.example-corp.workers.dev" },
   hooks: { SessionStart: [{ matcher: "startup|resume|clear", hooks: [{ type: "command", command: 'node "' + p.join(IDIR, "ensure-proxy.js") + '"' }] }] },
@@ -37,6 +37,10 @@ assert.strictEqual(tok.compaction.enabled, true, "compaction enabled by default"
 assert.strictEqual(tok.compaction.dryRun, false, "not dry-run by default");
 assert.strictEqual(tok.compaction.dynamicThreshold, false, "dynamic threshold opt-in (off) by default");
 assert.strictEqual(tok.port, 9999, "custom port preserved (no --port given)");
+// la sonde continue a 45 s etait l'ANCIEN defaut (pas un choix) -> alignee sur le nouveau (coupee),
+// et l'installeur le dit. Une valeur choisie par l'utilisateur, elle, doit survivre (plus bas).
+assert.strictEqual(tok.livePollMs, 0, "ancien defaut 45000 -> sonde continue coupee");
+assert.ok(/cqr live 120/.test(r1.stdout), "l'installeur explique comment revenir au mode continu: " + r1.stdout);
 assert.strictEqual(tok.tokens[0].token, FAKE, "existing token preserved");
 
 const s = rd(p.join(CFG, "settings.json"));
@@ -52,6 +56,17 @@ assert.strictEqual(rd(p.join(IDIR, "statusline.json")).original.command, "echo M
 ["compaction.js", "memory-hook.js", "cqr-statusline.js", "cqr-workflow-guard.js"].forEach((f) => assert.ok(fs.existsSync(p.join(IDIR, f)), f + " copied on upgrade"));
 assert.ok(fs.existsSync(p.join(IDIR, "bin", "cqr")), "posix cqr wrapper created on upgrade (no more manual alias needed)");
 assert.ok(fs.existsSync(p.join(IDIR, "bin", "cqr.cmd")), "windows cqr.cmd wrapper created on upgrade");
+
+// une cadence CHOISIE par l'utilisateur n'est pas touchee (seule l'ancienne valeur par defaut l'est)
+{
+  const t = rd(p.join(IDIR, "tokens.json")); t.livePollMs = 20000;
+  fs.writeFileSync(p.join(IDIR, "tokens.json"), JSON.stringify(t));
+  const rk = install();
+  assert.strictEqual(rk.status, 0, "install OK avec une cadence personnalisee");
+  assert.strictEqual(rd(p.join(IDIR, "tokens.json")).livePollMs, 20000, "cadence choisie par l'utilisateur preservee");
+  const t2 = rd(p.join(IDIR, "tokens.json")); t2.livePollMs = 0;
+  fs.writeFileSync(p.join(IDIR, "tokens.json"), JSON.stringify(t2));
+}
 
 // --- second run: must be idempotent (no duplicates, no re-wrap) ---
 const r2 = install();

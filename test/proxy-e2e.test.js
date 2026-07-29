@@ -42,8 +42,12 @@ function startMock() {
         let body = {}; try { body = JSON.parse(b); } catch (e) {}
         const auth = req.headers["authorization"] || "";
         probeHits[auth] = (probeHits[auth] || 0) + 1;
-        if (fail500 > 0) { fail500--; hits500++; res.writeHead(500, { "content-type": "application/json" }); res.end(JSON.stringify({ type: "error", error: { type: "api_error", message: "Internal server error" } })); return; }
-        if (fail529 > 0) { fail529--; res.writeHead(529, { "content-type": "application/json", "retry-after": "0" }); res.end(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } })); return; }
+        // les pannes simulees ne visent que les VRAIES requetes : la sonde de quota
+        // (max_tokens:0) doit continuer a repondre, comme cote Anthropic ou elle passe meme
+        // quand les grosses requetes sont refusees.
+        const isProbe = body && body.max_tokens === 0;
+        if (!isProbe && fail500 > 0) { fail500--; hits500++; res.writeHead(500, { "content-type": "application/json" }); res.end(JSON.stringify({ type: "error", error: { type: "api_error", message: "Internal server error" } })); return; }
+        if (!isProbe && fail529 > 0) { fail529--; res.writeHead(529, { "content-type": "application/json", "retry-after": "0" }); res.end(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } })); return; }
         res.writeHead(200, Object.assign({
           "content-type": "application/json",
           "anthropic-ratelimit-unified-5h-utilization": String(Math.min(0.99, probeHits[auth] * 0.01)),
@@ -203,6 +207,29 @@ function writeConf(dir, compaction, opts) {
     assert.ok(s529.exhausted && s529.exhausted[ovl[0]], "529 : compte effectivement mis en pause");
     fail529 = 0;
     console.log("PASS — proxy e2e surcharge 529: bascule de compte + pause horodatee (backoff) enregistree");
+
+    // --- rafraichissement des quotas SANS sonde periodique (nouveau defaut) ---
+    // Claude Code ne redessine pas sa barre d'etat tout seul : sonder toutes les 45 s ne servait
+    // qu'a generer du trafic (3310 sondes pour 268 vraies requetes le 29/07/2026). Desormais le
+    // compte qui sert la requete se renseigne par ses en-tetes, et les AUTRES sont sondes a
+    // l'occasion de cette requete.
+    writeConf(DIR, { enabled: false }, { bothEnabled: true });   // pas de livePollMs -> mode continu coupe
+    fs.writeFileSync(p.join(DIR, "state.json"), JSON.stringify({
+      activeIndex: 0, exhausted: {}, reset5h: {}, reset7d: {},
+      pct: { account1: { h5: 99, d7: 50, at: "2020-01-01T00:00:00.000Z" }, account2: { h5: 40, d7: 50, at: "2020-01-01T00:00:00.000Z" } },
+    }));
+    const r10 = await post(PROXY_PORT, "/v1/messages", bigBody());
+    assert.strictEqual(r10.status, 200, "requete servie normalement");
+    await sleep(600); // la sonde des autres comptes part en tache de fond, sans retarder la reponse
+    const sFresh = JSON.parse(fs.readFileSync(p.join(DIR, "state.json"), "utf8"));
+    const old = new Date("2021-01-01T00:00:00.000Z").getTime();
+    assert.ok(Date.parse(sFresh.pct.account1.at) > old, "compte 1 rafraichi a l'occasion de la requete: " + sFresh.pct.account1.at);
+    assert.ok(Date.parse(sFresh.pct.account2.at) > old, "compte 2 rafraichi aussi (celui qui sert la requete, par ses en-tetes)");
+    const at1 = sFresh.pct.account1.at;
+    await sleep(900); // aucune requete cliente : plus rien ne doit bouger (zero sonde periodique)
+    const sIdle = JSON.parse(fs.readFileSync(p.join(DIR, "state.json"), "utf8"));
+    assert.strictEqual(sIdle.pct.account1.at, at1, "au repos : aucune sonde periodique (c'etait 3310/jour avant)");
+    console.log("PASS — proxy e2e sondes: rafraichies a chaque requete, zero trafic au repos");
 
     // --- live poll: BOTH accounts' quota keeps refreshing in state.json with ZERO client
     // requests (the fix for "statusline only updates the active account, goes stale while
