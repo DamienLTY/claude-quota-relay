@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.11.1
+
+- **Fin de la boucle sur surcharge Anthropic (529).** Relevé le 29/07/2026 : `529` → pause de 90 s → la **sonde de quota** (une requête de 8 tokens) passe → « déblocage anticipé » → on relâche la vraie requête → `529` … en boucle toutes les 45 s, sans jamais espacer. Deux corrections :
+  - la sonde ne lève plus une pause posée par une **surcharge** — elle est trop petite pour prouver quoi que ce soit sur une vraie requête (elle continue de lever une pause de **quota**, comportement inchangé) ;
+  - les `529` consécutifs **s'espacent** : 90 s, 3 min, 6 min… plafonné à 10 min, et le compteur repart de zéro après 10 min sans refus ou dès qu'une réponse est servie.
+
 ## 0.11.0
 
 - **Une panne d'Anthropic ne fait plus perdre la requête.** Un `API Error: 500` (ou 502/503/504) n'a **aucun en-tête de quota** : ce n'est pas une limite, c'est le serveur qui a un problème — et c'est souvent **intermittent** (relevé le 29/07/2026 dans le journal : un `200` et un `500` à 10 s d'écart pendant l'incident). Avant, l'erreur était relayée telle quelle et la requête était perdue (deux compactions perdues ce jour-là). Maintenant le relais **rejoue la requête** sur le même compte avec un délai croissant (2 s, 4 s, 8 s… plafonné à 1 min), la connexion tenue ouverte par le keepalive habituel.

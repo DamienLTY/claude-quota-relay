@@ -2,7 +2,7 @@
 // proxy.js exports decideCompaction and only boots the server when run directly.
 // Run: node test/proxy-decide.test.js
 const assert = require("assert");
-const { decideCompaction, pickRoute } = require("../src/proxy.js");
+const { decideCompaction, pickRoute, noteOverload, overloadActive, clearOverload } = require("../src/proxy.js");
 
 const baseConf = (over) => Object.assign({
   tokens: [{ name: "a" }, { name: "b" }],
@@ -330,4 +330,35 @@ const ALLOWED = { status: "allowed", u: 0 };
   assert.ok(route.wait, "aucun credit utilisable -> attente (comportement d'origine)");
 }
 
-console.log("PASS — proxy decideCompaction: switch/threshold/resume/dry-run/strip/disabled/cooldown + pickRoute model-aware threshold + reserve ceiling + credits (overage)");
+// --- surcharge Anthropic (529) : la pause s'allonge et la sonde ne la leve pas ---
+// Cas reel du 29/07/2026 : 529 -> pause 90 s -> la sonde (8 tokens) passe -> "deblocage
+// anticipe" -> on relache la vraie requete -> 529 ... en boucle toutes les 45 s.
+{
+  const T = 1000000000000; // horloge figee (les fonctions acceptent un temps injecte)
+  const st = {};
+  const u1 = noteOverload(st, "a", T);
+  assert.strictEqual(u1 - T, 90000, "1er 529 : 90 s (inchange)");
+  const u2 = noteOverload(st, "a", T + 1000);
+  assert.strictEqual(u2 - (T + 1000), 180000, "2e 529 d'affilee : 3 min");
+  const u3 = noteOverload(st, "a", T + 2000);
+  assert.strictEqual(u3 - (T + 2000), 360000, "3e : 6 min");
+  noteOverload(st, "a", T + 3000); noteOverload(st, "a", T + 4000);
+  const u6 = noteOverload(st, "a", T + 5000);
+  assert.strictEqual(u6 - (T + 5000), 600000, "plafonne a 10 min (on n'attend jamais indefiniment)");
+
+  // la sonde qui passe ne doit pas lever une pause de surcharge encore active
+  assert.strictEqual(overloadActive(st, "a", T + 6000), true, "surcharge encore active -> pause maintenue");
+  assert.strictEqual(overloadActive(st, "b", T + 6000), false, "l'autre compte n'est pas concerne");
+  assert.strictEqual(overloadActive(st, "a", T + 700000), false, "pause expiree -> la sonde peut de nouveau debloquer");
+
+  // 10 min sans 529 = surcharge passee : le compteur repart de zero (pas de punition a vie)
+  const u7 = noteOverload(st, "a", T + 5000 + 10 * 60 * 1000 + 1);
+  assert.strictEqual(u7 - (T + 5000 + 10 * 60 * 1000 + 1), 90000, "apres 10 min sans 529 : retour a 90 s");
+
+  // une vraie reponse servie efface tout
+  clearOverload(st, "a");
+  assert.strictEqual(overloadActive(st, "a", T), false, "reponse servie -> plus aucune pause de surcharge");
+  clearOverload(st, "inconnu"); // ne doit pas planter
+}
+
+console.log("PASS — proxy decideCompaction: switch/threshold/resume/dry-run/strip/disabled/cooldown + pickRoute model-aware threshold + reserve ceiling + credits (overage) + backoff surcharge 529");

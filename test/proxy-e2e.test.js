@@ -34,7 +34,7 @@ const probeHits = {};
 let mockMode = null;
 // mockMode="500" : panne serveur Anthropic. `fail500` = nombre de reponses 500 restantes a
 // servir (Infinity = panne permanente). Chaque 500 servi est compte dans hits500.
-let fail500 = 0, hits500 = 0;
+let fail500 = 0, hits500 = 0, fail529 = 0;
 function startMock() {
   return new Promise((resolve) => {
     const srv = http.createServer((req, res) => {
@@ -43,6 +43,7 @@ function startMock() {
         const auth = req.headers["authorization"] || "";
         probeHits[auth] = (probeHits[auth] || 0) + 1;
         if (fail500 > 0) { fail500--; hits500++; res.writeHead(500, { "content-type": "application/json" }); res.end(JSON.stringify({ type: "error", error: { type: "api_error", message: "Internal server error" } })); return; }
+        if (fail529 > 0) { fail529--; res.writeHead(529, { "content-type": "application/json", "retry-after": "0" }); res.end(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } })); return; }
         res.writeHead(200, Object.assign({
           "content-type": "application/json",
           "anthropic-ratelimit-unified-5h-utilization": String(Math.min(0.99, probeHits[auth] * 0.01)),
@@ -187,6 +188,21 @@ function writeConf(dir, compaction, opts) {
     assert.strictEqual(hits500, 1, "serverErrorMaxMs=0 : aucun retry (comportement d'origine preserve)");
     fail500 = 0; hits500 = 0;
     console.log("PASS — proxy e2e panne serveur: 500 passager rejoue et servi, 500 permanent rendu au client (jamais suspendu)");
+
+    // --- surcharge Anthropic (529) : pause enregistree pour que la sonde ne la leve pas ---
+    writeConf(DIR, { enabled: false }, { bothEnabled: true });
+    seedState(DIR);
+    fail529 = 1;                       // le 1er compte servi est refuse, le relais bascule
+    const r9 = await post(PROXY_PORT, "/v1/messages", bigBody());
+    assert.strictEqual(r9.status, 200, "529 : bascule sur l'autre compte, le client obtient sa reponse");
+    const s529 = JSON.parse(fs.readFileSync(p.join(DIR, "state.json"), "utf8"));
+    const ovl = Object.keys(s529.overload || {});
+    assert.strictEqual(ovl.length, 1, "529 : la surcharge est enregistree pour le compte refuse: " + JSON.stringify(s529.overload));
+    assert.strictEqual(s529.overload[ovl[0]].n, 1, "529 : premier refus de la serie");
+    assert.ok(s529.overload[ovl[0]].until > Date.now() + 60000, "529 : pause d'au moins 90 s posee (la sonde ne pourra pas la lever)");
+    assert.ok(s529.exhausted && s529.exhausted[ovl[0]], "529 : compte effectivement mis en pause");
+    fail529 = 0;
+    console.log("PASS — proxy e2e surcharge 529: bascule de compte + pause horodatee (backoff) enregistree");
 
     // --- live poll: BOTH accounts' quota keeps refreshing in state.json with ZERO client
     // requests (the fix for "statusline only updates the active account, goes stale while

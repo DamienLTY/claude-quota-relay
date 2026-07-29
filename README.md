@@ -95,6 +95,8 @@ cqr policy                     # voir les réglages
 cqr policy waitsoft 85         # attendre dès 85 % au lieu d'aller jusqu'à 100 %
 ```
 
+**Surcharge chez Anthropic (`529`).** Le compte est mis en pause et la requête part sur l'autre compte. Si la surcharge dure, les tentatives **s'espacent** (90 s, 3 min, 6 min… jusqu'à 10 min) au lieu de marteler le serveur. Pendant ce temps la sonde de quota, qui est minuscule, peut très bien passer : elle ne lève pas la pause pour autant, sinon on relâcherait la vraie requête pour reprendre un refus.
+
 **Panne chez Anthropic (« API Error: 500 »).** Un `500` n'est pas une limite de quota, c'est un serveur qui a un problème — et c'est souvent intermittent (une requête passe, la suivante échoue). Le programme **retente automatiquement** la même requête, en espaçant les essais (2 s, 4 s, 8 s… jusqu'à 1 min), pendant **15 minutes** par défaut. Pas besoin de savoir quand la panne est réparée : c'est l'essai qui aboutit qui le prouve. Si ça échoue encore au bout des 15 minutes, la vraie erreur vous est rendue (une requête que le serveur refuse *toujours* ne doit pas rester suspendue). Réglable par `serverErrorMaxMs` dans la config (`0` = ne rien retenter).
 
 ### L'auto-compaction (active par défaut)

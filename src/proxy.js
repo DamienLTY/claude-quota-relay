@@ -61,6 +61,13 @@ const UPSTREAM_PATH_PREFIX = _upstream.pathPrefix;
 const FIVE_H_MS = 5 * 60 * 60 * 1000;
 const AUTH_COOLDOWN_MS = 5 * 60 * 1000; // 401 -> petit cooldown
 const TRANSIENT_COOLDOWN_MS = 90 * 1000; // 429 sans aucune info de fenetre -> transitoire, pas un epuisement
+// Surcharge Anthropic (529) : la pause s'ALLONGE a chaque refus consecutif. Sans ca, on retentait
+// toutes les 90 s pendant toute la surcharge -- et la sonde de quota (8 tokens) annulait meme cette
+// pause, puisqu'elle passe alors que les vraies requetes sont refusees (releve le 29/07/2026 :
+// PROBE OK -> deblocage -> 529 -> pause -> PROBE OK -> ... en boucle toutes les 45 s).
+const OVERLOAD_BASE_MS = 90 * 1000;               // 1er 529 : 90 s (inchange)
+const OVERLOAD_MAX_MS = 10 * 60 * 1000;           // puis 3 min, 6 min... plafonne a 10 min
+const OVERLOAD_STREAK_RESET_MS = 10 * 60 * 1000;  // 10 min sans 529 = surcharge passee, compteur remis a zero
 
 function ts() { return new Date().toISOString(); }
 function now() { return Date.now(); }
@@ -214,6 +221,21 @@ function pickRoute(conf, state, bodyObj) {
   return { wait: true, idx: cand7[0].i, untilMs: cand7[0].until, reason: "7d", weekly: true };
 }
 
+// Enregistre un 529 et renvoie la fin de pause (backoff exponentiel plafonne).
+function noteOverload(st, name, t) {
+  t = t || now();
+  st.overload = st.overload || {};
+  const prev = st.overload[name];
+  const streak = (prev && (t - (prev.at || 0)) < OVERLOAD_STREAK_RESET_MS) ? (prev.n || 0) + 1 : 1;
+  const until = t + Math.min(OVERLOAD_MAX_MS, OVERLOAD_BASE_MS * Math.pow(2, streak - 1));
+  st.overload[name] = { n: streak, at: t, until };
+  return until;
+}
+// Surcharge encore en cours ? -> la sonde ne doit PAS lever la pause : elle est minuscule
+// (8 tokens) et passe meme quand le serveur refuse les vraies requetes.
+function overloadActive(st, name, t) { const o = (st.overload || {})[name]; return !!(o && o.until > (t || now())); }
+function clearOverload(st, name) { if (st.overload && st.overload[name]) delete st.overload[name]; }
+
 // ----- sonde de quota quasi gratuite -----
 // Requete max_tokens:0 sur haiku : ~8 tokens d'input, 0 output, mais renvoie
 // tous les en-tetes anthropic-ratelimit-unified-*. Sert de "half-open" du
@@ -245,7 +267,9 @@ function probeToken(conf, idx, done) {
     const allowed = pres.statusCode === 200 && (q.statuses.indexOf("rejected") < 0 || onCredits);
     if (allowed) {
       const cr = onCredits ? " [forfait épuisé -> crédits" + (q.ovU == null ? "" : " " + q.ovU + "% utilisés") + "]" : "";
-      if (st.exhausted[tok.name]) { delete st.exhausted[tok.name]; log("PROBE", tok.name, "OK -> deblocage anticipe (5h=" + q.u5h + "% 7j=" + q.u7d + "%)" + cr); }
+      if (st.exhausted[tok.name] && overloadActive(st, tok.name)) {
+        log("PROBE", tok.name, "OK mais surcharge serveur en cours -> pause maintenue jusqu'a", new Date(st.overload[tok.name].until).toISOString());
+      } else if (st.exhausted[tok.name]) { delete st.exhausted[tok.name]; log("PROBE", tok.name, "OK -> deblocage anticipe (5h=" + q.u5h + "% 7j=" + q.u7d + "%)" + cr); }
       else log("PROBE", tok.name, "5h=" + q.u5h + "% 7j=" + q.u7d + "%" + cr);
     } else if (pres.statusCode === 429) {
       const until = q.retryAfterMs || q.r5 || (now() + TRANSIENT_COOLDOWN_MS);
@@ -591,16 +615,18 @@ function serve(creq, cres) {
           // -> cooldown court, surtout pas 5h (sinon on bloque un compte encore frais)
           const transient = overloaded || (!authFail && q.retryAfterMs == null && q.r5 == null);
           const until = authFail ? now() + AUTH_COOLDOWN_MS
+            : overloaded ? noteOverload(st, tok.name)   // surcharge : pause qui s'allonge, et que la sonde ne leve pas
             : transient ? now() + TRANSIENT_COOLDOWN_MS
             : (q.retryAfterMs || q.r5);
           st.exhausted = st.exhausted || {}; st.exhausted[tok.name] = until;
           writeState(st);
-          log(authFail ? "AUTHFAIL" : overloaded ? "OVERLOADED(529)" : (transient ? "REJECTED(transitoire)" : "REJECTED"), tok.name, "http" + pres.statusCode, "-> cooldown jusqu'a", new Date(until).toISOString());
+          log(authFail ? "AUTHFAIL" : overloaded ? "OVERLOADED(529) x" + st.overload[tok.name].n : (transient ? "REJECTED(transitoire)" : "REJECTED"), tok.name, "http" + pres.statusCode, "-> cooldown jusqu'a", new Date(until).toISOString());
           pres.resume(); // draine
           // re-pick (un autre token frais, sinon WAIT)
           return attempt();
         }
 
+        clearOverload(st, tok.name); // une vraie reponse servie = la surcharge est passee
         writeState(st);
         stopKeepalive();
         if (ctx.sse) {
@@ -645,7 +671,7 @@ function serve(creq, cres) {
 }
 
 // Pure decision helpers are exported for tests; the server only boots when run directly.
-module.exports = { pickRoute, decideCompaction, readQuotaHeaders, startLivePolling, probeToken, LIVE_POLL_DEFAULT_MS, resolveUpstream, UPSTREAM_HOST, UPSTREAM_PORT, UPSTREAM_PATH_PREFIX };
+module.exports = { pickRoute, decideCompaction, readQuotaHeaders, startLivePolling, probeToken, noteOverload, overloadActive, clearOverload, LIVE_POLL_DEFAULT_MS, resolveUpstream, UPSTREAM_HOST, UPSTREAM_PORT, UPSTREAM_PATH_PREFIX };
 
 if (require.main === module) {
   const conf0 = readConf();
