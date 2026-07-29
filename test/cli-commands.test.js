@@ -96,6 +96,21 @@ const conf = () => JSON.parse(fs.readFileSync(p.join(DIR, "tokens.json"), "utf8"
   run("credits", "max", "10");
   assert.ok(/plafond atteint/.test(run("credits").stdout), "signale quand le plafond bloque");
 }
+// montant des credits saisi a la main -> affichage en argent restant
+{
+  fs.writeFileSync(p.join(DIR, "state.json"), JSON.stringify({ activeIndex: 0, overage: { 1: { status: "allowed", u: 20, uRaw: 0.2 } } }));
+  run("credits", "max", "100");
+  assert.ok(/montant.*non renseigné/.test(run("credits").stdout), "sans montant : dit comment le saisir");
+  const r = run("credits", "budget", "20", "EUR");
+  assert.strictEqual(r.status, 0, "budget exits 0: " + r.stderr);
+  assert.strictEqual(conf().overage.budget, 20, "montant enregistre");
+  assert.strictEqual(conf().overage.currency, "EUR", "devise enregistree");
+  assert.ok(/16,00 € restants sur 20,00 €/.test(run("credits").stdout), "affiche l'argent restant (20 - 20%)");
+  assert.strictEqual(run("credits", "budget", "1", "50").status, 0, "budget par compte accepte");
+  assert.strictEqual(conf().overage.budgets["1"], 50, "montant par compte enregistre");
+  assert.ok(/40,00 € restants sur 50,00 €/.test(run("credits").stdout), "le montant du compte prime");
+  assert.strictEqual(run("credits", "budget").status, 1, "budget sans argument -> usage + exit 1");
+}
 // raison d'indisponibilite traduite (cas reel : usage supplementaire desactive sur le compte)
 {
   fs.writeFileSync(p.join(DIR, "state.json"), JSON.stringify({ activeIndex: 0, overage: { 1: { status: "rejected", reason: "org_level_disabled" } } }));

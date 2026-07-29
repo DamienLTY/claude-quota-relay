@@ -217,6 +217,33 @@ function overageUsable(ov, maxPercent) {
   return ov.u == null || ov.u < cap; // u inconnu -> on tente (le serveur tranchera)
 }
 
+// ---- Combien d'argent reste-t-il sur les credits ? ----
+// L'API connait le montant (GET /api/oauth/usage -> extra_usage.monthly_limit / used_credits /
+// currency) mais REFUSE nos tokens : ceux de `claude setup-token` n'ont pas le scope user:profile
+// (403 "OAuth token does not meet scope requirement user:profile"). En revanche les en-tetes de
+// chaque reponse donnent la FRACTION consommee -- il suffit donc que l'utilisateur saisisse UNE
+// FOIS son montant (cqr credits budget <montant> [devise]) pour afficher des euros/dollars :
+//   restant = montant x (1 - fraction consommee).
+function creditsBudget(ovConf, name) {
+  const o = ovConf || {};
+  const v = (o.budgets || {})[name] != null ? o.budgets[name] : o.budget;
+  const n = Number(v);
+  return v == null || !isFinite(n) ? null : n;
+}
+function creditsRemaining(ov, ovConf, name) {
+  const total = creditsBudget(ovConf, name);
+  if (total == null || !ov) return null;
+  const used = ov.uRaw != null ? Number(ov.uRaw) : (ov.u == null ? null : ov.u / 100);
+  if (used == null || !isFinite(used)) return null;
+  return Math.max(0, total * (1 - Math.min(1, Math.max(0, used))));
+}
+const CURRENCY_SYMBOLS = { USD: "$", EUR: "€", GBP: "£", CAD: "$CA", CHF: "CHF" };
+function fmtMoney(v, currency) {
+  if (v == null) return null;
+  const cur = String(currency || "USD").toUpperCase();
+  return v.toFixed(2).replace(".", ",") + " " + (CURRENCY_SYMBOLS[cur] || cur);
+}
+
 // Pourquoi les credits sont indisponibles, en francais simple (valeurs renvoyees par l'API).
 const OVERAGE_REASONS = {
   org_level_disabled: "l'usage supplémentaire est désactivé sur ce compte (à activer sur claude.ai/settings/usage)",
@@ -243,4 +270,4 @@ function bestHeadroom(conf, state) {
   return vals.length ? Math.min.apply(null, vals) : null;
 }
 
-module.exports = { TOKEN_RE, isPlaceholder, mask, configDir, settingsPath, readConf, writeConf, ask, findClaude, captureSetupToken, pasteTokenManually, syncAuthToken, healthiestToken, preferredCompactionToken, anthropicPost, haikuSummarize, fmtDur, accounts, bestHeadroom, resolveUpstream, overageUsable, overageReasonFr, OVERAGE_REASONS };
+module.exports = { TOKEN_RE, isPlaceholder, mask, configDir, settingsPath, readConf, writeConf, ask, findClaude, captureSetupToken, pasteTokenManually, syncAuthToken, healthiestToken, preferredCompactionToken, anthropicPost, haikuSummarize, fmtDur, accounts, bestHeadroom, resolveUpstream, overageUsable, overageReasonFr, OVERAGE_REASONS, creditsBudget, creditsRemaining, fmtMoney };

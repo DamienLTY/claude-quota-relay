@@ -308,6 +308,7 @@ function readQuotaHeaders(headers) {
     ovStatus,
     ovAllowed: /^allowed/.test(ovStatus || ""), // allowed | allowed_warning
     ovU: isNaN(ovU) ? null : Math.round(ovU * 100),
+    ovURaw: isNaN(ovU) ? null : ovU, // fraction brute : garde les centimes quand on convertit en argent
     ovReset: parseEpochMs(headers["anthropic-ratelimit-unified-overage-reset"]),
     ovReason: headers["anthropic-ratelimit-unified-overage-disabled-reason"] || null,
     ovInUse: String(headers["anthropic-ratelimit-unified-overage-in-use"] || "") === "true",
@@ -320,7 +321,7 @@ function applyQuota(st, name, q) {
   if (q.max != null) { st.pct = st.pct || {}; st.pct[name] = { max: q.max, h5: q.u5h, d7: q.u7d, at: ts() }; }
   if (q.r5) { st.reset5h = st.reset5h || {}; st.reset5h[name] = q.r5; }
   if (q.r7) { st.reset7d = st.reset7d || {}; st.reset7d[name] = q.r7; }
-  if (q.ovStatus) { st.overage = st.overage || {}; st.overage[name] = { status: q.ovStatus, u: q.ovU, reset: q.ovReset, reason: q.ovReason, inUse: q.ovInUse, at: ts() }; }
+  if (q.ovStatus) { st.overage = st.overage || {}; st.overage[name] = { status: q.ovStatus, u: q.ovU, uRaw: q.ovURaw, reset: q.ovReset, reason: q.ovReason, inUse: q.ovInUse, at: ts() }; }
 }
 function logRate(headers, statusCode, name) {
   const rl = {}; for (const k of Object.keys(headers)) if (/^anthropic-ratelimit/i.test(k) || k === "retry-after") rl[k] = headers[k];

@@ -199,14 +199,19 @@ function lastCompactStr(s) {
 }
 // Credits d'usage supplementaire d'un compte, en une ligne lisible.
 // ov = { status, u, reset, reason } tel que renvoye par l'API (voir proxy.js readQuotaHeaders).
-function creditsStr(ov, ovConf) {
+function creditsStr(ov, ovConf, name) {
   if (!ov) return null;
   if (!lib.overageUsable(ov, (ovConf || {}).maxPercent)) {
     const why = lib.overageReasonFr(ov.reason);
     if (/^allowed/.test(String(ov.status || ""))) return "crédits: plafond atteint (" + ov.u + "% >= " + ((ovConf || {}).maxPercent == null ? 100 : ovConf.maxPercent) + "%)";
     return "crédits: indisponibles" + (why ? " — " + why : "");
   }
-  return "crédits: " + (ov.u == null ? "disponibles" : ov.u + "% utilisés") + (ov.reset ? " (recharge dans " + eta(ov.reset) + ")" : "");
+  // montant restant si l'utilisateur a saisi son budget (l'API ne nous le donne pas, cf. lib.js)
+  const rem = lib.creditsRemaining(ov, ovConf, name);
+  const left = rem != null
+    ? lib.fmtMoney(rem, (ovConf || {}).currency) + " restants sur " + lib.fmtMoney(lib.creditsBudget(ovConf, name), (ovConf || {}).currency)
+    : (ov.u == null ? "disponibles" : ov.u + "% utilisés (montant inconnu — cqr credits budget <montant> pour l'afficher en €)");
+  return "crédits: " + left + (ov.reset ? " (recharge dans " + eta(ov.reset) + ")" : "");
 }
 function showStatus() {
   let c, s;
@@ -233,7 +238,7 @@ function showStatus() {
       const r5 = s.reset5h && s.reset5h[t.name]; const r7 = s.reset7d && s.reset7d[t.name];
       const resets = [r5 ? "reset5h~" + eta(r5) : "", r7 ? "reset7d~" + eta(r7) : ""].filter(Boolean).join(" ");
       console.log(` ${act} [${i}] ${t.name.padEnd(12)} ${t.enabled ? "on " : "off"} ${mask(t.token).padEnd(22)} quota:${fmtPct(s.pct && s.pct[t.name])}  ${resets}${exTxt}`);
-      const cr = creditsStr((s.overage || {})[t.name], ovc);
+      const cr = creditsStr((s.overage || {})[t.name], ovc, t.name);
       if (cr) console.log("            " + cr);
     });
   });
@@ -424,6 +429,28 @@ switch (cmd) {
     } else if (a1 === "off") {
       ov.use = false; writeConf(c);
       console.log("Crédits d'usage supplémentaire NON utilisés : quand tous les comptes sont à sec, le proxy attend le reset (comportement d'origine). Effet immédiat.");
+    } else if (a1 === "budget") {
+      // Montant des credits, saisi a la main : l'API refuse de nous le donner (scope user:profile
+      // absent des tokens `claude setup-token`), mais elle donne le % consomme -> avec le montant,
+      // on affiche l'argent qui reste. `budget <montant> [devise]` = tous les comptes ;
+      // `budget <compte> <montant>` = un seul compte.
+      const num = (v) => { const n = Number(String(v == null ? "" : v).replace(",", ".")); return v === "" || v == null || !isFinite(n) ? null : n; };
+      const n2 = num(a2), n3 = num(a3);
+      // "budget <compte> <montant>" se reconnait au 2e argument NUMERIQUE (un nom de compte peut
+      // etre "1" -- c'est le cas par defaut -- donc on teste a3 avant a2).
+      if (a2 && n3 != null) {
+        ov.budgets = ov.budgets || {}; ov.budgets[a2] = n3;
+        writeConf(c);
+        console.log("Crédits : montant du compte '" + a2 + "' = " + lib.fmtMoney(n3, ov.currency) + ". Effet immédiat.");
+      } else if (n2 != null) {
+        ov.budget = n2;
+        if (a3) ov.currency = String(a3).toUpperCase();
+        writeConf(c);
+        console.log("Crédits : montant total = " + lib.fmtMoney(n2, ov.currency) + " (pour tous les comptes). La statusline affiche désormais l'argent restant. Effet immédiat.");
+      } else {
+        console.error("Usage : cqr credits budget <montant> [devise]   (ex. cqr credits budget 20 EUR)\n        cqr credits budget <compte> <montant>   (montant propre à un compte)");
+        process.exit(1);
+      }
     } else if (a1 === "max") {
       const pct = Number(a2);
       if (!(pct >= 0 && pct <= 100)) { console.error("Usage : cqr credits max <0-100>   (ex. 50 = n'utiliser que la moitié des crédits)"); process.exit(1); }
@@ -433,14 +460,17 @@ switch (cmd) {
       const s = readState();
       console.log("autorisés :", ov.use ? "OUI — utilisés seulement quand plus aucun compte n'a de forfait" : "non — le proxy attend le reset (cqr credits on pour changer)");
       console.log("plafond   :", (ov.maxPercent == null ? 100 : ov.maxPercent) + "% des crédits (cqr credits max <pct>)");
+      console.log("montant   :", ov.budget == null && !(ov.budgets && Object.keys(ov.budgets).length)
+        ? "non renseigné — Anthropic refuse de nous le donner (nos clés n'ont pas le droit de lire la facturation), saisissez-le une fois : cqr credits budget 20 EUR"
+        : (ov.budget != null ? lib.fmtMoney(ov.budget, ov.currency) : "") + (ov.budgets ? " " + JSON.stringify(ov.budgets) : ""));
       console.log("");
       lib.accounts(c, s).forEach((a) => {
-        const cr = creditsStr(a.ov, ov);
+        const cr = creditsStr(a.ov, ov, a.name);
         console.log(" [" + a.idx + "] " + a.name.padEnd(12) + (cr || "crédits: inconnus (aucune réponse d'Anthropic lue pour l'instant — lancez le proxy et faites une requête)"));
       });
       console.log("");
       console.log("Rappel : les crédits couvrent AUSSI la limite hebdomadaire (7j). C'est le seul moyen de continuer quand le quota de la semaine est épuisé.");
-    } else { console.error("Usage : cqr credits [status|on|off|max <pct>]"); process.exit(1); }
+    } else { console.error("Usage : cqr credits [status|on|off|budget <montant> [devise]|max <pct>]"); process.exit(1); }
     break;
   }
   case "preflight": {
@@ -511,6 +541,7 @@ function printHelp() {
     "Crédits d'usage supplémentaire (extra usage — non utilisés par défaut)",
     "  cqr credits                état des crédits, compte par compte",
     "  cqr credits on | off       autoriser / interdire leur usage quand tout est à sec",
+    "  cqr credits budget 20 EUR  montant de vos crédits -> statusline en argent restant",
     "  cqr credits max <pct>      n'en consommer qu'une partie (ex. 50)",
     "",
     "Garde-fou workflow",

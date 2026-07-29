@@ -77,13 +77,33 @@ function run(DIR) {
   assert.ok(/↻7j (dim|lun|mar|mer|jeu|ven|sam) \d\dh\d\d/.test(out), "reset hebdo date (jour + heure)");
 }
 
-// Case E: credits d'usage supplementaire -- rien ne s'affiche tant qu'ils ne sont pas autorises,
-// puis "cr N%" une fois autorises (l'utilisateur doit voir ce qu'il consomme).
+// Case E: credits d'usage supplementaire -- rien ne s'affiche tant qu'ils ne sont pas autorises ;
+// une fois autorises on montre l'ARGENT qui reste (le % seulement si le montant est inconnu).
 {
-  const st = { overage: { compte1: { status: "allowed", u: 8 }, compte2: { status: "rejected", reason: "org_level_disabled" } } };
-  assert.ok(!/cr \d+%/.test(strip(run(setup({ original: null }, { state: st })))), "credits non autorises -> aucun affichage");
-  const out = strip(run(setup({ original: null }, { state: st, conf: { overage: { use: true, maxPercent: 100 } } })));
-  assert.ok(/cr 8%/.test(out), "credits autorises -> part consommee affichee: " + out);
+  const st = { overage: { compte1: { status: "allowed", u: 8, uRaw: 0.08 }, compte2: { status: "rejected", reason: "org_level_disabled" } } };
+  assert.ok(!/cr /.test(strip(run(setup({ original: null }, { state: st })))), "credits non autorises -> aucun affichage");
+  const noBudget = strip(run(setup({ original: null }, { state: st, conf: { overage: { use: true, maxPercent: 100 } } })));
+  assert.ok(/cr 8%/.test(noBudget), "montant inconnu -> repli sur le % consomme: " + noBudget);
+  const out = strip(run(setup({ original: null }, { state: st, conf: { overage: { use: true, maxPercent: 100, budget: 20, currency: "EUR" } } })));
+  assert.ok(/cr 18,40 €/.test(out), "montant connu -> argent restant (20 - 8%) = 18,40 €: " + out);
+  // plusieurs comptes avec des credits : on additionne ce qui reste (vue "sous disponibles")
+  const two = strip(run(setup({ original: null }, {
+    state: { overage: { compte1: { status: "allowed", uRaw: 0.5 }, compte2: { status: "allowed", uRaw: 0 } } },
+    conf: { overage: { use: true, budget: 10, currency: "EUR" } },
+  })));
+  assert.ok(/cr 15,00 €/.test(two), "somme des restes (5 + 10): " + two);
+}
+
+// lib : conversion % -> argent (l'API ne donne pas le montant a nos tokens, l'utilisateur le saisit)
+{
+  assert.strictEqual(lib.fmtMoney(18.4, "EUR"), "18,40 €");
+  assert.strictEqual(lib.fmtMoney(7, "USD"), "7,00 $");
+  assert.strictEqual(lib.fmtMoney(3.5, null), "3,50 $", "devise par defaut USD");
+  assert.strictEqual(lib.creditsRemaining({ uRaw: 0.25 }, { budget: 40 }, "x"), 30, "40 - 25% = 30");
+  assert.strictEqual(lib.creditsRemaining({ u: 25 }, { budget: 40 }, "x"), 30, "repli sur le % entier si pas de fraction brute");
+  assert.strictEqual(lib.creditsRemaining({ uRaw: 0.1 }, { budget: 40, budgets: { x: 100 } }, "x"), 90, "montant propre au compte prioritaire");
+  assert.strictEqual(lib.creditsRemaining({ uRaw: 0.1 }, {}, "x"), null, "sans montant -> null (on affichera le %)");
+  assert.strictEqual(lib.creditsRemaining({ uRaw: 1.4 }, { budget: 10 }, "x"), 0, "jamais negatif");
 }
 
 console.log("PASS — statusline: cumulative 5h + clock reset + per-account 7j, wrapped, no verbose text; reset ignore les comptes sans quota hebdo (sinon reset 7j date) ; credits visibles");

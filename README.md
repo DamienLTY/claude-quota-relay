@@ -156,11 +156,21 @@ Deux conséquences, traitées séparément :
 2. **Les crédits peuvent servir de dernier recours** — mais uniquement si vous le demandez, parce qu'ils peuvent être **facturés** :
 
 ```bash
-cqr credits            # ai-je des crédits ? combien en ai-je consommé ?
-cqr credits on         # autoriser leur usage quand plus AUCUN compte n'a de forfait
-cqr credits max 50     # n'en consommer que la moitié, puis se remettre à attendre
-cqr credits off        # revenir au comportement d'origine (attendre le reset)
+cqr credits              # ai-je des crédits ? combien m'en reste-t-il ?
+cqr credits on           # autoriser leur usage quand plus AUCUN compte n'a de forfait
+cqr credits budget 20 EUR  # montant de vos crédits -> affichage en argent restant
+cqr credits max 50       # n'en consommer que la moitié, puis se remettre à attendre
+cqr credits off          # revenir au comportement d'origine (attendre le reset)
 ```
+
+**Voir l'argent qui reste (`cr 18,40 €` dans la statusline).** Anthropic ne nous donne pas le montant : l'endpoint qui le contient (`/api/oauth/usage`, champs `monthly_limit` / `used_credits` / `currency`) **refuse nos clés** — celles de `claude setup-token` n'ont pas le droit de lire la facturation (`403 : scope user:profile`). En revanche, chaque réponse indique le **pourcentage consommé**. Donnez donc le montant **une seule fois** et le relais fait la conversion :
+
+```bash
+cqr credits budget 20 EUR        # 20 € pour tous les comptes
+cqr credits budget compte-2 50   # montant propre à un compte
+```
+
+Sans montant, la statusline affiche le pourcentage consommé (`cr 8 %`) plutôt que rien.
 
 Règles appliquées :
 
