@@ -31,23 +31,43 @@ function run(DIR) {
   return cp.spawnSync(process.execPath, [SCRIPT], { input: JSON.stringify({ session_id: "x", model: { id: "claude-opus-4-8" } }), env: Object.assign({}, process.env, { CQR_DIR: DIR }), encoding: "utf8" }).stdout;
 }
 
-// Case A: standalone -> cumulative 5h bar + mean% + clock reset + per-account 7j bars
+// Case A: reset en tete (avec le compte concerne), puis UN BLOC PAR COMPTE (5h a gauche, 7j a
+// droite). L'ancienne barre 5h cumulee sur toute la flotte est supprimee : des 3 comptes, elle
+// empechait de savoir qui avait consomme quoi.
 {
   const out = strip(run(setup({ original: null })));
-  assert.ok(out.startsWith("5h "), "starts with 5h: " + out);
-  assert.ok(out.includes("7j "), "has 7j section");
-  assert.ok(/↻ \d\dh\d\d/.test(out), "next reset shown as a clock time (↻ HHhMM)");
-  assert.ok(out.includes("①") && out.includes("②"), "one 7j bar per account, numbered");
+  assert.ok(out.startsWith("↻ "), "commence par l'heure du prochain reset: " + out);
+  assert.ok(/^↻ \d\dh\d\d ②/.test(out), "l'heure est suivie du compte qui repart (ici ②, reset le plus proche): " + out);
+  assert.ok(out.includes("① 5h/40%") && out.includes("② 5h/73%"), "chaque compte affiche SON 5h: " + out);
+  assert.ok(out.includes("7J/12%") && out.includes("7J/55%"), "chaque compte affiche SON 7j");
   assert.ok(out.includes("█"), "has progress bars");
-  assert.ok(out.includes("57%"), "5h mean of 40 and 73 = 57%"); // cumulative fleet %
+  assert.ok(!/57%/.test(out), "plus de moyenne de flotte (illisible a 3 comptes)");
   assert.ok(!/Reset à/.test(out), "no verbose 'Reset à' text");
-  assert.ok(!/API-1 \|/.test(out), "no old verbose per-account list");
+}
+
+// Case A2: couleur du NUMERO = etat du compte, sans avoir a lire les chiffres.
+// VERT = actif avec du quota / JAUNE = en reserve / ORANGE = 5h fini mais la semaine tient /
+// ROUGE = ni 5h ni 7j.
+{
+  const base = { reset5h: { compte1: Date.now() + 65 * 60000, compte2: Date.now() + 20 * 60000 }, reset7d: { compte1: Date.now() + 3 * 3600000, compte2: Date.now() + 5 * 3600000 } };
+  const st = (pct, activeIndex) => Object.assign({ activeIndex: activeIndex || 0, pct }, base);
+  const ok = run(setup({ original: null }, { state: st({ compte1: { h5: 40, d7: 12 }, compte2: { h5: 73, d7: 55 } }) }));
+  assert.ok(/\x1b\[32m①/.test(ok), "compte actif avec du quota -> numero VERT: " + ok);
+  assert.ok(/\x1b\[33m②/.test(ok), "compte en reserve avec du quota -> numero JAUNE");
+  const dry5 = run(setup({ original: null }, { state: st({ compte1: { h5: 40, d7: 12 }, compte2: { h5: 100, d7: 55 } }) }));
+  assert.ok(/\x1b\[38;5;208m②/.test(dry5), "5h epuise mais quota hebdo restant -> numero ORANGE: " + dry5);
+  const dry7 = run(setup({ original: null }, { state: st({ compte1: { h5: 40, d7: 12 }, compte2: { h5: 100, d7: 100 } }) }));
+  assert.ok(/\x1b\[31m②/.test(dry7), "ni 5h ni 7j -> numero ROUGE: " + dry7);
+  // plusieurs comptes qui repartent a la meme minute -> ils sont tous listes derriere l'heure
+  const same = Date.now() + 30 * 60000;
+  const both = strip(run(setup({ original: null }, { state: Object.assign({}, st({ compte1: { h5: 40, d7: 12 }, compte2: { h5: 73, d7: 55 } }), { reset5h: { compte1: same, compte2: same + 900 } }) })));
+  assert.ok(/^↻ \d\dh\d\d ① ②/.test(both), "meme heure de reset -> les deux numeros: " + both);
 }
 
 // Case B: wrapped -> original kept as prefix, ours after " │ "
 {
   const out = strip(run(setup({ original: { type: "command", command: "echo MYLINE" } })));
-  assert.ok(out.startsWith("MYLINE │ 5h "), "original prefix kept then ours: " + out);
+  assert.ok(out.startsWith("MYLINE │ ↻ "), "original prefix kept then ours: " + out);
 }
 
 // Case C: un compte a 100% de quota HEBDO -> son reset 5h ne veut plus rien dire (il ne
@@ -120,4 +140,4 @@ function run(DIR) {
   assert.strictEqual(lib.creditsRemaining({ uRaw: 1.4 }, { budget: 10 }, "x"), 0, "jamais negatif");
 }
 
-console.log("PASS — statusline: cumulative 5h + clock reset + per-account 7j, wrapped, no verbose text; reset ignore les comptes sans quota hebdo (sinon reset 7j date) ; credits visibles");
+console.log("PASS — statusline: reset + comptes qui repartent, un bloc 5h/7j par compte, numero colore selon l'etat, wrapped ; reset ignore les comptes sans quota hebdo (sinon reset 7j date) ; credits visibles");

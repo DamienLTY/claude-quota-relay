@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.13.0
+
+- **Barre d'état lisible à 3 comptes et plus.** L'ancienne barre 5 h était **cumulée sur toute la flotte** : avec trois comptes, impossible de savoir lequel avait consommé quoi sans faire le calcul de tête. Elle est remplacée par **un bloc par compte**, son 5 h à gauche et son 7 j à droite :
+
+  ```
+  ↻ 19h30 ② │ ① 5h/37% ██░░░ ███░░ 7J/64% │ ② 5h/100% █████ ████░ 7J/88% │ ③ 5h/12% █░░░░ █████ 7J/100%
+  ```
+
+- **Le numéro du compte est coloré selon son état** — l'information se lit sans décoder les chiffres : vert = en service avec du quota, jaune = en réserve avec du quota, orange = 5 h épuisé mais la semaine tient (il revient à son reset 5 h), rouge = plus rien avant le reset hebdomadaire. Les seuils utilisés sont ceux du **routage réel** (`switchAtPercent`, `sevenDayBlockPercent`) : un compte que le proxy refuse d'utiliser ne peut pas paraître disponible.
+- **L'heure de reset indique quel compte repart** : `↻ 19h30 ②`, et plusieurs numéros si plusieurs comptes redémarrent à la même minute (`↻ 19h30 ① ②`). La règle « ne jamais afficher le reset 5 h d'un compte dont la semaine est finie » est conservée.
+- La moyenne de flotte (`84%`) disparaît : elle ne correspondait à aucun compte réel.
+
 ## 0.12.0
 
 - **Fin de la sonde de quota en continu (−90 % de requêtes).** Mesure du 29/07/2026 sur une journée : **3310 sondes pour 268 vraies requêtes**. Claude Code ne redessine pas sa barre d'état tout seul — elle est recalculée à chaque échange — donc vérifier les quotas toutes les 45 secondes n'affichait rien de plus. Désormais :

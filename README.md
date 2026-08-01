@@ -143,10 +143,21 @@ cqr compact dynamic off    # revient à : on n'allège qu'au changement de compt
 Une ligne toujours visible dans Claude Code, montrant le quota de tous vos comptes :
 
 ```
-5h █████████░ 84% ↻ 19h30 │ 7j ① ███░ 86% │ ② ████ 99%
+↻ 19h30 ② │ ① 5h/37% ██░░░ ███░░ 7J/64% │ ② 5h/100% █████ ████░ 7J/88% │ ③ 5h/12% █░░░░ █████ 7J/100%
 ```
 
-L'heure après le `↻` est celle du **prochain reset 5 h utile** : elle ne tient compte que des comptes qui ont encore du quota **hebdomadaire**. Un compte dont la semaine est finie ne redevient pas utilisable à son reset 5 h — afficher son heure serait un faux espoir. Si plus **aucun** compte n'a de quota hebdomadaire, c'est le reset **hebdomadaire** le plus proche qui s'affiche, marqué et daté : `↻7j sam 02h00`.
+**Un bloc par compte** : son 5 h à gauche, son 7 j à droite, chacun avec sa barre. Vous lisez directement ce que *ce* compte a consommé, sans rien recalculer.
+
+Le **numéro du compte** est coloré selon son état, pour le voir d'un coup d'œil sans lire les chiffres :
+
+| Couleur | État |
+|---|---|
+| 🟢 vert | c'est le compte en service, et il lui reste du quota |
+| 🟡 jaune | en réserve, du quota disponible (5 h et 7 j) |
+| 🟠 orange | son 5 h est épuisé, mais sa semaine tient : il revient à son reset 5 h |
+| 🔴 rouge | plus rien d'utilisable avant le reset hebdomadaire |
+
+L'heure après le `↻` est celle du **prochain reset 5 h utile**, suivie du ou des comptes qui repartent à ce moment-là (`↻ 19h30 ① ②` si plusieurs tombent à la même minute). Elle ne tient compte que des comptes qui ont encore du quota **hebdomadaire** : un compte dont la semaine est finie ne redevient pas utilisable à son reset 5 h — afficher son heure serait un faux espoir. Si plus **aucun** compte n'a de quota hebdomadaire, c'est le reset **hebdomadaire** le plus proche qui s'affiche, marqué et daté : `↻7j sam 02h00`.
 
 **Quand se met-elle à jour ?** À chaque échange avec Claude Code — c'est lui qui la redessine, elle ne se rafraîchit pas toute seule entre deux messages. Le programme mesure donc les quotas là où ça compte : le compte qui sert la requête se renseigne par la réponse elle-même, les autres sont vérifiés à cette occasion (petite requête, 0 token de sortie), et pendant une attente de quota une vérification part toutes les 2 minutes. Au repos, **zéro trafic**.
 

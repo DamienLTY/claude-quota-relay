@@ -2,14 +2,16 @@
 "use strict";
 /* claude-quota-relay — status line (compact, colored).
  *
- *   5h ██████░░░░ 58% ↻15h04  7j ①███░92% ②████99%
+ *   ↻ 14h10 ① │ ① 5h/40% ██░░░ █░░░░ 7J/12% │ ② 5h/73% ████░ ███░░ 7J/55% │ crédits ○
  *
- * - 5h = ONE cumulative bar across all accounts: each account owns 1/N of the bar and
- *   fills it with its own 5h usage (2 keys -> 50%/50%, 3 keys -> 33% each...). So the whole
- *   bar reading = total fleet 5h consumed. After it: the mean %, then the REAL CLOCK TIME of
- *   the next account to reset (absolute, because a status line does not refresh on its own).
- * - 7j = one small bar per account (colored) with its %.
- * Colors: green <60% used, yellow 60-85%, red >85%. Set NO_COLOR to disable.
+ * - ↻ = REAL CLOCK TIME of the next reset (absolue : une barre d'etat ne se rafraichit pas
+ *   toute seule), suivie du/des compte(s) qui repartent a ce moment-la.
+ * - Puis UN BLOC PAR COMPTE : son 5h a gauche, son 7j a droite. Une barre cumulee sur toute la
+ *   flotte etait illisible des 3 comptes (impossible de savoir qui a consomme quoi).
+ * - Couleur du NUMERO = etat du compte : vert = en service et il reste du quota / jaune = en
+ *   reserve, quota dispo / orange = 5h epuise mais la semaine tient / rouge = plus rien.
+ * - Couleur des barres et des % : vert <60% consomme, jaune 60-85%, rouge >85%.
+ * NO_COLOR desactive toutes les couleurs (les chiffres restent lisibles).
  *
  * If the user already had a status line, its output is kept as a prefix (see statusline.json).
  */
@@ -59,23 +61,39 @@ if (sl.original && sl.original.command) {
 const accts = lib.accounts(conf, state).filter((a) => a.enabled);
 let ours = "";
 if (accts.length) {
-  const W5 = 10, segW = Math.max(2, Math.round(W5 / accts.length));
-  const bar5 = accts.map((a) => bar(a.h5, segW)).join("");                    // cumulative 5h bar
-  const h5s = accts.map((a) => a.h5).filter((v) => v != null);
-  const mean = h5s.length ? Math.round(h5s.reduce((x, y) => x + y, 0) / h5s.length) : null;
+  const BW = 5; // largeur d'une barre (une par periode, par compte)
+  // "Reste-t-il du quota ?" = exactement les seuils de ROUTAGE du proxy, pas des seuils
+  // d'affichage inventes : un compte que le proxy refuse d'utiliser ne doit pas paraitre dispo.
+  const sw5 = conf.switchAtPercent == null ? 98 : Number(conf.switchAtPercent);
+  const block7 = conf.sevenDayBlockPercent == null ? 99 : Number(conf.sevenDayBlockPercent);
+  const left5 = (a) => a.h5 == null || a.h5 < sw5;
+  const left7 = (a) => a.d7 == null || a.d7 < block7;
+  const actIdx = state.activeIndex || 0;
+  // Couleur du numero de compte : l'etat se lit sans decoder les chiffres.
+  // VERT = en service, quota dispo / JAUNE = en reserve, quota dispo /
+  // ORANGE = 5h epuise mais la semaine tient (il revient a son reset 5h) / ROUGE = plus rien.
+  const tagCol = (a) => (left5(a) && left7(a) ? (a.idx === actIdx ? 32 : 33) : left7(a) ? "38;5;208" : 31);
+  const num = (a) => col(tagCol(a), tag(a.idx));
   // Heure de reset affichee : elle ne doit porter QUE sur les comptes qui ont encore du quota
   // HEBDOMADAIRE. Un compte a 100% de 7j ne redevient pas utilisable a son reset 5h -> afficher
   // son heure donne un faux espoir (c'est le bug signale). Si AUCUN compte n'a de quota hebdo,
   // la vraie echeance est le reset 7j le plus proche : on l'affiche, marque "7j" et date (jour +
   // heure), parce qu'il peut tomber dans plusieurs jours.
-  const block7 = conf.sevenDayBlockPercent == null ? 99 : Number(conf.sevenDayBlockPercent);
   const soonest = (arr, key) => { const v = arr.map((a) => a[key]).filter((x) => x != null).sort((x, y) => x - y); return v.length ? v[0] : null; };
-  const withWeekly = accts.filter((a) => a.d7 == null || a.d7 < block7);
+  const withWeekly = accts.filter(left7);
   let nextReset = null, weeklyWait = false;
   if (withWeekly.length) nextReset = soonest(withWeekly, "reset5");
   else { nextReset = soonest(accts, "reset7"); weeklyWait = nextReset != null; }
+  // Plusieurs comptes peuvent repartir a la meme heure -> on les liste tous (↻ 14h10 ① ②).
+  // Comparaison sur l'heure AFFICHEE : deux resets a la meme minute sont le meme evenement pour
+  // l'utilisateur, meme si les millisecondes different.
+  const fmtReset = weeklyWait ? clockDay : clock;
+  const key = weeklyWait ? "reset7" : "reset5";
+  const resetOn = nextReset == null ? [] : (weeklyWait ? accts : withWeekly).filter((a) => a[key] != null && fmtReset(a[key]) === fmtReset(nextReset));
   const sep = col(90, " │ ");
-  const seg7 = accts.map((a) => tag(a.idx) + " " + bar(a.d7, 4) + " " + col(hcol(a.d7), (a.d7 == null ? "?" : a.d7) + "%")).join(sep);
+  const seg7 = accts.map((a) => num(a)
+    + col(90, " 5h/") + col(hcol(a.h5), (a.h5 == null ? "?" : a.h5) + "%") + " " + bar(a.h5, BW)
+    + " " + bar(a.d7, BW) + col(90, " 7J/") + col(hcol(a.d7), (a.d7 == null ? "?" : a.d7) + "%")).join(sep);
   // Pastille "crédits d'usage supplémentaire" : dit d'un coup d'oeil si le travail EN COURS est
   // facturé aux crédits. VERT = oui, le compte actif est servi sur les crédits ; ROUGE = non, on
   // consomme le forfait normal. Le montant, lui, n'est pas affichable : Anthropic refuse de le
@@ -94,8 +112,8 @@ if (accts.length) {
     // La forme porte l'info meme sans couleur (NO_COLOR).
     crSeg = sep + col(on ? 32 : ready ? 33 : 31, "crédits " + (on ? "●" : ready ? "◐" : "○"));
   }
-  ours = "5h " + bar5 + " " + col(hcol(mean), (mean == null ? "?" : mean) + "%") + " " + col(90, "↻" + (weeklyWait ? "7j" : "")) + " "
-    + (weeklyWait ? clockDay(nextReset) : clock(nextReset)) + sep + "7j " + seg7 + crSeg;
+  ours = col(90, "↻" + (weeklyWait ? "7j" : "")) + " " + fmtReset(nextReset)
+    + (resetOn.length ? " " + resetOn.map(num).join(" ") : "") + sep + seg7 + crSeg;
 }
 
 const line = prefix ? (ours ? prefix + " │ " + ours : prefix) : ours;
