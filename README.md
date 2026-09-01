@@ -99,6 +99,13 @@ cqr policy waitsoft 85         # attendre dès 85 % au lieu d'aller jusqu'à 100
 
 **Panne chez Anthropic (« API Error: 500 »).** Un `500` n'est pas une limite de quota, c'est un serveur qui a un problème — et c'est souvent intermittent (une requête passe, la suivante échoue). Le programme **retente automatiquement** la même requête, en espaçant les essais (2 s, 4 s, 8 s… jusqu'à 1 min), pendant **15 minutes** par défaut. Pas besoin de savoir quand la panne est réparée : c'est l'essai qui aboutit qui le prouve. Si ça échoue encore au bout des 15 minutes, la vraie erreur vous est rendue (une requête que le serveur refuse *toujours* ne doit pas rester suspendue). Réglable par `serverErrorMaxMs` dans la config (`0` = ne rien retenter).
 
+**Coupure d'internet en pleine réponse (câble débranché, bascule Wi-Fi, VPN qui se reconnecte).** La réponse d'Anthropic s'arrête au milieu. Selon ce qui est déjà arrivé chez vous :
+
+- **rien n'est encore parti** → le programme **refait la requête tout seul** (2 s, 4 s, 8 s… jusqu'à 30 s) et vous ne voyez rien passer ;
+- **une partie de la réponse est déjà arrivée** → elle ne peut pas être rejouée sans se dupliquer, alors la connexion est **coupée franchement**. Claude Code affiche une erreur réseau ordinaire, qu'il sait retenter.
+
+Ce qu'il ne fait plus, c'est laisser passer une réponse à moitié écrite : Claude Code n'arrivait alors plus à la décompresser et affichait `API Error: ZlibError fetching http://127.0.0.1:8788/v1/messages` — une erreur qu'il ne retente pas, donc la requête était perdue.
+
 ### L'auto-compaction (active par défaut)
 
 **Quand le programme change de compte, il allège la requête envoyée au nouveau compte** — sans rien perdre. Il demande à Anthropic d'effacer les vieux résultats d'outils de la conversation (en gardant les plus récents), une fonction officielle qui **ne coûte aucun token**. Résultat : le compte tout neuf se remplit beaucoup plus lentement. Mesuré jusqu'à **-98 %** de tokens.

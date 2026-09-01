@@ -444,7 +444,7 @@ function serve(creq, cres) {
     let bodyObj = null;
     try { bodyObj = JSON.parse(body.toString("utf8")); } catch (e) {}
     const isStream = !!(bodyObj && bodyObj.stream === true);
-    const ctx = { tried: new Set(), waitStart: 0, polls: 0, sse: false, ka: null, netRetries: 0, resumed: false };
+    const ctx = { tried: new Set(), waitStart: 0, polls: 0, sse: false, ka: null, netRetries: 0, cutRetries: 0, resumed: false };
     function stopKeepalive() { if (ctx.ka) { clearInterval(ctx.ka); ctx.ka = null; } }
     // garde la connexion client ouverte pendant qu'on retente (quota, coupure reseau, panne
     // serveur) : en streaming, Claude coupe au bout de ~5 min sans octet -> commentaires SSE.
@@ -589,6 +589,43 @@ function serve(creq, cres) {
       // on force une reponse upstream non compressee pour pouvoir la relayer telle quelle
       if (ctx.sse) delete headers["accept-encoding"];
 
+      // Coupure PENDANT le corps de la reponse (cable ethernet debranche, bascule wifi, VPN qui
+      // reconnecte) : le flux d'Anthropic s'arrete au milieu. Un simple pipe ne dit RIEN au client
+      // dans ce cas -- il reste pendu, ou recoit un corps tronque qu'il n'arrive plus a
+      // decompresser ("ZlibError", vecu le 01/09/2026 sur un debranchement) et la requete est
+      // perdue. Deux cas, selon ce qui est deja parti :
+      //  - AUCUN octet relaye -> on refait la requete, le client ne voit rien passer ;
+      //  - des octets sont deja partis -> impossible de rejouer sans dupliquer la reponse : on
+      //    coupe net la connexion, pour que le client voie une erreur RESEAU (qu'il sait retenter)
+      //    plutot qu'un corps corrompu (qu'il ne sait pas retenter).
+      function relay(pres) {
+        let relayed = 0, cut = false;
+        // en-tetes retenues jusqu'au PREMIER octet : tant que rien n'est parti, la requete reste
+        // rejouable avec ses propres en-tetes. (En SSE, holdOpen les a deja envoyees.)
+        const openOnce = () => { try { if (!cres.headersSent) cres.writeHead(pres.statusCode, pres.headers); } catch (x) {} };
+        pres.on("data", (c) => { relayed += c.length; openOnce(); });
+        pres.on("end", openOnce);
+        function onCut(e) {
+          if (cut) return; cut = true;
+          pres.unpipe(cres); // surtout pas de end() propre sur un corps incomplet
+          const retry = relayed === 0 && !clientGone && (now() - reqStart) < conf.maxWaitMs;
+          log("STREAM coupe", e.message, "token=" + tok.name, relayed + " octets relayes",
+            retry ? "-> nouvelle tentative" : "-> connexion client coupee (erreur reseau franche)");
+          if (!retry) { try { cres.destroy(e); } catch (x) {} return; }
+          // compteur DEDIE : ctx.netRetries repart a zero des qu'une reponse arrive, il ne
+          // ferait donc jamais grandir le delai si la coupure se repete a chaque tentative.
+          ctx.cutRetries += 1;
+          const delay = Math.min(30000, 2000 * Math.pow(2, ctx.cutRetries - 1));
+          holdOpen("coupure reseau pendant la reponse, nouvelle tentative automatique");
+          setTimeout(() => { if (!clientGone) forward(conf, idx, lastResort, compactInfo); }, delay);
+        }
+        pres.on("error", onCut);
+        // selon la version de Node, une reponse tronquee emet "error", "aborted" ou juste
+        // "close" : `complete` est le seul temoin fiable qu'on a bien recu tout le corps.
+        pres.on("close", () => { if (!pres.complete) onCut(new Error("reponse upstream incomplete")); });
+        pres.pipe(cres);
+      }
+
       const preq = UPSTREAM.request({ hostname: UPSTREAM_HOST, port: UPSTREAM_PORT, path: UPSTREAM_PATH_PREFIX + creq.url, method: creq.method, headers }, (pres) => {
         ctx.netRetries = 0; // une reponse (meme un rejet HTTP) prouve que le reseau fonctionne
         logRate(pres.headers, pres.statusCode, tok.name);
@@ -656,14 +693,13 @@ function serve(creq, cres) {
         if (ctx.sse) {
           // flux SSE deja ouvert (keepalive) : on relaie seulement le corps si succes
           if (pres.statusCode >= 200 && pres.statusCode < 300) {
-            pres.pipe(cres);
+            relay(pres);
           } else {
             pres.resume();
             sseError((pres.statusCode >= 500 ? "erreur serveur Anthropic" : "limite atteinte") + " (http " + pres.statusCode + ")");
           }
         } else {
-          if (!cres.headersSent) cres.writeHead(pres.statusCode, pres.headers);
-          pres.pipe(cres);
+          relay(pres);
         }
       });
       preq.on("error", (e) => {

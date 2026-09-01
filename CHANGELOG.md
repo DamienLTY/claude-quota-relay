@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.14.0
+
+- **Une coupure d'internet en pleine réponse ne perd plus la requête.** Vécu le 01/09/2026 : câble ethernet débranché, la connexion bascule en Wi-Fi, et Claude Code affiche `API Error: ZlibError fetching http://127.0.0.1:8788/v1/messages`. Le relais recevait une réponse coupée en deux et transmettait telle quelle la moitié reçue — un corps compressé incomplet, que Claude Code n'arrive pas à décompresser. Une `ZlibError` n'est pas une erreur réseau : Claude Code ne la retente pas, la requête était donc perdue. (Selon le moment exact de la coupure, l'autre symptôme était un client qui restait suspendu sans jamais recevoir de réponse.)
+
+  Désormais le relais regarde ce qui est **déjà parti chez vous** :
+
+  - **aucun octet envoyé** → il refait la requête lui-même (2 s, 4 s, 8 s… jusqu'à 30 s, dans la limite de `maxWaitMs`), et vous ne voyez rien passer. En streaming, la connexion est tenue ouverte pendant la reprise, comme pour une attente de quota ;
+  - **des octets déjà envoyés** → rejouer dupliquerait la réponse, alors la connexion est coupée franchement : Claude Code voit une erreur réseau ordinaire, qu'il sait retenter, au lieu d'un contenu corrompu.
+
+  Une réponse incomplète n'est plus jamais rendue comme une réponse terminée proprement.
+
 ## 0.13.0
 
 - **Barre d'état lisible à 3 comptes et plus.** L'ancienne barre 5 h était **cumulée sur toute la flotte** : avec trois comptes, impossible de savoir lequel avait consommé quoi sans faire le calcul de tête. Elle est remplacée par **un bloc par compte**, son 5 h à gauche et son 7 j à droite :
