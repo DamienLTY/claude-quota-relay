@@ -16,3 +16,6 @@ npm-debug.log*
 # OS
 .DS_Store
 Thumbs.db
+
+# cache local du graphe graphify — regenerable, jamais committe
+/graphify-out/
