@@ -25,7 +25,7 @@ function setup(compaction) {
 
 function run(env, INSTALL, PROJ, TR, event, fakeSummary) {
   const r = cp.spawnSync(process.execPath, [HOOK], {
-    input: JSON.stringify({ hook_event_name: event, cwd: PROJ, transcript_path: TR }),
+    input: JSON.stringify({ hook_event_name: event, cwd: PROJ, transcript_path: TR, session_id: (env && env.__sid) || "sess-1" }),
     env: Object.assign({}, process.env, { CQR_DIR: INSTALL, CQR_FAKE_SUMMARY: fakeSummary }, env || {}),
     encoding: "utf8",
   });
@@ -140,4 +140,42 @@ const enabled = { enabled: true, dryRun: false, memoryFile: ".cqr-memory.md", ar
   assert.strictEqual(usedToken, TOK_FRESH, "old account genuinely blocked -> falls back to the freshest account");
 }
 
-console.log("PASS — memory-hook.js: refresh+inject, dedup, archive, SessionStart inject, inactive no-op, old-account-preferred-for-compaction");
+// --- Dedup d'injection : la memoire ne repart que si elle a CHANGE dans la session ---
+// Elle coutait ~730-830 tokens a CHAQUE tour pour un fichier qui bouge une quinzaine de fois en
+// trois semaines. Le point delicat n'est pas l'economie mais la compaction : elle reecrit le
+// contexte, donc une memoire "deja injectee" peut en avoir disparu.
+{
+  const { T, INSTALL, PROJ, TR } = setup(enabled);
+  const mem = p.join(PROJ, ".cqr-memory.md");
+  const inject = (out) => { try { return !!JSON.parse(out).hookSpecificOutput.additionalContext; } catch (e) { return false; } };
+  const arch = p.join(PROJ, ".cqr-archive");
+  fs.mkdirSync(arch, { recursive: true });
+  fs.writeFileSync(p.join(arch, ".last"), JSON.stringify({ at: 99999 })); // marqueur deja consomme
+
+  fs.writeFileSync(mem, "# MEMOIRE PROJET - premiere version");
+  assert.ok(inject(run({}, INSTALL, PROJ, TR, "UserPromptSubmit", "M").stdout), "1er tour : la memoire est injectee");
+  assert.ok(!inject(run({}, INSTALL, PROJ, TR, "UserPromptSubmit", "M").stdout), "2e tour, contenu inchange : plus rien n'est reinjecte");
+
+  fs.writeFileSync(mem, "# MEMOIRE PROJET - deuxieme version");
+  assert.ok(inject(run({}, INSTALL, PROJ, TR, "UserPromptSubmit", "M").stdout), "contenu change : la memoire repart");
+  assert.ok(!inject(run({}, INSTALL, PROJ, TR, "UserPromptSubmit", "M").stdout), "et se tait de nouveau ensuite");
+
+  assert.ok(inject(run({ __sid: "sess-2" }, INSTALL, PROJ, TR, "UserPromptSubmit", "M").stdout), "autre session : injectee malgre le meme contenu");
+  assert.ok(inject(run({}, INSTALL, PROJ, TR, "SessionStart", "M").stdout), "SessionStart injecte toujours : le contexte y est neuf");
+
+  // LE point que la greffe d'origine n'avait pas vu.
+  run({}, INSTALL, PROJ, TR, "PreCompact", "M");
+  assert.ok(inject(run({}, INSTALL, PROJ, TR, "UserPromptSubmit", "M").stdout),
+    "apres une compaction, la memoire est REINJECTEE (sinon elle disparait pour toute la session)");
+
+  // et le reglage rend l'injection systematique a qui la veut
+  const s2 = setup(Object.assign({}, enabled, { memoryDedup: false }));
+  fs.mkdirSync(p.join(s2.PROJ, ".cqr-archive"), { recursive: true });
+  fs.writeFileSync(p.join(s2.PROJ, ".cqr-archive", ".last"), JSON.stringify({ at: 99999 }));
+  fs.writeFileSync(p.join(s2.PROJ, ".cqr-memory.md"), "# MEMOIRE PROJET - x");
+  assert.ok(inject(run({}, s2.INSTALL, s2.PROJ, s2.TR, "UserPromptSubmit", "M").stdout), "memoryDedup:false, 1er tour");
+  assert.ok(inject(run({}, s2.INSTALL, s2.PROJ, s2.TR, "UserPromptSubmit", "M").stdout), "memoryDedup:false : injectee a chaque tour, comme avant");
+  fs.rmSync(T, { recursive: true, force: true });
+}
+
+console.log("PASS — memory-hook.js: refresh+inject, dedup, archive, SessionStart inject, inactive no-op, dedup par session + reinjection apres compaction, old-account-preferred-for-compaction");

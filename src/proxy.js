@@ -422,7 +422,7 @@ function decideCompaction(conf, state, bodyObj, prevActive, newIdx, ctx, switchi
     const last = state.lastCompactAt || 0;
     if (cooldownMs > 0 && now() - last < cooldownMs) return null;
   }
-  return { compact: true, inPlace, reason, dryRun: !cc.enabled && !!cc.dryRun, mode: cc.mode === "strip" ? "strip" : "native", keepToolUses: num(cc.keepToolUses, 10), triggerTokens: num(cc.triggerTokens, 2000) };
+  return { compact: true, inPlace, reason, dryRun: !cc.enabled && !!cc.dryRun, mode: cc.mode === "strip" ? "strip" : "native", keepToolUses: num(cc.keepToolUses, 10), triggerTokens: num(cc.triggerTokens, 2000), clearAtLeast: num(cc.clearAtLeast, null) };
 }
 
 // ----- coeur : route puis (forward | wait->forward), avec rejeu sur rejet -----
@@ -575,7 +575,7 @@ function serve(creq, cres) {
               sendBody = Buffer.from(JSON.stringify(r.body));
               log("COMPACT strip", compactInfo.reason, "stubbed=" + r.stubbed, "token=" + tok.name);
             } else {
-              const r = comp.injectNative(clone, compactInfo.keepToolUses, compactInfo.triggerTokens);
+              const r = comp.injectNative(clone, compactInfo.keepToolUses, compactInfo.triggerTokens, { clearAtLeast: compactInfo.clearAtLeast });
               comp.mergeBeta(headers);
               sendBody = Buffer.from(JSON.stringify(r.body));
               log("COMPACT native", compactInfo.reason, r.added ? "clear_tool_uses(keep " + compactInfo.keepToolUses + ")" : "deja present", "token=" + tok.name);
@@ -607,7 +607,11 @@ function serve(creq, cres) {
         pres.on("end", openOnce);
         function onCut(e) {
           if (cut) return; cut = true;
-          pres.unpipe(cres); // surtout pas de end() propre sur un corps incomplet
+          // Couper la SOURCE, pas seulement la debrancher. `unpipe` suppose que pres
+          // alimente cres DIRECTEMENT ; le jour ou un maillon s'intercale (mesure,
+          // decompression...), il ne debranche plus rien et le corps tronque continue de
+          // couler -- sans qu'aucun test ne bronche. `destroy` ne depend pas du branchement.
+          pres.unpipe(cres); pres.destroy(); // surtout pas de end() propre sur un corps incomplet
           const retry = relayed === 0 && !clientGone && (now() - reqStart) < conf.maxWaitMs;
           log("STREAM coupe", e.message, "token=" + tok.name, relayed + " octets relayes",
             retry ? "-> nouvelle tentative" : "-> connexion client coupee (erreur reseau franche)");

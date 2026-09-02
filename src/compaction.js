@@ -93,19 +93,46 @@ function dynamicThreshold(model, bodyObj, opts) {
 // An explicit low `trigger` is important: the API's DEFAULT trigger only fires around
 // ~100k input tokens, so a switch below that would clear nothing. We inject this ONLY
 // when we've decided to compact, so we want clearing to actually happen.
-function buildEdit(keepToolUses, triggerTokens) {
+function buildEdit(keepToolUses, triggerTokens, opts) {
   const keep = Number.isFinite(keepToolUses) ? keepToolUses : 10;
   const trig = Number.isFinite(triggerTokens) ? triggerTokens : 2000;
-  return { type: EDIT_TYPE, trigger: { type: "input_tokens", value: trig }, keep: { type: "tool_uses", value: keep } };
+  const edit = { type: EDIT_TYPE, trigger: { type: "input_tokens", value: trig }, keep: { type: "tool_uses", value: keep } };
+
+  // clear_at_least -- OPT-IN, aucun plancher par defaut (comme l'API, dont le defaut est None).
+  // A quoi il sert : effacer des tool_result invalide le prefixe mis en cache. La doc Anthropic
+  // le dit elle-meme -- "clear enough tokens to make the cache invalidation worthwhile". Le
+  // plancher empeche donc la strategie de s'appliquer quand elle ne recupere pas de quoi payer
+  // la cassure du cache. C'est une porte ouvert/ferme : "If the API can't clear at least the
+  // specified amount, the strategy will not be applied."
+  //
+  // Observation d'un poste (2026-08, session unique, NON reproduite) : le total efface sur une
+  // session decroissait avec le plancher (41 196 sans / 37 789 a 5k / 25 152 a 20k / 0 a 200k),
+  // ce qui avait ete lu comme un bridage de la quantite effacee. La doc dit une porte, pas un
+  // plafond, et le chiffre s'explique sans elle : la strategie s'active PLUSIEURS fois dans une
+  // session, un plancher haut bloque les activations trop maigres, et le CUMUL baisse. Ne pas
+  // traiter ce bridage comme acquis tant qu'une mesure sur une activation unique
+  // (`applied_edits.cleared_input_tokens`) ne l'a pas montre.
+  const floor = Number(opts && opts.clearAtLeast);
+  if (Number.isFinite(floor) && floor > 0) {
+    edit.clear_at_least = { type: "input_tokens", value: floor };
+  }
+
+  // Pas d'`exclude_tools`, et surtout pas Edit/Write : ce serait payer pour rien. `exclude_tools`
+  // protege "tool uses AND results", mais `clear_tool_inputs` vaut false par defaut -- le
+  // `tool_use`, qui porte le old_string/new_string (la modification elle-meme), n'est donc JAMAIS
+  // efface. Exclure Edit ne sauve que son `tool_result` : "The file has been updated", sans
+  // valeur. Un poste l'a mesure a 6 304 tokens conserves pour rien a 55k de contexte, 16 044 a
+  // 85k. Le reglage n'est volontairement pas expose : il n'a aucune valeur non nulle utile.
+  return edit;
 }
 
 // Merge our edit into body.context_management without duplicating a clear_tool_uses
 // edit Claude Code may already have set. Mutates+returns bodyObj. {added} = did we add.
-function injectNative(bodyObj, keepToolUses, triggerTokens) {
+function injectNative(bodyObj, keepToolUses, triggerTokens, opts) {
   const cm = bodyObj.context_management || {};
   const edits = Array.isArray(cm.edits) ? cm.edits.slice() : [];
   if (edits.some((e) => e && e.type === EDIT_TYPE)) return { body: bodyObj, added: false };
-  edits.push(buildEdit(keepToolUses, triggerTokens));
+  edits.push(buildEdit(keepToolUses, triggerTokens, opts));
   bodyObj.context_management = Object.assign({}, cm, { edits });
   return { body: bodyObj, added: true };
 }

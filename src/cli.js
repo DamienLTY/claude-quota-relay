@@ -373,6 +373,19 @@ switch (cmd) {
     else if (a1 === "mode") { cc.mode = a2 === "strip" ? "strip" : "native"; writeConf(c); console.log("Mode de compaction = " + cc.mode + (cc.mode === "strip" ? " (le proxy tronque lui-même les vieux résultats ; utile si Claude Code n'aime pas le mode natif)" : " (context-editing natif Anthropic, 0 token)")); }
     else if (a1 === "keep") { cc.keepToolUses = Number(a2) || 10; writeConf(c); console.log("Garde les " + cc.keepToolUses + " derniers résultats d'outils intacts."); }
     else if (a1 === "cooldown") { cc.compactionCooldownMs = Math.max(0, Number(a2) || 0) * 60000; writeConf(c); console.log("Délai minimum entre deux compactages = " + (a2 || 0) + "min."); }
+    else if (a1 === "memory-dedup" || a1 === "memorydedup") {
+      cc.memoryDedup = a2 !== "off" && a2 !== "false"; writeConf(c);
+      console.log(cc.memoryDedup ? "Mémoire réinjectée seulement quand elle a changé (et toujours après une compaction)."
+        : "Mémoire réinjectée à chaque tour, comme avant (coûte ~730-830 tokens par tour).");
+    }
+    else if (a1 === "clearatleast" || a1 === "plancher") {
+      // Plancher d'effacement : opt-in. "off" (ou 0) revient au defaut de l'API, qui n'en a aucun.
+      const off = String(a2 || "").toLowerCase() === "off";
+      const v = off ? null : Math.max(0, Number(a2) || 0) || null;
+      cc.clearAtLeast = v; writeConf(c);
+      console.log(v ? "Plancher d'effacement = " + v + " tokens : la compaction n'est appliquée que si elle efface au moins ça (sinon on casserait le cache pour rien)."
+        : "Plancher d'effacement retiré (défaut : aucun, comme l'API).");
+    }
     else if (a1 === "buffer") { cc.dynamicSafetyBufferPoints = Math.max(0, Number(a2) || 0); writeConf(c); console.log("Marge de sécurité dynamique = " + cc.dynamicSafetyBufferPoints + " points."); }
     else if (a1 === "threshold" || a1 === "seuil") {
       // cqr compact threshold <modele> <pct> : ajuste le % de bascule/compaction pour un modele
@@ -409,11 +422,13 @@ switch (cmd) {
       console.log("seuils   :", JSON.stringify(Object.assign({}, comp.DEFAULT_THRESHOLDS, cc.thresholds || {})), "(% de bascule/compaction par modèle -- cqr compact threshold <modèle> <pct>)");
       console.log("dynamique:", cc.dynamicThreshold ? "ACTIVÉ (gros contexte -> réduit la requête sur le MÊME compte, sans basculer)" : "désactivé (réduction seulement au changement de compte)", "-- cqr compact dynamic on|off");
       if (cc.dynamicThreshold) console.log("marge    :", (cc.dynamicSafetyBufferPoints == null ? 4 : cc.dynamicSafetyBufferPoints) + " points (marge de la compaction en place)");
+      console.log("mém.dedup:", cc.memoryDedup === false ? "désactivé : réinjectée à chaque tour" : "activée : réinjectée seulement si elle a changé (et après chaque compaction)", "-- cqr compact memory-dedup on|off");
+      console.log("plancher :", cc.clearAtLeast ? cc.clearAtLeast + " tokens minimum effacés, sinon on n'applique pas (protège le cache)" : "aucun (défaut) -- cqr compact clearatleast <tokens|off>");
       console.log("mémoire  :", cc.memoryFile || ".cqr-memory.md", "(par projet, max " + (cc.memoryMaxLines || 400) + " lignes)");
       const lc = lastCompactStr(readState());
       console.log("dernière :", lc ? lc + " -- détail dans proxy.log" : "aucune encore enregistrée (une ligne apparaîtra ici au 1er changement de compte compacté ; les compactions en place ne sont pas tracées -- voir proxy.log)");
     }
-    else console.error("Usage : cqr compact [status|on|off|dry-run|mode native|strip|keep <n>|cooldown <min>|threshold <modèle> <pct>|dynamic on|off|buffer <points>|memory]");
+    else console.error("Usage : cqr compact [status|on|off|dry-run|mode native|strip|keep <n>|cooldown <min>|threshold <modèle> <pct>|dynamic on|off|buffer <points>|clearatleast <tokens|off>|memory-dedup on|off|memory]");
     break;
   }
   case "credits": case "credit": {
@@ -536,6 +551,8 @@ function printHelp() {
     "  cqr compact                état + tous les réglages",
     "  cqr compact on | off       active / désactive",
     "  cqr compact threshold <modèle> <pct>   % de bascule par modèle",
+    "  cqr compact clearatleast <tok|off>     n'effacer que si ça vaut la cassure du cache",
+    "  cqr compact memory-dedup on|off        mémoire : seulement si changée, ou à chaque tour",
     "  cqr compact dynamic on|off réduit sur le MÊME compte quand le contexte est gros",
     "  cqr compact mode native|strip · keep <n> · cooldown <min> · buffer <pts> · memory",
     "",

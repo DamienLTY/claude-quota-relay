@@ -128,4 +128,22 @@ assert.strictEqual(comp.modelWeight("unknown-model"), 3, "unknown -> default wei
   assert.ok(dyn >= 66 && dyn <= 70, "~829k Opus context -> dynamic ~68% (got " + dyn + ")");
 }
 
-console.log("PASS — compaction.js unit tests (threshold, weight, estimate, dynamic, injectNative, mergeBeta, stripOldToolResults)");
+// --- clear_at_least : OPT-IN, jamais impose ---
+// La doc Anthropic en fait une porte ouvert/ferme ("If the API can't clear at least the
+// specified amount, the strategy will not be applied") et son defaut est None. Un plancher
+// impose par le proxy empecherait donc des compactions que l'utilisateur n'a jamais refusees.
+{
+  const sansOpts = comp.injectNative({ messages: [] }, 5, 500).body.context_management.edits[0];
+  assert.ok(!("clear_at_least" in sansOpts), "aucun plancher par defaut (comme l'API)");
+  assert.ok(!("exclude_tools" in sansOpts), "jamais d'exclude_tools : proteger Edit/Write ne protege rien et coute");
+
+  const avec = comp.injectNative({ messages: [] }, 5, 500, { clearAtLeast: 5000 }).body.context_management.edits[0];
+  assert.deepStrictEqual(avec.clear_at_least, { type: "input_tokens", value: 5000 }, "plancher transmis tel quel quand il est demande");
+
+  for (const v of [0, null, undefined, -1, "x"]) {
+    const e = comp.injectNative({ messages: [] }, 5, 500, { clearAtLeast: v }).body.context_management.edits[0];
+    assert.ok(!("clear_at_least" in e), "valeur inexploitable (" + JSON.stringify(v) + ") -> pas de plancher, pas de champ bancal envoye a l'API");
+  }
+}
+
+console.log("PASS — compaction.js unit tests (threshold, weight, estimate, dynamic, injectNative, mergeBeta, stripOldToolResults, clear_at_least opt-in)");

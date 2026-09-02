@@ -21,6 +21,7 @@
  */
 const fs = require("fs");
 const p = require("path");
+const crypto = require("crypto");
 const lib = require("./lib.js");
 
 // Install dir (proxy tokens.json/state.json live here). CQR_DIR override = test seam.
@@ -130,10 +131,47 @@ async function updateMemory(cc, cwd, transcriptPath, memFile, archiveDir, marker
   return { ok: true, lines: lineCount(text) };
 }
 
-function emitInject(event, memFile) {
+// Empreinte du contenu deja injecte, par session. Fichier volontairement borne : il ne doit
+// pas grossir indefiniment dans le projet de l'utilisateur.
+const MAX_SESSIONS = 50;
+function empreinte(txt) { return crypto.createHash("sha256").update(txt).digest("hex").slice(0, 16); }
+function lireInjections(f) { const j = readJson(f, {}); return j && typeof j === "object" ? j : {}; }
+function noterInjection(f, sid, h) {
+  try {
+    const j = lireInjections(f);
+    j[sid] = { h, at: Date.now() };
+    const cles = Object.keys(j).sort((a, b) => (j[b].at || 0) - (j[a].at || 0)).slice(0, MAX_SESSIONS);
+    const garde = {}; for (const k of cles) garde[k] = j[k];
+    fs.writeFileSync(f, JSON.stringify(garde));
+  } catch (e) { /* jamais bloquant */ }
+}
+function oublierInjection(f, sid) {
+  try { const j = lireInjections(f); if (j[sid]) { delete j[sid]; fs.writeFileSync(f, JSON.stringify(j)); } } catch (e) {}
+}
+
+function emitInject(event, memFile, opts) {
   if (!fs.existsSync(memFile)) return;
   let content; try { content = fs.readFileSync(memFile, "utf8"); } catch (e) { return; }
   if (!content.trim()) return;
+  const o = opts || {};
+  // Ne reinjecter que si la memoire a CHANGE depuis la derniere injection de cette session.
+  // Avant, elle repartait a chaque tour (~730-830 tokens) pour un fichier qui bouge une
+  // quinzaine de fois en trois semaines : des blocs identiques qui s'accumulent, mesures a
+  // ~40 000 tokens sur 50 tours. Elle n'invalide pas le cache (elle arrive en fin de messages),
+  // mais elle se paie quand meme.
+  //
+  // SessionStart injecte TOUJOURS : le contexte y est neuf, l'empreinte d'une session
+  // precedente n'y prouve rien. Et une compaction efface l'empreinte (voir PreCompact) -- sans
+  // ca, la memoire injectee trente tours plus tot disparaitrait du contexte reecrit tout en
+  // etant reputee presente, donc ne reviendrait JAMAIS de la session : on economiserait
+  // 40 000 tokens en perdant la memoire du projet au moment precis ou elle sert le plus.
+  if (o.dedup && o.sessionId && o.injFile && event === "UserPromptSubmit") {
+    const h = empreinte(content);
+    const vu = lireInjections(o.injFile)[o.sessionId];
+    if (vu && vu.h === h) return;
+    noterInjection(o.injFile, o.sessionId, h);
+  }
+
   const additionalContext = "Memoire persistante de CE projet (maintenue par claude-quota-relay ; tu peux l'enrichir en ecrivant dans le fichier " + memFile + ") :\n\n" + content;
   process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: event, additionalContext } }));
 }
@@ -145,6 +183,7 @@ function emitInject(event, memFile) {
   const event = hook.hook_event_name || hook.hookEventName || "";
   const cwd = hook.cwd || process.cwd();
   const transcriptPath = hook.transcript_path || hook.transcriptPath || "";
+  const sessionId = String(hook.session_id || hook.sessionId || "");
 
   const conf = readJson(p.join(DIR, "tokens.json"), {});
   const cc = conf.compaction || {};
@@ -154,11 +193,19 @@ function emitInject(event, memFile) {
   const archiveDir = p.join(cwd, cc.archiveDir || ".cqr-archive");
   const lastFile = p.join(archiveDir, ".last");
   const lockFile = p.join(archiveDir, ".lock");
+  const injFile = p.join(archiveDir, ".injected.json");
+  // Actif par defaut : la dedup ne retire aucune information (le contexte porte deja la
+  // memoire), elle evite seulement de la repeter. `memoryDedup: false` revient a l'injection
+  // systematique pour qui la veut.
+  const injOpts = { dedup: cc.memoryDedup !== false, sessionId, injFile };
 
   try {
     if (event === "PreCompact") {
       // /compact manuel : on enrichit la memoire (condensation autorisee), sans switch.
       await updateMemory(cc, cwd, transcriptPath, memFile, archiveDir, 0, true);
+      // La compaction reecrit le contexte : ce qui y avait ete injecte peut disparaitre. On
+      // oublie l'empreinte pour que la memoire reparte au prochain tour.
+      oublierInjection(injFile, sessionId);
       process.exit(0);
     }
 
@@ -183,7 +230,7 @@ function emitInject(event, memFile) {
     }
 
     // SessionStart + UserPromptSubmit : injecter la memoire courante.
-    emitInject(event || "SessionStart", memFile);
+    emitInject(event || "SessionStart", memFile, injOpts);
   } catch (e) { /* jamais bloquant */ }
   process.exit(0);
 })();

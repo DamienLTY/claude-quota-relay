@@ -118,7 +118,14 @@ C'est **actif par défaut**. Ça n'agit qu'au moment d'un changement de compte, 
 cqr compact                    # voir l'état + tous les réglages
 cqr compact off                # tout couper
 cqr compact threshold opus 89  # % de quota qui déclenche la bascule pour Opus (défaut ci-dessous)
+cqr compact clearatleast 5000  # n'effacer que si ça rapporte au moins 5000 tokens (défaut : off)
+cqr compact memory-dedup off   # réinjecter la mémoire du projet à chaque tour (défaut : si changée)
 ```
+
+Deux réglages qui demandent un mot d'explication :
+
+- **`clearatleast`** — effacer de vieux résultats d'outils casse le cache de la conversation, ce qui se paie. Ce plancher dit « n'efface que si tu récupères au moins tant de tokens », sinon on ne touche à rien. Désactivé par défaut, comme chez Anthropic : un plancher trop haut empêche des compactions utiles.
+- **`memory-dedup`** — la mémoire du projet n'est renvoyée que si elle a **changé** depuis le dernier envoi de la session, au lieu de repartir à chaque tour (environ 730 à 830 tokens à chaque fois, pour un fichier qui bouge quelques fois par semaine). Elle repart toujours au démarrage d'une session **et après chaque compactage**, puisque le compactage réécrit la conversation et peut l'en faire disparaître.
 
 **Le % de bascule dépend du modèle** (un gros modèle risque plus de dépasser le quota d'un coup, donc on bascule plus tôt) :
 
