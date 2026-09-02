@@ -50,6 +50,8 @@ const COMPACTION_DEFAULT = {
   enabled: true, dryRun: false, mode: "native", dynamicThreshold: false,
   thresholds: { fable: 85, opus: 89, sonnet: 90, haiku: 95, default: 88 },
   keepToolUses: 10, triggerTokens: 2000, compactBeforeResume: true, compactionCooldownMs: 600000,
+  // Plancher d'effacement : null = aucun (defaut de l'API). Voir buildEdit() dans compaction.js.
+  clearAtLeast: null,
   memoryFile: ".cqr-memory.md", memoryMaxLines: 400, archiveDir: ".cqr-archive",
 };
 
