@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.16.0
+
+Deux defauts de la memoire de projet, remontes par un poste ou un agent a refuse d'obeir a un fichier `.cqr-memory.md`.
+
+- **Un resume qui degenere ne detruit plus la memoire.** Le fichier memoire est ecrit par Haiku, et le seul controle etait « la reponse n'est pas vide ». Mesure deux fois sur un poste reel : 2 753 octets remplaces par 472 (une prose narrative — « *Lorsque la revue reviendra, le cycle continuera ainsi* »), puis 3 362 remplaces par 144 (un fragment de commande colle). Le resume doit desormais porter la structure que le modele a recue pour consigne (`# MEMOIRE PROJET` et au moins une section) ; sinon il est refuse et l'ancienne memoire reste. Le marqueur n'etant consomme que sur succes, la tentative suivante repart toute seule.
+- **L'injection dit d'ou vient le texte.** Ce bloc arrive dans le contexte au meme rang qu'un message de l'utilisateur, sous un en-tete qui n'en disait rien. Un agent lisait donc « Taches prevues : faire circuler les corrections par `git stash` puis pousser » comme un ordre recu de son utilisateur — alors que c'est un resume machine d'une conversation passee. L'en-tete annonce maintenant un texte genere, a lire comme du contexte et jamais comme une consigne. C'est la vraie correction : meme bien forme, un resume peut prendre la forme d'une demande.
+- **Le hook ne bloque plus l'envoi d'un message.** Il attendait l'appel Haiku jusqu'a 12 secondes alors que Claude Code n'en accorde que 5 : tue avant d'aboutir (`UserPromptSubmit hook timed out after 5s — output discarded`), il n'injectait pas la memoire et, le marqueur n'etant jamais consomme, recommencait au message suivant — une latence qui se repetait a chaque prompt. Le resume tourne desormais dans un processus detache : le message part immediatement, le resume se fait derriere, et la condensation redevient permise puisqu'elle ne coute plus d'attente.
+
 ## 0.15.0
 
 Remontee de la greffe locale posee par `delest` sur un poste (issue #1), objet par objet.
