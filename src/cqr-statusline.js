@@ -2,12 +2,17 @@
 "use strict";
 /* claude-quota-relay — status line (compact, colored).
  *
- *   ↻ 14h10 ① │ ① 5h/40% ██░░░ █░░░░ 7J/12% │ ② 5h/73% ████░ ███░░ 7J/55% │ crédits ○
+ *   ↻ 14h10 ① │ crédits ○ │
+ *   │ ①  5h/ 40% ████░░░░░░ █░░░░░░░░░ 7J/ 12% │
+ *   │ ②  5h/ 73% ███████░░░ ██████░░░░ 7J/ 55% │
  *
  * - ↻ = REAL CLOCK TIME of the next reset (absolue : une barre d'etat ne se rafraichit pas
  *   toute seule), suivie du/des compte(s) qui repartent a ce moment-la.
- * - Puis UN BLOC PAR COMPTE : son 5h a gauche, son 7j a droite. Une barre cumulee sur toute la
- *   flotte etait illisible des 3 comptes (impossible de savoir qui a consomme quoi).
+ * - Puis UNE LIGNE PAR COMPTE : son 5h a gauche, son 7j a droite. Une barre cumulee sur toute la
+ *   flotte etait illisible des 3 comptes (impossible de savoir qui a consomme quoi) ; et tous les
+ *   blocs sur UNE ligne se repliaient n'importe ou des 5 comptes, coupant les blocs en deux.
+ * - Les deux pourcentages sont cadres a droite sur 4 caracteres : sans ca la bordure de droite
+ *   danse d'une ligne a l'autre, et l'alignement est la seule raison d'etre du multi-lignes.
  * - Couleur du NUMERO = etat du compte : vert = en service et il reste du quota / jaune = en
  *   reserve, quota dispo / orange = 5h epuise mais la semaine tient / rouge = plus rien.
  * - Couleur des barres et des % : vert <60% consomme, jaune 60-85%, rouge >85%.
@@ -44,6 +49,9 @@ function clockDay(ms) {
 }
 const CIRC = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨"];
 const tag = (i) => CIRC[i] || "(" + (i + 1) + ")";
+// Cadre a droite sur 4 caracteres ("  0%", " 40%", "100%", "   ?") : les bordures de droite
+// s'alignent alors d'une ligne a l'autre quel que soit le nombre de chiffres.
+const pct4 = (v) => String(v == null ? "?" : v + "%").padStart(4);
 
 let stdin = "";
 try { stdin = fs.readFileSync(0, "utf8"); } catch (e) {}
@@ -59,9 +67,9 @@ if (sl.original && sl.original.command) {
 }
 
 const accts = lib.accounts(conf, state).filter((a) => a.enabled);
-let ours = "";
+let ours = "", rows = [];
 if (accts.length) {
-  const BW = 5; // largeur d'une barre (une par periode, par compte)
+  const BW = 10; // largeur d'une barre : celle de la jauge ctx de Claude Code, pour un alignement d'ensemble
   // "Reste-t-il du quota ?" = exactement les seuils de ROUTAGE du proxy, pas des seuils
   // d'affichage inventes : un compte que le proxy refuse d'utiliser ne doit pas paraitre dispo.
   const sw5 = conf.switchAtPercent == null ? 98 : Number(conf.switchAtPercent);
@@ -91,9 +99,13 @@ if (accts.length) {
   const key = weeklyWait ? "reset7" : "reset5";
   const resetOn = nextReset == null ? [] : (weeklyWait ? accts : withWeekly).filter((a) => a[key] != null && fmtReset(a[key]) === fmtReset(nextReset));
   const sep = col(90, " │ ");
-  const seg7 = accts.map((a) => num(a)
-    + col(90, " 5h/") + col(hcol(a.h5), (a.h5 == null ? "?" : a.h5) + "%") + " " + bar(a.h5, BW)
-    + " " + bar(a.d7, BW) + col(90, " 7J/") + col(hcol(a.d7), (a.d7 == null ? "?" : a.d7) + "%")).join(sep);
+  const bord = col(90, "│");
+  // Au-dela du 9e compte, tag() rend "(10)" la ou les autres rendent "①" : sans ce calage la
+  // bordure de droite se decale sur cette ligne-la, et l'alignement tombe.
+  const tw = Math.max.apply(null, accts.map((a) => tag(a.idx).length));
+  rows = accts.map((a) => bord + " " + num(a) + " ".repeat(tw - tag(a.idx).length)
+    + col(90, " 5h/") + col(hcol(a.h5), pct4(a.h5)) + " " + bar(a.h5, BW)
+    + " " + bar(a.d7, BW) + col(90, " 7J/") + col(hcol(a.d7), pct4(a.d7)) + " " + bord);
   // Pastille "crédits d'usage supplémentaire" : dit d'un coup d'oeil si le travail EN COURS est
   // facturé aux crédits. VERT = oui, le compte actif est servi sur les crédits ; ROUGE = non, on
   // consomme le forfait normal. Le montant, lui, n'est pas affichable : Anthropic refuse de le
@@ -113,8 +125,8 @@ if (accts.length) {
     crSeg = sep + col(on ? 32 : ready ? 33 : 31, "crédits " + (on ? "●" : ready ? "◐" : "○"));
   }
   ours = col(90, "↻" + (weeklyWait ? "7j" : "")) + " " + fmtReset(nextReset)
-    + (resetOn.length ? " " + resetOn.map(num).join(" ") : "") + sep + seg7 + crSeg;
+    + (resetOn.length ? " " + resetOn.map(num).join(" ") : "") + crSeg + " " + bord;
 }
 
-const line = prefix ? (ours ? prefix + " │ " + ours : prefix) : ours;
-process.stdout.write(line);
+const head = prefix ? (ours ? prefix + " │ " + ours : prefix) : ours;
+process.stdout.write([head].concat(rows).join("\n"));

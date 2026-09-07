@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.17.0
+
+- **La barre d'etat passe a plusieurs lignes, une par compte.** Depuis la 0.13.0 chaque compte a son bloc `5h / 7j`, mais les blocs tenaient tous sur une seule ligne separee par `│`. A cinq comptes la ligne depasse la largeur du terminal et se replie n'importe ou : un bloc se retrouve coupe en deux, et l'oeil ne rattache plus un pourcentage a son compte. La sortie rend desormais une ligne d'en-tete (barre d'etat d'origine, prochain reset, pastille credits) puis une ligne par compte, bordee de `│` des deux cotes. Les deux pourcentages sont cadres a droite sur quatre caracteres : sans ce cadrage, `0%` et `100%` decalent la bordure de droite d'une ligne a l'autre, et l'alignement -- seule raison d'etre du multi-lignes -- serait perdu. Chaque barre passe de 5 à 10 caracteres, la largeur de la jauge `ctx` de Claude Code.
+
 ## 0.16.0
 
 Deux defauts de la memoire de projet, remontes par un poste ou un agent a refuse d'obeir a un fichier `.cqr-memory.md`.

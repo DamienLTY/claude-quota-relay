@@ -156,13 +156,16 @@ cqr compact dynamic off    # revient à : on n'allège qu'au changement de compt
 
 ### La statusline (barre d'état)
 
-Une ligne toujours visible dans Claude Code, montrant le quota de tous vos comptes :
+Toujours visible dans Claude Code, elle montre le quota de tous vos comptes :
 
 ```
-↻ 19h30 ② │ ① 5h/37% ██░░░ ███░░ 7J/64% │ ② 5h/100% █████ ████░ 7J/88% │ ③ 5h/12% █░░░░ █████ 7J/100%
+↻ 19h30 ② │
+│ ①  5h/ 37% ████░░░░░░ ██████░░░░ 7J/ 64% │
+│ ②  5h/100% ██████████ █████████░ 7J/ 88% │
+│ ③  5h/ 12% █░░░░░░░░░ ██████████ 7J/100% │
 ```
 
-**Un bloc par compte** : son 5 h à gauche, son 7 j à droite, chacun avec sa barre. Vous lisez directement ce que *ce* compte a consommé, sans rien recalculer.
+**Une ligne par compte** : son 5 h à gauche, son 7 j à droite, chacun avec sa barre. Vous lisez directement ce que *ce* compte a consommé, sans rien recalculer. Une seule ligne pour toute la flotte se repliait n'importe où dès cinq comptes, coupant un bloc en deux ; les barres ont la largeur de la jauge `ctx` de Claude Code, pour un alignement d'ensemble.
 
 Le **numéro du compte** est coloré selon son état, pour le voir d'un coup d'œil sans lire les chiffres :
 

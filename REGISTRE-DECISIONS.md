@@ -85,3 +85,81 @@ Registre ouvert le 2026-09-05. Les décisions antérieures vivent dans le `CHANG
 **Point 4 — écarté.** La lecture de `state.json` est recopiée entre le pré-contrôle du parent et le calcul de l'enfant. Un helper commun serait plus propre, mais extraire une fonction pour deux appels dans le même fichier n'améliore rien de mesurable.
 
 **Contre-épreuves** : chacune des cinq corrections échoue quand on la neutralise, y compris celle de la latence, qui affiche « *mesure 4249 ms pour un appel de 4000 ms* ».
+
+---
+
+## DR-006 — Le dossier d'installation prend le nom officiel du projet
+
+**Type** : exploitation · **État** : appliqué le 2026-09-06
+
+**Constat.** Trois dossiers coexistaient et se ressemblaient : le dépôt (`~/claude-quota-relay`), l'installation réellement vivante sous l'ancien nom (`~/.claude/auth-proxy`, proxy actif sur le port 8787, cinq comptes, six chemins dans `settings.json`), et un doublon mort au nom officiel (`~/.claude/claude-quota-relay`, deux comptes périmés, référencé nulle part). Le code des trois était **identique** — seule la configuration divergeait. Origine du doublon : `install.js:84` vise `<config>/claude-quota-relay`, alors que l'installation historique n'a jamais été renommée.
+
+**Question posée** : « L'installation vit sous l'ancien nom `auth-proxy`, mais le code veut désormais `claude-quota-relay`. On aligne, ou on garde l'ancien nom ? »
+
+**Réponse citée** : « *Aligner sur claude-quota-relay* ».
+
+**Fait.** Doublon archivé puis supprimé, `~/.claude/auth-proxy` renommé en `~/.claude/claude-quota-relay`, et les neuf fichiers qui portaient l'ancien chemin réécrits : `settings.json`, `.local/bin/claude-auth` et son `.cmd`, `hooks/quota-compact-nudge.js`, les cinq `commands/auth*.md`. Archive : `~/.claude/.archive-migration-cqr-20260906-202227/`.
+
+**Preuve** : port 8787 en écoute après redémarrage, `cqr status` affiche cinq comptes, et `grep auth-proxy` ne rend plus aucune référence hors archives. La prochaine mise à jour du dépôt ne peut plus fabriquer de second dossier.
+
+**Contrainte d'exécution** : `ANTHROPIC_BASE_URL` pointe vers ce proxy, donc l'agent qui migre passe par lui. La bascule a été faite par un script unique doté d'un filet `trap EXIT` qui relance le proxy quel que soit le point d'échec — jamais par une suite de commandes séparées.
+
+---
+
+## DR-007 — `cqr` cesse d'être une commande npm
+
+**Type** : exploitation · **État** : appliqué le 2026-09-06
+
+**Constat.** Un `npm link` posé le jour même faisait résoudre `cqr` vers `~/claude-quota-relay/src/cli.js`. Or `cli.js:26` définit son dossier de travail par `__dirname` : la commande cherchait donc sa configuration dans le dépôt, qui n'en contient pas. `cqr status` répondait « *Aucun tokens.json dans …\src — lancez d'abord l'installeur* », et seul `claude-auth` fonctionnait.
+
+**Question posée** : « Que faire du lien npm qui casse la commande `cqr` ? »
+
+**Réponse citée** : « *Retirer le lien, cqr → installation* ».
+
+**Fait.** `npm rm -g claude-quota-relay`, puis `~/.local/bin/cqr` et `cqr.cmd` créés sur le modèle de `claude-auth` — un lanceur d'une ligne vers `~/.claude/claude-quota-relay/cli.js`.
+
+**Preuve** : `which -a cqr` ne rend plus que `/c/Users/damie/.local/bin/cqr`, et `cqr status` affiche les cinq comptes.
+
+**À retenir** : `__dirname` fait du dossier d'exécution la source de vérité. Lier le dépôt au PATH crée donc une seconde installation sans configuration — un `npm link` sur ce projet est à éviter.
+
+---
+
+## DR-008 — La statusline passe à plusieurs lignes, une par compte
+
+**Type** : affichage · **État** : appliqué le 2026-09-07
+
+**Constat.** Depuis `2fe6134`, chaque compte a son bloc `5h / 7j`, mais tous les blocs tiennent sur une seule ligne séparés par `│`. À cinq comptes la ligne dépasse la largeur du terminal et se replie n'importe où : les blocs se coupent en deux, et l'œil ne retrouve plus quel pourcentage appartient à quel compte.
+
+**Question posée** : « Où placer la pastille crédits (● / ◐ / ○) dans la version multi-lignes ? »
+
+**Réponse citée** : « *Fin de la ligne 1* ».
+
+**Question posée** : « Ta statusline d'origine (`~/.claude/statusline.js`) sort le modèle, xhigh et ctx. Aujourd'hui le code ne garde que sa PREMIÈRE ligne et jette le reste. On change ? »
+
+**Réponse citée** : « *Garder la 1re ligne seulement* ».
+
+**Question posée** : « Les barres verticales de bordure dans ta maquette (`│` au début et à la fin de chaque ligne de compte) : décoratives ou réelles ? »
+
+**Réponse citée** : « *│ des deux côtés* ».
+
+**Fait.** `cqr-statusline.js` rend désormais une ligne d'en-tête (préfixe + prochain reset + pastille crédits) suivie d'une ligne par compte, chacune bordée de `│` à gauche et à droite. Les deux pourcentages sont cadrés à droite sur quatre caractères (`  0%`, ` 36%`, `100%`) — sans ce cadrage, la bordure de droite se décalerait d'un compte à l'autre et l'alignement, seule raison d'être du passage multi-lignes, serait perdu.
+
+**Question posée**, en cours de route : « Les barres font 5 caractères chacune. »
+
+**Réponse citée** : « *Je pense que pour les quotas des comptes, on peut augmenter leurs tailles pour avoir la même longueur que le ctx* » — chaque barre passe donc de 5 à 10 caractères, la largeur de la jauge `ctx` de Claude Code sur la ligne d'en-tête.
+
+**Corrigé après revue.** Le cadrage des pourcentages ne suffisait pas : au-delà du neuvième compte, `tag()` n'a plus de chiffre entouré et rend `(10)` — quatre caractères là où les autres en rendent un. Cette ligne-là, et elle seule, perdait sa bordure de droite. Le numéro est désormais calé sur la largeur du plus long tag affiché.
+
+**Preuve** : `node test/statusline.test.js` vérifie que la sortie compte `1 + nombre de comptes` lignes, que chaque ligne de compte commence et finit par `│`, et que toutes ont la même longueur une fois les couleurs retirées — sur deux comptes, sur le couple `0%` / `100%`, et sur dix comptes. Contre-épreuve faite : en retirant le calage du numéro, l'assertion « *le 10e compte garde la largeur des neuf autres* » tombe.
+
+---
+
+## DR-009 — Le lanceur Windows du proxy pointait vers un dossier supprimé
+
+**Type** : exploitation · **État** : appliqué le 2026-09-07
+
+**Constat.** `Démarrage/ClaudeAuthProxy.vbs` lançait `C:\Users\damie\.claude\auth-proxy\proxy.js`. Ce dossier a été renommé en `claude-quota-relay` par DR-006, mais le VBS n'a pas été réécrit : il n'est produit par aucun script du dépôt, donc aucun `grep` d'installation ne l'atteignait. Le proxy ne démarrait donc plus avec Windows — panne invisible, parce que le hook `SessionStart` `ensure-proxy.js` le relance à la première session Claude Code.
+
+**Fait.** Chemin corrigé dans le VBS du dossier Démarrage.
+
+**À retenir** : DR-006 a réécrit les neuf fichiers qui portaient l'ancien chemin *sous `~/.claude` et `~/.local`*. Le dossier Démarrage de Windows était hors de ce périmètre. Un renommage d'installation doit balayer aussi les points de lancement du système.

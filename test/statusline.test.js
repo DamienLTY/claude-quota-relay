@@ -38,11 +38,37 @@ function run(DIR) {
   const out = strip(run(setup({ original: null })));
   assert.ok(out.startsWith("↻ "), "commence par l'heure du prochain reset: " + out);
   assert.ok(/^↻ \d\dh\d\d ②/.test(out), "l'heure est suivie du compte qui repart (ici ②, reset le plus proche): " + out);
-  assert.ok(out.includes("① 5h/40%") && out.includes("② 5h/73%"), "chaque compte affiche SON 5h: " + out);
-  assert.ok(out.includes("7J/12%") && out.includes("7J/55%"), "chaque compte affiche SON 7j");
+  assert.ok(out.includes("① 5h/ 40%") && out.includes("② 5h/ 73%"), "chaque compte affiche SON 5h: " + out);
+  assert.ok(out.includes("7J/ 12%") && out.includes("7J/ 55%"), "chaque compte affiche SON 7j");
   assert.ok(out.includes("█"), "has progress bars");
   assert.ok(!/57%/.test(out), "plus de moyenne de flotte (illisible a 3 comptes)");
   assert.ok(!/Reset à/.test(out), "no verbose 'Reset à' text");
+}
+
+// Case A3: UNE LIGNE PAR COMPTE. Tous les blocs sur une seule ligne se repliaient n'importe ou
+// des 5 comptes. Chaque ligne de compte est bordee de │ des deux cotes, et toutes ont la MEME
+// largeur : sans le cadrage des pourcentages, la bordure de droite danserait d'un compte a
+// l'autre -- or cet alignement est la seule raison d'etre du multi-lignes.
+{
+  const lines = strip(run(setup({ original: null }))).split("\n");
+  assert.strictEqual(lines.length, 3, "1 ligne d'en-tete + 1 par compte: " + JSON.stringify(lines));
+  assert.ok(/ │$/.test(lines[0]), "l'en-tete se ferme aussi par une bordure: " + lines[0]);
+  for (const l of lines.slice(1)) assert.ok(/^│ .* │$/.test(l), "ligne de compte bordee des deux cotes: " + l);
+  assert.strictEqual(lines[1].length, lines[2].length, "toutes les lignes de compte ont la meme largeur");
+  // 0% et 100% ne font pas le meme nombre de chiffres : c'est le cas qui casse l'alignement.
+  const wide = strip(run(setup({ original: null }, { state: { pct: { compte1: { h5: 0, d7: 100 }, compte2: { h5: 100, d7: 7 } } } }))).split("\n");
+  assert.strictEqual(wide[1].length, wide[2].length, "0% et 100% gardent la meme largeur: " + JSON.stringify(wide));
+  // Au-dela du 9e compte il n'y a plus de chiffre entoure : tag() rend "(10)", quatre caracteres
+  // la ou les autres en rendent un. Sans calage, cette ligne-la seule perd sa bordure de droite.
+  const many = { tokens: [], pct: {} };
+  for (let i = 1; i <= 10; i++) {
+    many.tokens.push({ name: "c" + i, token: "sk-ant-oat01-FAKE-TEST-TOKEN-not-real-" + String(i).padStart(6, "0"), enabled: true });
+    many.pct["c" + i] = { h5: i * 3, d7: i * 5 };
+  }
+  const big = strip(run(setup({ original: null }, { conf: { tokens: many.tokens }, state: { pct: many.pct } }))).split("\n");
+  assert.strictEqual(big.length, 11, "10 comptes -> 11 lignes: " + big.length);
+  const widths = new Set(big.slice(1).map((l) => l.length));
+  assert.strictEqual(widths.size, 1, "le 10e compte garde la largeur des neuf autres: " + JSON.stringify(big.slice(-2)));
 }
 
 // Case A2: couleur du NUMERO = etat du compte, sans avoir a lire les chiffres.
@@ -109,7 +135,7 @@ function run(DIR) {
   // compte actif sur le forfait MAIS credits disponibles -> jaune, demi-pastille
   const ready = run(setup({ original: null }, { state: st, conf }));
   assert.ok(/\x1b\[33mcrédits ◐/.test(ready), "credits disponibles non utilises -> pastille JAUNE et demi: " + ready);
-  assert.ok(!/\d+\s*%/.test(strip(ready).split("│").pop()), "aucun pourcentage dans le segment credits");
+  assert.ok(/crédits ◐ │$/.test(strip(ready).split("\n")[0]), "la pastille ferme la ligne d'en-tete, sans aucun pourcentage: " + ready);
   // le compte actif (index 1) est servi sur les credits -> vert
   const green = run(setup({ original: null }, { state: Object.assign({}, st, { activeIndex: 1 }), conf }));
   assert.ok(/\x1b\[32mcrédits ●/.test(green), "compte actif sur les credits -> pastille VERTE et pleine");
