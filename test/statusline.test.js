@@ -154,6 +154,19 @@ function run(DIR) {
   assert.ok(/crédits ◐/.test(plain) && !/\x1b\[/.test(plain), "NO_COLOR : les 3 formes restent distinctes sans couleur: " + plain);
 }
 
+// Case F: compte refuse par Anthropic tant que ses conditions ne sont pas acceptees (DR-010).
+// Le pop-up du proxy peut etre manque ; ce marqueur reste jusqu'a ce que le compte reponde.
+{
+  const out = strip(run(setup({ original: null }, { state: { blocked: { compte2: { reason: "terms", at: "x", until: Date.now() + 3600000 } } } })));
+  const lines = out.split("\n");
+  assert.strictEqual(lines.length, 3, "une ligne d'en-tete + un bloc par compte, comme sans blocage: " + JSON.stringify(out));
+  assert.ok(/CGU à accepter/.test(lines[2]), "le compte bloque porte le marqueur: " + lines[2]);
+  assert.ok(!/CGU/.test(lines[1]), "le compte sain n'en porte pas: " + lines[1]);
+  assert.ok(/│ ⚠ CGU à accepter$/.test(lines[2]), "le marqueur est APRES la bordure, donc aucun cadre n'est decale: " + lines[2]);
+  // contre-epreuve du cas courant : sans blocage, aucune ligne ne porte le marqueur
+  assert.ok(!/CGU/.test(strip(run(setup({ original: null })))), "aucun blocage -> aucun marqueur");
+}
+
 // lib : conversion % -> argent (l'API ne donne pas le montant a nos tokens, l'utilisateur le saisit)
 {
   assert.strictEqual(lib.fmtMoney(18.4, "EUR"), "18,40 €");

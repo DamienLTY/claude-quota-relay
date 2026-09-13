@@ -103,9 +103,15 @@ if (accts.length) {
   // Au-dela du 9e compte, tag() rend "(10)" la ou les autres rendent "①" : sans ce calage la
   // bordure de droite se decale sur cette ligne-la, et l'alignement tombe.
   const tw = Math.max.apply(null, accts.map((a) => tag(a.idx).length));
+  // Compte refusé par Anthropic tant que ses nouvelles conditions ne sont pas acceptées sur
+  // claude.ai (DR-010). Le pop-up du proxy peut être manqué — fermé machinalement, ou apparu
+  // machine verrouillée ; ce marqueur, lui, reste sous les yeux jusqu'à ce que le compte
+  // réponde à nouveau. Il est écrit APRÈS la bordure de droite, donc il ne décale aucun cadre.
+  const blocked = state.blocked || {};
   rows = accts.map((a) => bord + " " + num(a) + " ".repeat(tw - tag(a.idx).length)
     + col(90, " 5h/") + col(hcol(a.h5), pct4(a.h5)) + " " + bar(a.h5, BW)
-    + " " + bar(a.d7, BW) + col(90, " 7J/") + col(hcol(a.d7), pct4(a.d7)) + " " + bord);
+    + " " + bar(a.d7, BW) + col(90, " 7J/") + col(hcol(a.d7), pct4(a.d7)) + " " + bord
+    + (blocked[a.name] ? col(31, " ⚠ CGU à accepter") : ""));
   // Pastille "crédits d'usage supplémentaire" : dit d'un coup d'oeil si le travail EN COURS est
   // facturé aux crédits. VERT = oui, le compte actif est servi sur les crédits ; ROUGE = non, on
   // consomme le forfait normal. Le montant, lui, n'est pas affichable : Anthropic refuse de le

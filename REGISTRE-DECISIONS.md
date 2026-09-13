@@ -163,3 +163,26 @@ Registre ouvert le 2026-09-05. Les décisions antérieures vivent dans le `CHANG
 **Fait.** Chemin corrigé dans le VBS du dossier Démarrage.
 
 **À retenir** : DR-006 a réécrit les neuf fichiers qui portaient l'ancien chemin *sous `~/.claude` et `~/.local`*. Le dossier Démarrage de Windows était hors de ce périmètre. Un renommage d'installation doit balayer aussi les points de lancement du système.
+
+---
+
+## DR-010 — Un refus administratif d'Anthropic ne doit plus passer inaperçu
+
+**Type** : produit · **État** : appliqué le 2026-09-12
+
+**Constat.** `API Error: 400 We've updated our Consumer Terms and Privacy Policy. You'll need to accept them in claude.ai with the email in /status to continue.` Ce 400 ne tombait dans aucune branche de `src/proxy.js:672-678` (429 `rejected`, 401/403 `authFail`, 529 `overloaded`, 5xx `serverError`) : il était relayé tel quel au client et le compte restait marqué sain. Donc aucune bascule, aucune quarantaine, aucune trace — chaque requête repartait sur le compte bloqué et échouait. Coût réel signalé par l'utilisateur : « *cette erreur qui m'as couté cher en perte de suivi sur des projets et affaires* ».
+
+**Question posée** : « Quand un compte rend ce 400 "accepte les CGU", que doit faire le relais ? »
+**Réponse citée** : « **Quarantaine longue + bascule** » — le compte est mis de côté 6 h et la requête part immédiatement sur un autre compte. Motif : seule une action humaine sur claude.ai répare ce blocage, donc ni la sonde ni un cooldown court n'ont de sens ; et le tour en cours ne doit pas être perdu.
+
+**Question posée** : « Sous quelle forme veux-tu être averti ? »
+**Réponse citée** : « **Pop-up + statusline** » — fenêtre Windows bloquante (MessageBox WPF via PowerShell détaché, zéro dépendance) nommant le compte, **plus** un marqueur dans la statusline tant que ce n'est pas réglé, « *au cas où tu rates le pop-up ou qu'il arrive machine verrouillée* ». Demande initiale de l'utilisateur : « *Un pop-up windows serais cool, mais si tu as une solution plus simple et qui fonctionne je suis preneur* ».
+
+**Question posée** : « Quelle portée pour cette détection ? »
+**Réponse citée** : « **Ce blocage CGU seul** » — le motif `consumer terms | privacy polic | accept them in claude.ai | terms of service` dans le corps d'un 400. Pas de généralisation à tout 400, pas de traitement du 401 persistant.
+
+**Réserve assumée.** Le blocage n'est pas reproductible à la demande : rien ne prouve que le texte vienne du corps de l'API plutôt que d'une reformulation par Claude Code. Parade : **tout** 400 est désormais journalisé avec les 400 premiers caractères de son corps (`log("BAD REQUEST http400", …)`). Si le motif ne reconnaît pas une future variante, c'est cette ligne du journal qui le dira, au lieu d'un silence.
+
+**Corrigé après revue** (`thermo-review`, trois points). Le principal : le marqueur était levé dès que le compte servait de nouveau, mais **pas la quarantaine de 6 h qu'il avait posée**. Chemin réel — `enterWait` force la requête sur le compte visé quand `maxWaitMs` expire (`proxy.js:530`) : si les conditions ont été acceptées entre-temps, la réponse passe, l'alerte disparaît de la barre d'état, et le routage continue pourtant d'écarter ce compte jusqu'à l'échéance, sans rien dire. Les deux tombent désormais ensemble, et seulement si l'échéance est bien celle posée par ce refus — un 429 survenu depuis garde la sienne. Les deux autres points : un commentaire disant pourquoi l'état est relu après la bufferisation du corps, et un fichier d'alerte nommé par compte (deux comptes bloqués dans le même instant écrasaient un nom fixe, et une alerte se perdait).
+
+**Preuve** : `node test/terms-block.test.js` (motif reconnu sur le texte exact d'Anthropic, corps gzippé décodé, 400 banal non reconnu) et `node test/proxy-e2e.test.js` (upstream factice rendant ce 400 sur le compte 1 : le client reçoit un 200 servi par le compte 2, `state.blocked.account1` est écrit, `state.exhausted.account1` porte une échéance à plus de 5 h). Contre-épreuve faite deux fois : en retirant la branche 400 de `proxy.js`, le client reçoit le 400 et l'assertion tombe ; en retirant la levée de quarantaine, le compte reste écarté et l'assertion du cas « refus levé pendant une attente » tombe.

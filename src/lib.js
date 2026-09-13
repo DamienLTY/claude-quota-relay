@@ -6,6 +6,7 @@ const p = require("path");
 const cp = require("child_process");
 const readline = require("readline");
 const https = require("https");
+const zlib = require("zlib");
 
 const TOKEN_RE = /sk-ant-oat01-[A-Za-z0-9_\-]{20,}/;
 
@@ -270,4 +271,54 @@ function bestHeadroom(conf, state) {
   return vals.length ? Math.min.apply(null, vals) : null;
 }
 
-module.exports = { TOKEN_RE, isPlaceholder, mask, configDir, settingsPath, readConf, writeConf, ask, findClaude, captureSetupToken, pasteTokenManually, syncAuthToken, healthiestToken, preferredCompactionToken, anthropicPost, haikuSummarize, fmtDur, accounts, bestHeadroom, resolveUpstream, overageUsable, overageReasonFr, OVERAGE_REASONS, creditsBudget, creditsRemaining, fmtMoney };
+// ---- Blocage administratif d'un compte (CGU / politique de confidentialite) ----
+// Anthropic peut refuser un compte par un 400 dont le corps dit d'aller accepter les nouvelles
+// conditions sur claude.ai, avec L'E-MAIL DE CE COMPTE. Ce n'est ni un quota ni un token
+// invalide : aucun cooldown ne le repare, il faut une action humaine. Voir DR-010.
+const TERMS_RE = /consumer terms|privacy polic|accept them in claude\.ai|terms of service/i;
+
+// Le corps d'une reponse d'erreur peut arriver compresse (le proxy relaie l'accept-encoding du
+// client). Un test de motif sur les octets bruts ne verrait donc rien.
+function decodeBody(raw, contentEncoding) {
+  const buf = Buffer.isBuffer(raw) ? raw : Buffer.from(String(raw));
+  try {
+    const e = String(contentEncoding || "").toLowerCase();
+    if (e === "gzip") return zlib.gunzipSync(buf).toString("utf8");
+    if (e === "deflate") return zlib.inflateSync(buf).toString("utf8");
+    if (e === "br") return zlib.brotliDecompressSync(buf).toString("utf8");
+  } catch (x) {} // corps tronque ou encodage menteur : mieux vaut lire les octets bruts que rien
+  return buf.toString("utf8");
+}
+
+function isTermsBlock(text) { return TERMS_RE.test(String(text || "")); }
+
+// Alerte VISIBLE a l'ecran, sans aucune dependance : la MsgBox de VBScript, lancee par wscript
+// et DETACHEE -- le proxy ne doit pas attendre qu'elle soit fermee (une requete est en cours) et
+// la fenetre doit survivre a un redemarrage du proxy.
+// Deux mesures du 2026-09-12, qui expliquent ce choix plutot qu'un autre :
+//   - PowerShell (Add-Type + MessageBox) DETACHE rend la main en 224 ms sans rien afficher ;
+//     attache, il affiche mais la fenetre meurt avec le proxy.
+//   - mshta (javascript:...Popup) detache affiche... jusqu'a ~700 caracteres d'argument, au-dela
+//     il ne fait plus rien, en silence. Le texte passe donc par un FICHIER, pas par la ligne de
+//     commande : aucune limite de longueur, et plus rien a echapper pour le shell.
+// Message sans accents : wscript lit le .vbs dans la codepage ANSI (meme raison que le journal).
+// CQR_NO_POPUP=1 coupe les fenetres -- la suite de tests ne doit rien ouvrir a l'ecran.
+function notifyWindows(title, msg, spawnFn) {
+  if (process.platform !== "win32" || process.env.CQR_NO_POPUP) return false;
+  // Litteral VBScript : un guillemet se double, et Chr(10) porte les retours a la ligne.
+  const vb = (s) => String(s).split(/\r?\n/).map((l) => '"' + l.replace(/"/g, '""') + '"').join(" & Chr(10) & ");
+  // Un fichier PAR TITRE (donc par compte) : deux comptes bloques dans le meme instant
+  // ecrasaient un nom fixe, et la premiere alerte se perdait avant meme d'etre lue. Le nom
+  // reste stable pour un meme compte, donc rien ne s'accumule dans le dossier temporaire.
+  const slug = String(title).replace(/[^A-Za-z0-9]+/g, "-").slice(0, 60);
+  const file = p.join(os.tmpdir(), "cqr-alerte-" + slug + ".vbs");
+  try {
+    fs.writeFileSync(file, "MsgBox " + vb(msg) + ", 48, " + vb(title)); // 48 = icone avertissement
+    const sp = spawnFn || cp.spawn;
+    const child = sp("wscript.exe", ["//nologo", file], { detached: true, stdio: "ignore", windowsHide: true });
+    if (child && child.unref) child.unref();
+    return true;
+  } catch (e) { return false; }
+}
+
+module.exports = { TOKEN_RE, isPlaceholder, mask, configDir, settingsPath, readConf, writeConf, ask, findClaude, captureSetupToken, pasteTokenManually, syncAuthToken, healthiestToken, preferredCompactionToken, anthropicPost, haikuSummarize, fmtDur, accounts, bestHeadroom, resolveUpstream, overageUsable, overageReasonFr, OVERAGE_REASONS, creditsBudget, creditsRemaining, fmtMoney, decodeBody, isTermsBlock, notifyWindows };

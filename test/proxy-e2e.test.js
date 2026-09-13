@@ -46,6 +46,14 @@ function startMock() {
         // (max_tokens:0) doit continuer a repondre, comme cote Anthropic ou elle passe meme
         // quand les grosses requetes sont refusees.
         const isProbe = body && body.max_tokens === 0;
+        // mockMode="terms" : refus administratif d'Anthropic sur le compte 1 (DR-010). Les SONDES
+        // sont refusees aussi -- c'est le cas reel : le compte est bloque pour tout, donc la sonde
+        // ne doit pas pouvoir lever la quarantaine en croyant le compte revenu.
+        if (mockMode === "terms" && auth.indexOf(FAKE1) >= 0) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "We've updated our Consumer Terms and Privacy Policy. You'll need to accept them in claude.ai with the email in /status to continue." } }));
+          return;
+        }
         if (!isProbe && fail500 > 0) { fail500--; hits500++; res.writeHead(500, { "content-type": "application/json" }); res.end(JSON.stringify({ type: "error", error: { type: "api_error", message: "Internal server error" } })); return; }
         if (!isProbe && fail529 > 0) { fail529--; res.writeHead(529, { "content-type": "application/json", "retry-after": "0" }); res.end(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } })); return; }
         res.writeHead(200, Object.assign({
@@ -82,7 +90,7 @@ function writeConf(dir, compaction, opts) {
   fs.writeFileSync(p.join(dir, "tokens.json"), JSON.stringify({
     port: PROXY_PORT, switchAtPercent: 94, sevenDayBlockPercent: 99,
     waitAtSoftPercent: opts.waitAtSoftPercent === undefined ? null : opts.waitAtSoftPercent,
-    maxWaitMs: 600000, pollMs: 15000, serverErrorMaxMs: opts.serverErrorMaxMs,
+    maxWaitMs: opts.maxWaitMs === undefined ? 600000 : opts.maxWaitMs, pollMs: 15000, serverErrorMaxMs: opts.serverErrorMaxMs,
     livePollMs: opts.livePollMs,
     compaction, overage: opts.overage,
     tokens: [{ name: "account1", token: opts.tokenAccount1 || FAKE, enabled: opts.bothEnabled ? true : false }, { name: "account2", token: FAKE, enabled: true }],
@@ -96,7 +104,7 @@ function writeConf(dir, compaction, opts) {
   seedState(DIR);
 
   const mock = await startMock();
-  const child = cp.spawn(process.execPath, [p.join(DIR, "proxy.js")], { env: Object.assign({}, process.env, { CQR_UPSTREAM_HOST: "127.0.0.1", CQR_UPSTREAM_PORT: String(MOCK_PORT), CQR_UPSTREAM_HTTP: "1" }), stdio: "ignore", windowsHide: true });
+  const child = cp.spawn(process.execPath, [p.join(DIR, "proxy.js")], { env: Object.assign({}, process.env, { CQR_UPSTREAM_HOST: "127.0.0.1", CQR_UPSTREAM_PORT: String(MOCK_PORT), CQR_UPSTREAM_HTTP: "1", CQR_NO_POPUP: "1" }), stdio: "ignore", windowsHide: true });
 
   let failed = null;
   try {
@@ -231,13 +239,58 @@ function writeConf(dir, compaction, opts) {
     assert.strictEqual(sIdle.pct.account1.at, at1, "au repos : aucune sonde periodique (c'etait 3310/jour avant)");
     console.log("PASS — proxy e2e sondes: rafraichies a chaque requete, zero trafic au repos");
 
+    // --- refus administratif (conditions a accepter sur claude.ai, DR-010) : le compte refuse
+    // part en quarantaine LONGUE, la requete est servie par l'autre compte, et le marqueur du
+    // blocage est ecrit dans l'etat (c'est lui que la statusline affiche). Avant, ce 400 ne
+    // tombait dans aucune branche : il repartait au client et le compte restait dans la rotation. ---
+    writeConf(DIR, { enabled: false }, { bothEnabled: true, tokenAccount1: FAKE1 });
+    fs.writeFileSync(p.join(DIR, "state.json"), JSON.stringify({ activeIndex: 0, pct: { account1: { h5: 5, d7: 5 }, account2: { h5: 40, d7: 50 } }, exhausted: {}, reset5h: {}, reset7d: {} }));
+    mockMode = "terms";
+    const rT = await post(PROXY_PORT, "/v1/messages", { model: "claude-haiku-4-5", max_tokens: 10, messages: [{ role: "user", content: "go" }] });
+    assert.strictEqual(rT.status, 200, "la requete doit etre SERVIE par l'autre compte, pas rendue en 400 au client");
+    const sT = JSON.parse(fs.readFileSync(p.join(DIR, "state.json"), "utf8"));
+    assert.ok(sT.blocked && sT.blocked.account1, "le compte refuse est marque bloque: " + JSON.stringify(sT.blocked || {}));
+    assert.strictEqual(sT.blocked.account1.reason, "terms", "le motif est enregistre");
+    assert.ok(sT.exhausted.account1 > Date.now() + 5 * 3600000, "quarantaine LONGUE : un cooldown court ne repare pas un refus administratif (" + new Date(sT.exhausted.account1).toISOString() + ")");
+    assert.ok(!sT.blocked.account2, "le compte sain n'est pas marque");
+
+    // le compte revient a la normale (conditions acceptees) : le marqueur doit disparaitre SEUL
+    // des que le compte sert de nouveau -- sinon la statusline garde une alerte morte.
+    mockMode = null;
+    fs.writeFileSync(p.join(DIR, "state.json"), JSON.stringify(Object.assign(sT, { exhausted: {} })));
+    const rT2 = await post(PROXY_PORT, "/v1/messages", { model: "claude-haiku-4-5", max_tokens: 10, messages: [{ role: "user", content: "go" }] });
+    assert.strictEqual(rT2.status, 200, "compte 1 de nouveau utilisable");
+    const sT2 = JSON.parse(fs.readFileSync(p.join(DIR, "state.json"), "utf8"));
+    assert.ok(!(sT2.blocked || {}).account1, "le marqueur est efface des que le compte repond: " + JSON.stringify(sT2.blocked || {}));
+    console.log("PASS — refus administratif: quarantaine 6h, bascule, marqueur pose puis leve");
+
+    // Meme refus, mais leve pendant que le relais attendait un reset : la requete finit par
+    // partir sur ce compte en dernier recours (maxWaitMs epuise) et reussit. La quarantaine de
+    // 6 h posee par le refus doit alors tomber AVEC le marqueur -- sinon la barre d'etat redevient
+    // silencieuse pendant que le routage ecarte encore le compte, sans que rien ne le dise.
+    writeConf(DIR, { enabled: false }, { bothEnabled: true, tokenAccount1: FAKE1, maxWaitMs: 0 });
+    const untilT = Date.now() + 6 * 3600000;
+    fs.writeFileSync(p.join(DIR, "state.json"), JSON.stringify({
+      activeIndex: 0, pct: { account1: { h5: 5, d7: 5 }, account2: { h5: 99, d7: 99 } },
+      exhausted: { account1: untilT, account2: Date.now() + 7 * 3600000 },
+      blocked: { account1: { reason: "terms", at: "2026-09-12T00:00:00.000Z", until: untilT } },
+      reset5h: {}, reset7d: {},
+    }));
+    const rT3 = await post(PROXY_PORT, "/v1/messages", { model: "claude-haiku-4-5", max_tokens: 10, messages: [{ role: "user", content: "go" }] });
+    assert.strictEqual(rT3.status, 200, "dernier recours : la requete part sur le compte le plus proche de son reset et aboutit");
+    const sT3 = JSON.parse(fs.readFileSync(p.join(DIR, "state.json"), "utf8"));
+    assert.ok(!(sT3.blocked || {}).account1, "marqueur leve: " + JSON.stringify(sT3.blocked || {}));
+    assert.ok(!(sT3.exhausted || {}).account1, "la quarantaine du refus tombe avec lui, sinon le compte reste ecarte en silence: " + JSON.stringify(sT3.exhausted || {}));
+    assert.ok(sT3.exhausted.account2, "la quarantaine de l'AUTRE compte, elle, n'est pas touchee");
+    console.log("PASS — refus leve pendant une attente: marqueur ET quarantaine tombent ensemble");
+
     // --- live poll: BOTH accounts' quota keeps refreshing in state.json with ZERO client
     // requests (the fix for "statusline only updates the active account, goes stale while
     // idle waiting for a reset"). livePollMs is read once at proxy startup -> restart it. ---
     try { child.kill(); } catch (e) {}
     writeConf(DIR, { enabled: false }, { livePollMs: 150, bothEnabled: true, tokenAccount1: FAKE1 });
     seedState(DIR);
-    const child2 = cp.spawn(process.execPath, [p.join(DIR, "proxy.js")], { env: Object.assign({}, process.env, { CQR_UPSTREAM_HOST: "127.0.0.1", CQR_UPSTREAM_PORT: String(MOCK_PORT), CQR_UPSTREAM_HTTP: "1" }), stdio: "ignore", windowsHide: true });
+    const child2 = cp.spawn(process.execPath, [p.join(DIR, "proxy.js")], { env: Object.assign({}, process.env, { CQR_UPSTREAM_HOST: "127.0.0.1", CQR_UPSTREAM_PORT: String(MOCK_PORT), CQR_UPSTREAM_HTTP: "1", CQR_NO_POPUP: "1" }), stdio: "ignore", windowsHide: true });
     try {
       let up2 = false; for (let i = 0; i < 40; i++) { if (await health(PROXY_PORT)) { up2 = true; break; } await sleep(150); }
       assert.ok(up2, "restarted proxy (live poll config) should be up");

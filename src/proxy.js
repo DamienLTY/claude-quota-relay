@@ -61,6 +61,10 @@ const UPSTREAM_PATH_PREFIX = _upstream.pathPrefix;
 const FIVE_H_MS = 5 * 60 * 60 * 1000;
 const AUTH_COOLDOWN_MS = 5 * 60 * 1000; // 401 -> petit cooldown
 const TRANSIENT_COOLDOWN_MS = 90 * 1000; // 429 sans aucune info de fenetre -> transitoire, pas un epuisement
+// Refus administratif (conditions a accepter sur claude.ai) : seule une action humaine le
+// repare, donc une quarantaine LONGUE -- juste assez courte pour re-essayer et re-alerter
+// dans la journee si personne n'a rien fait. Voir DR-010.
+const TERMS_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 // Surcharge Anthropic (529) : la pause s'ALLONGE a chaque refus consecutif. Sans ca, on retentait
 // toutes les 90 s pendant toute la surcharge -- et la sonde de quota (8 tokens) annulait meme cette
 // pause, puisqu'elle passe alors que les vraies requetes sont refusees (releve le 29/07/2026 :
@@ -268,6 +272,9 @@ function probeToken(conf, idx, done) {
     const onCredits = q.statuses.indexOf("rejected") >= 0 && q.ovAllowed;
     const allowed = pres.statusCode === 200 && (q.statuses.indexOf("rejected") < 0 || onCredits);
     if (allowed) {
+      // le compte repond de nouveau : le refus administratif a donc ete leve (conditions
+      // acceptees) -> le marqueur de la statusline disparait sans intervention.
+      if (st.blocked && st.blocked[tok.name]) { delete st.blocked[tok.name]; log("PROBE", tok.name, "OK -> blocage conditions leve"); }
       // journal sans accents : lu tel quel par PowerShell/cmd (encodage ANSI -> "Ã©")
       const cr = onCredits ? " [forfait epuise -> credits" + (q.ovU == null ? "" : " " + q.ovU + "% utilises") + "]" : "";
       if (st.exhausted[tok.name] && overloadActive(st, tok.name)) {
@@ -664,6 +671,61 @@ function serve(creq, cres) {
           log("SERVER err http" + pres.statusCode, "token=" + tok.name, "abandon apres", Math.round(elapsed / 1000) + "s et", ctx.srvRetries || 0, "tentatives -> erreur rendue au client");
         }
 
+        // Refus administratif du compte : Anthropic rend un 400 dont le corps dit d'aller accepter
+        // les nouvelles conditions sur claude.ai AVEC L'E-MAIL DE CE COMPTE. Ni quota, ni token
+        // invalide -- aucun cooldown ne le repare. Et surtout : ce 400 ne tombait dans AUCUNE des
+        // branches ci-dessous, donc il repartait au client a chaque requete pendant que le relais
+        // continuait de croire le compte sain (vecu le 12/09/2026, travail perdu sans un mot).
+        // Desormais : quarantaine longue, bascule immediate sur un autre compte, et alerte a
+        // l'ecran. Le corps doit etre LU, donc bufferise -- un 400 est court, sans risque.
+        if (pres.statusCode === 400) {
+          const chunks = [];
+          pres.on("data", (c) => chunks.push(c));
+          pres.on("end", () => {
+            const raw = Buffer.concat(chunks);
+            const txt = lib.decodeBody(raw, pres.headers["content-encoding"]);
+            // TOUT 400 est journalise avec son corps : le jour ou Anthropic reformule ce message,
+            // le motif ne le reconnaitra plus -- c'est cette ligne qui le dira, pas un silence.
+            log("BAD REQUEST http400", "token=" + tok.name, txt.slice(0, 400).replace(/\s+/g, " "));
+            const terms = lib.isTermsBlock(txt);
+            // etat RELU : bufferiser le corps a coute un tour d'E/S, pendant lequel une sonde a
+            // pu ecrire state.json. Reutiliser le `st` d'avant l'attente ecraserait son travail.
+            const s2 = readState();
+            applyQuota(s2, tok.name, q);
+            clearOverload(s2, tok.name); // une reponse HTTP prouve que la surcharge est passee
+            let alert = false;
+            if (terms) {
+              s2.exhausted = s2.exhausted || {}; s2.blocked = s2.blocked || {};
+              const prev = s2.blocked[tok.name];
+              const until = now() + TERMS_COOLDOWN_MS;
+              s2.exhausted[tok.name] = until;
+              s2.blocked[tok.name] = { reason: "terms", at: ts(), until: until };
+              // une seule fenetre par blocage : un compte epingle (lastResort) en ouvrirait
+              // sinon une par requete.
+              alert = !prev || (prev.until || 0) <= now();
+              log("BLOCKED(conditions)", tok.name, "http400 -> quarantaine jusqu'a", new Date(until).toISOString(), "; action humaine requise sur claude.ai");
+            }
+            writeState(s2);
+            if (alert) lib.notifyWindows(
+              "claude-quota-relay : compte " + tok.name + " bloque",
+              "Anthropic refuse le compte " + tok.name + " jusqu'a acceptation de ses nouvelles" + "\n"
+              + " conditions d'utilisation / de confidentialite." + "\n" + "\n"
+              + "A FAIRE : ouvrir claude.ai, se connecter avec l'e-mail de CE compte," + "\n"
+              + "puis accepter les conditions. Rien d'autre ne debloque ce compte." + "\n" + "\n"
+              + "En attendant, le relais met ce compte de cote 6 h et travaille avec les autres comptes.");
+            // bascule : la requete en cours part sur un autre compte, le client ne perd rien
+            if (terms && !lastResort && !clientGone) return attempt();
+            // 400 ordinaire (corps invalide, modele inconnu...) ou compte epingle : l'erreur
+            // revient au client telle qu'Anthropic l'a rendue, corps intact.
+            stopKeepalive();
+            if (ctx.sse) return sseError(terms
+              ? "compte " + tok.name + " bloque : conditions a accepter sur claude.ai (http 400)"
+              : "requete refusee par Anthropic (http 400)");
+            try { cres.writeHead(400, pres.headers); cres.end(raw); } catch (x) {}
+          });
+          return;
+        }
+
         // Forfait epuise MAIS credits disponibles : Anthropic a SERVI la requete (200) et l'a
         // facturee aux credits d'usage supplementaire. Le marquer "epuise" ici mettrait en
         // quarantaine un compte qui repond parfaitement -- et ferait attendre le reset 5h alors
@@ -691,6 +753,15 @@ function serve(creq, cres) {
           return attempt();
         }
 
+        // Le compte sert de nouveau : le refus administratif est leve (conditions acceptees), et
+        // LA QUARANTAINE QU'IL AVAIT POSEE part avec lui. Sans cette seconde ligne, le marqueur
+        // disparaissait de la barre d'etat pendant que le routage continuait d'ecarter le compte
+        // en silence jusqu'a l'echeance des 6 h. On ne leve QUE l'echeance de ce refus (comparee
+        // a l'identique) : un 429 survenu depuis a sa propre raison d'etre, qui ne nous regarde pas.
+        if (st.blocked && st.blocked[tok.name] && pres.statusCode < 400) {
+          if (st.exhausted && st.exhausted[tok.name] === st.blocked[tok.name].until) delete st.exhausted[tok.name];
+          delete st.blocked[tok.name];
+        }
         clearOverload(st, tok.name); // une vraie reponse servie = la surcharge est passee
         writeState(st);
         stopKeepalive();
