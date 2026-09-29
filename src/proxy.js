@@ -98,25 +98,21 @@ function readConf() {
   // panne serveur Anthropic (500/502/503/504) : duree pendant laquelle on retente avant de
   // rendre l'erreur au client. 0 = desactive (on relaie l'erreur tout de suite, comportement v1).
   c.serverErrorMaxMs = num(c.serverErrorMaxMs, 15 * 60 * 1000);
+  // Anthropic injoignable (aucune reponse HTTP : wifi coupe, VPN/Zscaler qui se reconnecte,
+  // certificat intercepte, connexion muette...) : on retente pendant ce delai, compte a partir
+  // de la PREMIERE erreur, puis l'erreur remonte au client. Voir DR-011.
+  c.networkErrorMaxMs = num(c.networkErrorMaxMs, 60 * 60 * 1000);
+  // Reponse en streaming sans le moindre octet d'Anthropic pendant ce delai : connexion tenue
+  // pour morte (veille, changement de reseau) et refaite. 0 = desactive. Doit rester SOUS la
+  // fenetre de premier octet du client : 120 s (CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS, pose par
+  // install.js) + 1 s par 32 Ko de corps -- le meme supplement est ajoute plus bas.
+  c.upstreamIdleMs = num(c.upstreamIdleMs, 90 * 1000);
   return c;
 }
 function num(v, d) { const n = Number(v); return isNaN(n) ? d : n; }
 function readState() { try { return JSON.parse(fs.readFileSync(STATE, "utf8")); } catch (e) { return { activeIndex: 0, exhausted: {}, pct: {}, reset5h: {}, reset7d: {} }; } }
 function writeState(s) { try { fs.writeFileSync(STATE, JSON.stringify(s, null, 2)); } catch (e) { log("writeState err", e.message); } }
 function isPlaceholder(t) { return !t || !t.token || /^(PASTE|REMPLACE|<)/i.test(t.token); }
-
-// Coupure reseau (DNS, connexion refusee/coupee, timeout de connexion) : aucune reponse HTTP
-// n'a jamais ete recue d'Anthropic. A distinguer d'un vrai rejet HTTP (429/401/529), qui lui
-// arrive avec un statusCode et est gere ailleurs (retry sur autre token / WAIT quota).
-const NETWORK_ERROR_CODES = new Set([
-  "ECONNRESET", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED",
-  "EHOSTUNREACH", "ENETUNREACH", "ENETDOWN", "EPIPE", "ECONNABORTED",
-]);
-function isNetworkError(e) {
-  if (e && NETWORK_ERROR_CODES.has(e.code)) return true;
-  const msg = String((e && e.message) || "");
-  return /socket hang up|network|getaddrinfo|connect ETIMEDOUT/i.test(msg);
-}
 
 function parseEpochMs(v) {
   if (v == null) return null;
@@ -458,15 +454,22 @@ function serve(creq, cres) {
     function holdOpen(msg) {
       if (isStream && !ctx.sse) {
         ctx.sse = true;
-        try {
-          cres.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache", "connection": "keep-alive" });
-          cres.write(": claude-auth-proxy: " + msg + "\n\n");
-        } catch (e) {}
+        try { cres.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache", "connection": "keep-alive" }); } catch (e) {}
       }
-      if (ctx.sse && !ctx.ka) ctx.ka = setInterval(() => {
+      if (!ctx.sse || ctx.ka) return;
+      // un octet TOUT DE SUITE, pas dans 20 s : a la reprise d'une attente, le client n'a peut-etre
+      // rien recu depuis presque son delai de garde (120 s) -- attendre le 1er battement le ferait couper.
+      try { cres.write(": claude-auth-proxy: " + msg + "\n\n"); } catch (e) {}
+      ctx.ka = setInterval(() => {
         if (clientGone) { stopKeepalive(); return; }
         try { cres.write(": keepalive\n\n"); } catch (e) {}
       }, 20000);
+    }
+    // budget "Anthropic injoignable" : compte depuis la 1re erreur, remis a zero des qu'une
+    // reponse HTTP arrive (le reseau marche de nouveau).
+    function netBudgetLeft(conf) {
+      if (!ctx.netStart) ctx.netStart = now();
+      return now() - ctx.netStart < conf.networkErrorMaxMs;
     }
     function sseError(msg) {
       try {
@@ -511,7 +514,9 @@ function serve(creq, cres) {
         }
       }
       writeState(state);
-      stopKeepalive();
+      // PAS de stopKeepalive ici : si le flux est deja ouvert (reprise d'une attente), le client
+      // doit continuer de recevoir ses battements pendant qu'Anthropic prepare sa reponse --
+      // sinon une reponse lente ou une connexion morte le fait couper. Ils s'arretent a la reponse.
       refreshOthers(conf, route.idx, state); // en tache de fond : garde la barre d'etat juste
       // forced (pin manuel) -> pas de failover/attente, on rend le resultat brut
       forward(conf, route.idx, route.forced === true, compactInfo);
@@ -519,6 +524,7 @@ function serve(creq, cres) {
 
     function enterWait(conf, state, route) {
       if (!ctx.waitStart) ctx.waitStart = now();
+      ctx.cutStart = 0; // une attente de quota est passee entre deux coupures : le budget repart
       // non-stream : pas de keepalive applicatif possible, mais le TCP keepalive (setKeepAlive
       // plus bas) couvre le risque NAT/firewall ; le client tolere un hold jusqu'a API_TIMEOUT_MS
       // (meme plafond que le stream), donc meme capMs pour les deux.
@@ -619,7 +625,10 @@ function serve(creq, cres) {
           // decompression...), il ne debranche plus rien et le corps tronque continue de
           // couler -- sans qu'aucun test ne bronche. `destroy` ne depend pas du branchement.
           pres.unpipe(cres); pres.destroy(); // surtout pas de end() propre sur un corps incomplet
-          const retry = relayed === 0 && !clientGone && (now() - reqStart) < conf.maxWaitMs;
+          // budget PROPRE aux coupures : celui des erreurs sans reponse (netBudgetLeft) repart a zero
+          // des que des en-tetes arrivent, or ici ils arrivent a CHAQUE tentative -- il ne s'epuiserait jamais.
+          if (!ctx.cutStart) ctx.cutStart = now();
+          const retry = relayed === 0 && !clientGone && now() - ctx.cutStart < conf.networkErrorMaxMs;
           log("STREAM coupe", e.message, "token=" + tok.name, relayed + " octets relayes",
             retry ? "-> nouvelle tentative" : "-> connexion client coupee (erreur reseau franche)");
           if (!retry) { try { cres.destroy(e); } catch (x) {} return; }
@@ -637,8 +646,10 @@ function serve(creq, cres) {
         pres.pipe(cres);
       }
 
+      let answered = false;
       const preq = UPSTREAM.request({ hostname: UPSTREAM_HOST, port: UPSTREAM_PORT, path: UPSTREAM_PATH_PREFIX + creq.url, method: creq.method, headers }, (pres) => {
-        ctx.netRetries = 0; // une reponse (meme un rejet HTTP) prouve que le reseau fonctionne
+        answered = true;
+        ctx.netRetries = 0; ctx.netStart = 0; // une reponse (meme un rejet HTTP) prouve que le reseau fonctionne
         logRate(pres.headers, pres.statusCode, tok.name);
         const q = readQuotaHeaders(pres.headers);
         const st = readState();
@@ -681,6 +692,9 @@ function serve(creq, cres) {
         if (pres.statusCode === 400) {
           const chunks = [];
           pres.on("data", (c) => chunks.push(c));
+          // corps coupe en route : "end" ne vient jamais et le client resterait pendu. On coupe sa
+          // connexion -- une erreur reseau, qu'il sait retenter (meme choix que relay()).
+          pres.on("close", () => { if (!pres.complete) { try { cres.destroy(); } catch (x) {} } });
           pres.on("end", () => {
             const raw = Buffer.concat(chunks);
             const txt = lib.decodeBody(raw, pres.headers["content-encoding"]);
@@ -777,15 +791,28 @@ function serve(creq, cres) {
           relay(pres);
         }
       });
+      // Connexion morte sans erreur (PC mis en veille, reseau change, VPN qui la laisse pendre) :
+      // le systeme ne previent pas, on attendrait indefiniment. Un silence trop long devient une
+      // erreur, traitee plus bas comme une coupure. Streaming seulement : une reponse non-stream
+      // se tait legitimement pendant toute sa generation.
+      // Delai : idle + 1 s par 32 Ko envoyes, comme la fenetre de premier octet de Claude Code --
+      // un gros contexte met legitimement longtemps a demarrer, et le relancer en boucle serait pire
+      // que la panne. Mesure : pendant la poignee de main TLS, Node declenche ce delai deux fois
+      // plus tard (3 s demandees -> 6 s) ; une fois connecte, il est exact.
+      // ponytail: non-stream sans garde (un silence y est legitime) ; une connexion morte y reste
+      // pendue jusqu'a l'erreur TCP du systeme. Ajouter setKeepAlive cote amont si on l'observe.
+      if (isStream && conf.upstreamIdleMs > 0) preq.setTimeout(conf.upstreamIdleMs + Math.ceil(sendBody.length / 32768) * 1000, () => preq.destroy(new Error("aucun octet d'Anthropic (connexion morte)")));
       preq.on("error", (e) => {
-        // coupure reseau (pas de reponse Anthropic recue) vs vrai rejet HTTP : deux choses
-        // differentes. Un rejet HTTP (429/401/529) est deja gere dans le callback pres ci-dessus.
-        // Ici, aucune reponse n'est jamais arrivee -> DNS/connexion coupee (coupure internet,
-        // wifi qui tombe, VPN qui reconnecte...). Avant, on abandonnait tout de suite (502 au
-        // client) : une coupure de quelques minutes suffisait a faire echouer la requete alors
-        // que le client (API_TIMEOUT_MS tres large) aurait pu patienter. Meme logique que le
-        // hold quota : on retente avec backoff tant que le budget maxWaitMs n'est pas depasse.
-        if (isNetworkError(e) && !clientGone && (now() - reqStart) < conf.maxWaitMs) {
+        // Aucune reponse HTTP n'est arrivee -- a distinguer d'un vrai rejet HTTP (429/401/529),
+        // gere dans le callback pres ci-dessus. Coupure internet, wifi qui tombe, VPN ou Zscaler
+        // qui se reconnecte, certificat intercepte, connexion muette : TOUTES retentees, car depuis
+        // le PC on ne distingue pas une panne passagere d'un reseau pas encore pret. Avant, seule
+        // une liste de codes l'etait -- un certificat intercepte rendait l'erreur tout de suite et
+        // le sous-agent brulait ses 11 tentatives en 3 min (mesure le 2026-09-28, DR-011).
+        // Node emet aussi cette erreur quand la connexion meurt APRES les en-tetes : c'est alors
+        // relay() qui decide (rejouer ou couper) -- relancer ici doublerait la requete.
+        if (answered) return;
+        if (!clientGone && netBudgetLeft(conf)) {
           ctx.netRetries = (ctx.netRetries || 0) + 1;
           const delay = Math.min(30000, 2000 * Math.pow(2, ctx.netRetries - 1));
           log("NETWORK err", e.message, "token=" + tok.name, "retry #" + ctx.netRetries, "in", Math.round(delay / 1000) + "s");
@@ -793,7 +820,7 @@ function serve(creq, cres) {
           setTimeout(() => { if (!clientGone) forward(conf, idx, lastResort, compactInfo); }, delay);
           return;
         }
-        log("UPSTREAM err", e.message, "token=" + tok.name, ctx.netRetries ? ("apres " + ctx.netRetries + " tentatives") : "");
+        log("UPSTREAM err", e.message, "token=" + tok.name, ctx.netRetries ? ("abandon apres " + ctx.netRetries + " tentatives") : "");
         stopKeepalive();
         if (ctx.sse) { sseError("erreur upstream: " + e.message); return; }
         if (!cres.headersSent) { try { cres.writeHead(502, { "content-type": "text/plain" }); } catch (x) {} }

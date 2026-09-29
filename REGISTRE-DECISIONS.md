@@ -186,3 +186,46 @@ Registre ouvert le 2026-09-05. Les décisions antérieures vivent dans le `CHANG
 **Corrigé après revue** (`thermo-review`, trois points). Le principal : le marqueur était levé dès que le compte servait de nouveau, mais **pas la quarantaine de 6 h qu'il avait posée**. Chemin réel — `enterWait` force la requête sur le compte visé quand `maxWaitMs` expire (`proxy.js:530`) : si les conditions ont été acceptées entre-temps, la réponse passe, l'alerte disparaît de la barre d'état, et le routage continue pourtant d'écarter ce compte jusqu'à l'échéance, sans rien dire. Les deux tombent désormais ensemble, et seulement si l'échéance est bien celle posée par ce refus — un 429 survenu depuis garde la sienne. Les deux autres points : un commentaire disant pourquoi l'état est relu après la bufferisation du corps, et un fichier d'alerte nommé par compte (deux comptes bloqués dans le même instant écrasaient un nom fixe, et une alerte se perdait).
 
 **Preuve** : `node test/terms-block.test.js` (motif reconnu sur le texte exact d'Anthropic, corps gzippé décodé, 400 banal non reconnu) et `node test/proxy-e2e.test.js` (upstream factice rendant ce 400 sur le compte 1 : le client reçoit un 200 servi par le compte 2, `state.blocked.account1` est écrit, `state.exhausted.account1` porte une échéance à plus de 5 h). Contre-épreuve faite deux fois : en retirant la branche 400 de `proxy.js`, le client reçoit le 400 et l'assertion tombe ; en retirant la levée de quarantaine, le compte reste écarté et l'assertion du cas « refus levé pendant une attente » tombe.
+
+---
+
+## DR-011 — Une requête retenue doit survivre à la veille et au changement de réseau
+
+**Type** : produit · **État** : correctif écrit et testé (v0.19.0 non commitée) ; essais réels « après » partiels ; non déployé
+
+**Constat.** Message rapporté par l'utilisateur : « *Agent "E2 correctif cache gen_py privé" failed: Agent terminated early due to an API error: Request timed out (error type server_error)* ». Contexte cité : « *le sous-agent atteint le quota quand je regarde mon PC le matin […] Je met le PC en veille pour partir et je le ré-ouvre sur un autre réseau et c'est là qu'est mon problème* », et « *Ca arrive également quand le wifi ce coute temporairement* ». Demande : « *que cela continue a conserver la/les requette(s) le temps que le PC sorte de veille et que je retrouve une connexion internet* ».
+
+**Analyse (2026-09-28).** Claude Code 2.1.283 détecte la veille et coupe volontairement sa requête pour la refaire (`StreamSuspendedError` : « *aborting to retry on a fresh connection* ») ; il exige un premier octet du relais sous ~2 min (fenêtre dérivée de `CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS=120000`), sinon « *Request timed out* ». Trois trous côté relais (`src/proxy.js`) : (1) aucun signal au client pendant l'attente des en-têtes d'Anthropic (`attempt()` coupe le keepalive avant `forward()`) ; (2) aucune détection d'une connexion amont muette (pas de délai sur `preq`) ; (3) seules les erreurs de `NETWORK_ERROR_CODES` sont retentées — une interception TLS ou un portail rendent l'erreur tout de suite. Trace de l'incident absente de ce PC : `proxy.log` ne remonte qu'au 2026-09-24.
+
+**Question posée** : « Sur quel PC l'échec du sous-agent arrive-t-il ? »
+**Réponse citée** : « **Sur un autre PC (portable)** »
+
+**Question posée** : « Dans l'autre bâtiment, comment se connecte le PC à internet ? »
+**Réponse citée** : « **RJ45 ou Wifi sur VPN habituelle Zscaler** »
+
+**Question posée** : « Quelle solution veux-tu ? » (relais seul / relais + plus de tentatives / réglages seulement)
+**Réponse citée** : « **Fait des tests toi même sur ce poste. en mettant en oeuvre tout ce qui pourrais casser, je veux des essais réels.** »
+
+**Question posée** : « Si une erreur ne se règle jamais d'elle-même (par exemple un réseau d'entreprise qui bloque Anthropic en permanence), que doit faire le relais ? »
+**Réponse citée** : « **Retenir 60 min puis rendre l'erreur** »
+
+**Round 2 (2026-09-28).**
+
+**Question posée** : « Les essais réels demandent de couper le Wi-Fi de ce PC plusieurs fois (2 à 5 min chaque fois) et de le mettre vraiment en veille. […] D'accord ? »
+**Réponse citée** : « **Wi-Fi + veille, réveil auto seul** » — si le réveil automatique échoue, l'essai attend le retour de l'utilisateur.
+
+**Question posée** : « Pour reproduire un vrai changement de réseau, je peux faire passer ce PC […] au partage de connexion de ton iPhone […]. Tu peux l'activer pendant les essais ? »
+**Réponse citée** : « **Non, pas d'autre réseau** » — le changement de réseau se teste par coupure et reconnexion au même Wi-Fi.
+
+**Question posée** : « Ta règle "retenir 60 min puis rendre l'erreur" : à quoi l'appliquer ? »
+**Réponse citée** : « **À toute coupure (Recommandé)** » — une seule règle : 60 min à partir de la première erreur, quel que soit le type d'erreur réseau.
+
+**Question posée** : « Je reproduis d'abord la panne avec le relais actuel […], puis je rejoue les mêmes essais avec le correctif. […] On fait comme ça ? »
+**Réponse citée** : « **Oui, avant puis après (Recommandé)** »
+
+**Round 3 (2026-09-28).** Le réveil automatique a échoué au premier essai en veille (PC resté endormi ~2 h 45) : `RTCWAKE` sur secteur = 2 (« minuteurs importants seulement »).
+**Question posée** : « […] puis-je activer ce réglage le temps des essais, puis le remettre exactement comme avant ? »
+**Réponse citée** : « **Oui, activer puis remettre (Recommandé)** »
+
+**État au 2026-09-29.** Correctif dans `src/proxy.js` : toute erreur sans réponse d'Anthropic est retentée 60 min depuis la première (`networkErrorMaxMs`), une connexion muette est refaite après 90 s (`upstreamIdleMs`, désactivable à 0), le signal SSE ne s'interrompt plus pendant l'attente d'Anthropic. Preuves : `test/network-hold.test.js` (échoue sur le `proxy.js` de HEAD ; quatre contre-épreuves par mutation) et `npm test` à 31 contrôles verts ; essais réels AVANT — certificat intercepté (sous-agent mort, 11/11 tentatives en 3 min), connexion muette (`Request timed out.` à 307 s), veille + certificat au réveil (sous-agent mort, `durationMs=400808`) ; essais réels APRÈS — certificat (réussi, aucune tentative client consommée), Wi-Fi coupé 3 min (réussi, mais l'ancien relais tenait déjà : pas de gain à en tirer). **Non prouvé** : les deux essais avec vraie veille du PC après correctif, et la reprise à 90 s (un essai a donné 180 s, corrigé depuis, essai de confirmation tué par manque de mémoire de la machine). Le message exact « Request timed out (server_error) » n'a pas été reproduit tel quel ; la trace de l'incident est sur le portable.
+

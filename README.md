@@ -106,6 +106,8 @@ cqr policy waitsoft 85         # attendre dès 85 % au lieu d'aller jusqu'à 100
 
 Ce qu'il ne fait plus, c'est laisser passer une réponse à moitié écrite : Claude Code n'arrivait alors plus à la décompresser et affichait `API Error: ZlibError fetching http://127.0.0.1:8788/v1/messages` — une erreur qu'il ne retente pas, donc la requête était perdue.
 
+**Veille, changement de réseau, VPN qui se reconnecte (Zscaler…).** Au réveil, le réseau n'est pas toujours prêt : pas de connexion du tout, certificat intercepté le temps que le VPN revienne, ou connexion restée ouverte mais muette. Dans tous ces cas, le programme **retient la requête et réessaie** — 90 s de silence d'Anthropic suffisent à tenir une connexion pour morte et à la refaire — en gardant Claude Code en ligne pendant ce temps. Il patiente **60 minutes** à partir de la première erreur, puis rend l'erreur pour que vous la voyiez. Réglable par `networkErrorMaxMs` dans la config. Sans cela, Claude Code épuisait ses tentatives en quelques minutes et le sous-agent mourait avec `Request timed out`.
+
 ### L'auto-compaction (active par défaut)
 
 **Quand le programme change de compte, il allège la requête envoyée au nouveau compte** — sans rien perdre. Il demande à Anthropic d'effacer les vieux résultats d'outils de la conversation (en gardant les plus récents), une fonction officielle qui **ne coûte aucun token**. Résultat : le compte tout neuf se remplit beaucoup plus lentement. Mesuré jusqu'à **-98 %** de tokens.
@@ -328,7 +330,7 @@ Retenir une requête plusieurs heures ne marche que grâce à ces variables, pos
 ### Limites honnêtes
 
 - Une requête **non-streaming** tombant pile en pleine saturation peut être coupée puis rejouée.
-- Si l'ordinateur se **met en veille** pendant une attente, la connexion peut se couper ; Claude Code réessaie au réveil.
+- Si l'ordinateur se **met en veille** pendant une attente, Claude Code coupe lui-même sa requête au réveil et la refait : le programme la retient de nouveau. Au-delà de 60 min sans pouvoir joindre Anthropic, l'erreur remonte.
 - La protection sur les 7 jours ne s'active qu'après une première réponse du compte.
 - L'outil **Workflow** a son propre délai (~18 min par sous-agent) que le relais ne peut pas prolonger. Lancez un gros workflow quand au moins un compte a du quota (`cqr preflight`).
 
