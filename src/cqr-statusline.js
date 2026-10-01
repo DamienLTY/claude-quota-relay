@@ -19,6 +19,7 @@
  * NO_COLOR desactive toutes les couleurs (les chiffres restent lisibles).
  *
  * If the user already had a status line, its output is kept as a prefix (see statusline.json).
+ * Gardien : relance le relais s'il est mort sans arret voulu (voir guardRelay, en bas, DR-012).
  */
 const fs = require("fs");
 const p = require("path");
@@ -136,3 +137,34 @@ if (accts.length) {
 
 const head = prefix ? (ours ? prefix + " │ " + ours : prefix) : ours;
 process.stdout.write([head].concat(rows).join("\n"));
+
+// Gardien du relais (DR-012). Le relais peut mourir ; Claude Code reessaie ~3 min puis abandonne, et
+// seul le hook SessionStart le relance. Or, avec statusLine.refreshInterval (pose par l'installeur),
+// cette ligne tourne toutes les 10 s MEME pendant ces tentatives : elle sert de gardien.
+// Seul le test TCP decide : un PID lu dans proxy.pid peut avoir ete reattribue a un autre processus
+// (Windows les reutilise), ce qui rendrait le gardien aveugle. Connexion de 300 ms au plus ; en cas
+// de refus ou de delai, ensure-proxy.js est lance detache, sans l'attendre -- au plus une fois par
+// minute (proxy.guard, partage entre toutes les sessions : sinon chaque session lancerait le sien).
+function guardRelay() {
+  if (fs.existsSync(p.join(DIR, "proxy.stopped"))) return; // arret voulu (cqr stop)
+  const ensure = p.join(DIR, "ensure-proxy.js");
+  if (!fs.existsSync(ensure)) return;
+  const guardFile = p.join(DIR, "proxy.guard");
+  let done = false;
+  const launch = () => {
+    if (done) return; done = true;
+    try {
+      try { if (Date.now() - fs.statSync(guardFile).mtimeMs < 60000) return; } catch (e) {}
+      fs.writeFileSync(guardFile, new Date().toISOString());
+      const child = cp.spawn(process.execPath, [ensure], { detached: true, stdio: "ignore", windowsHide: true, env: Object.assign({}, process.env, { CQR_STARTED_BY: "statusline" }) });
+      child.on("error", () => {});
+      child.unref();
+    } catch (e) {}
+  };
+  const sock = require("net").connect({ host: "127.0.0.1", port: Number(conf.port) || 8787 });
+  sock.setTimeout(300);
+  sock.on("connect", () => { done = true; sock.destroy(); }); // quelque chose ecoute : rien a faire
+  sock.on("error", () => { sock.destroy(); launch(); });       // refus : plus rien n'ecoute
+  sock.on("timeout", () => { sock.destroy(); launch(); });
+}
+try { guardRelay(); } catch (e) {}

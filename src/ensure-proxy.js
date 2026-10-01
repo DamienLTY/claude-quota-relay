@@ -23,7 +23,9 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
   if (!fs.existsSync(PROXY)) { process.exit(0); }
   try {
     const out = fs.openSync(p.join(DIR, "proxy.out.log"), "a");
-    const child = cp.spawn(process.execPath, [PROXY], { detached: true, stdio: ["ignore", out, out], windowsHide: true });
+    // Qui a lance le relais : transmis tel quel s'il vient du gardien de la statusline (DR-012).
+    const env = Object.assign({}, process.env, { CQR_STARTED_BY: process.env.CQR_STARTED_BY || "sessionstart" });
+    const child = cp.spawn(process.execPath, [PROXY], { detached: true, stdio: ["ignore", out, out], windowsHide: true, env });
     child.unref();
   } catch (e) { process.exit(0); }
   for (let i = 0; i < 12; i++) { await sleep(250); if (await ping()) break; }

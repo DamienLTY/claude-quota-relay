@@ -26,9 +26,17 @@ function cleanup(DIR) {
   // --- Case A: normal start -> detected as a real success ---
   {
     const DIR = setupDir(8796);
+    fs.writeFileSync(p.join(DIR, "proxy.stopped"), "x"); // reste d'un `cqr stop` precedent (DR-012)
     const r = runCli(DIR, ["start"]);
     assert.strictEqual(r.status, 0, "healthy start exits 0: " + r.stdout + r.stderr);
     assert.ok(r.stdout.includes("opérationnel"), "reports real success, not just 'spawned': " + r.stdout);
+    assert.ok(!fs.existsSync(p.join(DIR, "proxy.stopped")), "une fois le relais en ecoute, proxy.stopped a disparu (sinon le gardien resterait muet apres un arret voulu)");
+    // cqr stop pose le fichier, apres quoi le relais est vraiment arrete (DR-012 : le gardien ne doit pas le relancer)
+    const rs = runCli(DIR, ["stop"]);
+    assert.ok(fs.existsSync(p.join(DIR, "proxy.stopped")), "cqr stop pose proxy.stopped: " + rs.stdout);
+    const rr = runCli(DIR, ["restart"]);
+    assert.strictEqual(rr.status, 0, "restart exits 0: " + rr.stdout + rr.stderr);
+    assert.ok(!fs.existsSync(p.join(DIR, "proxy.stopped")), "cqr restart : le relais revenu en ecoute n'a plus proxy.stopped");
     cleanup(DIR);
     console.log("PASS — cqr start: healthy proxy detected as truly running");
   }
@@ -121,5 +129,21 @@ function cleanup(DIR) {
       assert.ok(relayHits > 0, "manually-started proxy still reached the relay declared in settings.json, not api.anthropic.com");
     } finally { relay.close(); cleanup(DIR); fs.rmSync(CFG, { recursive: true, force: true }); }
     console.log("PASS — cqr start (bare terminal): still honors ANTHROPIC_TARGET_API_URL from settings.json (" + relayHits + " hit(s))");
+  }
+
+  // --- Case F: `cqr start` dit au relais QUI l'a lance (CQR_STARTED_BY=cli), meme si le terminal
+  // porte deja une autre valeur (DR-012). proxy.js factice : il note sa variable, n'ecoute pas
+  // (le `start` rend donc 1, ce n'est pas ce qu'on regarde ici). Il note aussi si proxy.stopped est
+  // ENCORE LA a son demarrage : cqr ne l'efface pas, sinon le gardien relancerait un relais pendant un restart. ---
+  {
+    const DIR = setupDir(8803);
+    fs.writeFileSync(p.join(DIR, "proxy.js"), 'const fs = require("fs"), path = require("path"); fs.writeFileSync(path.join(__dirname, "started-by.txt"), String(process.env.CQR_STARTED_BY)); fs.writeFileSync(path.join(__dirname, "stopped-at-start.txt"), String(fs.existsSync(path.join(__dirname, "proxy.stopped"))));');
+    fs.writeFileSync(p.join(DIR, "proxy.stopped"), "arret voulu");
+    cp.spawnSync(process.execPath, [p.join(DIR, "cli.js"), "start"], { encoding: "utf8", timeout: 15000, windowsHide: true, env: Object.assign({}, process.env, { CQR_STARTED_BY: "statusline" }) });
+    let by = null; try { by = fs.readFileSync(p.join(DIR, "started-by.txt"), "utf8"); } catch (e) {}
+    assert.strictEqual(by, "cli", "cqr start pose CQR_STARTED_BY=cli pour le relais: " + by);
+    assert.strictEqual(fs.readFileSync(p.join(DIR, "stopped-at-start.txt"), "utf8"), "true", "proxy.stopped est encore la quand le relais demarre : cqr start ne l'efface pas");
+    cleanup(DIR);
+    console.log("PASS — cqr start: le relais est lance avec CQR_STARTED_BY=cli");
   }
 })();

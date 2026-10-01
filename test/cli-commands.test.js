@@ -122,5 +122,14 @@ const conf = () => JSON.parse(fs.readFileSync(p.join(DIR, "tokens.json"), "utf8"
   assert.ok(run("help").stdout.includes("cqr credits"), "help mentionne cqr credits");
 }
 
+// DR-012 : `cqr stop` marque l'arret comme voulu (proxy.stopped), meme quand rien ne tourne -- sinon
+// le gardien de la statusline relancerait, dans les 10 s, le relais qu'on vient d'arreter
+{
+  assert.ok(!fs.existsSync(p.join(DIR, "proxy.stopped")), "pas de proxy.stopped au depart");
+  const r = run("stop");
+  assert.strictEqual(r.status, 0, "stop exits 0: " + r.stderr);
+  assert.ok(fs.existsSync(p.join(DIR, "proxy.stopped")), "cqr stop pose proxy.stopped a cote de proxy.pid");
+}
+
 fs.rmSync(DIR, { recursive: true, force: true });
 console.log("PASS — cqr help lists commands; compact dynamic on auto-enables compaction; unknown -> help; derniere compaction visible; credits on/off/max + etat par compte");

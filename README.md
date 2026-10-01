@@ -64,7 +64,7 @@ Le reste est optionnel :
 ```bash
 cqr help                 # liste toutes les commandes
 cqr list                 # liste les comptes (clés masquées)
-cqr start | stop | restart   # gère le programme
+cqr start | stop | restart   # gère le programme (stop = arrêt voulu : la barre d'état ne le relance pas)
 cqr use <nom>            # force un compte précis
 cqr auto                 # revient au choix automatique
 ```
@@ -263,7 +263,7 @@ Le programme a planté au démarrage. `cqr start` vous montre alors la cause. Le
 - **Un fichier manque ou est abîmé** → relancez `node src/install.js`.
 - **Un antivirus d'entreprise** bloque les programmes en arrière-plan → lancez-le au premier plan pour voir l'erreur : `node ~/.claude/claude-quota-relay/proxy.js`.
 
-Les journaux détaillés sont dans `~/.claude/claude-quota-relay/proxy.log`.
+Les journaux détaillés sont dans `~/.claude/claude-quota-relay/proxy.log` ; les lignes `VIE` y gardent la trace des démarrages, sorties, signaux et arrêts brutaux.
 
 ### Réseau d'entreprise (api.anthropic.com bloqué)
 
@@ -320,6 +320,9 @@ Retenir une requête plusieurs heures ne marche que grâce à ces variables, pos
 | `CLAUDE_STREAM_IDLE_TIMEOUT_MS` | 7 jours | **la plus importante** : sinon toute requête en attente meurt au bout de 5 min |
 | `CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS` | 7 jours | laisse les **sous-agents** attendre aussi |
 | `CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS` | 2 min | garde-fou bas niveau, déjà couvert par le signal du programme |
+| `CLAUDE_CODE_MAX_RETRIES` | 15 | tentatives de Claude Code quand le programme ne répond plus (~6 min au lieu de ~3) : le temps de le relancer |
+
+L'installeur règle aussi `statusLine.refreshInterval` à 10 s : la barre d'état vérifie alors toutes les 10 s que le programme tourne, et le relance s'il est mort (sauf après `cqr stop`).
 
 ### Sécurité
 

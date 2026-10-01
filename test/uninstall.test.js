@@ -19,6 +19,11 @@ const ri = cp.spawnSync(process.execPath, [INSTALLER, "--no-interactive", "--con
 assert.strictEqual(ri.status, 0, "install exits 0: " + (ri.stderr || ""));
 assert.ok(fs.existsSync(p.join(IDIR, "bin", "cqr")), "install created the cqr wrapper");
 
+// DR-012 : l'installeur a pose les deux reglages ; le desinstalleur doit les retirer (cf. plus bas)
+const s0 = JSON.parse(fs.readFileSync(SETTINGS, "utf8"));
+assert.strictEqual(s0.statusLine.refreshInterval, 10, "install a pose statusLine.refreshInterval");
+assert.strictEqual(s0.env.CLAUDE_CODE_MAX_RETRIES, "15", "install a pose env.CLAUDE_CODE_MAX_RETRIES");
+
 // --- soft uninstall: keeps tokens.json + install dir + wrappers, restores original statusline ---
 const r1 = cp.spawnSync(process.execPath, [UNINSTALLER, "--config-dir", CFG], { encoding: "utf8", env: ENV });
 assert.strictEqual(r1.status, 0, "soft uninstall exits 0: " + (r1.stderr || ""));
@@ -26,6 +31,8 @@ const s1 = JSON.parse(fs.readFileSync(SETTINGS, "utf8"));
 assert.strictEqual(s1.env.FOO, "bar", "unrelated env preserved");
 assert.strictEqual(s1.env.ANTHROPIC_BASE_URL, undefined, "our env vars removed");
 assert.strictEqual(s1.statusLine.command, "echo MINE", "original status line restored");
+assert.strictEqual(s1.statusLine.refreshInterval, undefined, "statusLine.refreshInterval retire avec notre statusline (la votre est restauree telle quelle)");
+assert.strictEqual(s1.env.CLAUDE_CODE_MAX_RETRIES, undefined, "env.CLAUDE_CODE_MAX_RETRIES retire");
 assert.ok(!s1.hooks || !JSON.stringify(s1.hooks).includes("memory-hook.js"), "our hooks removed");
 assert.ok(fs.existsSync(p.join(IDIR, "tokens.json")), "soft uninstall keeps tokens.json");
 assert.ok(fs.existsSync(p.join(IDIR, "bin", "cqr")), "soft uninstall keeps the cqr wrapper (still usable)");

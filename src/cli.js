@@ -29,6 +29,7 @@ const CONF = p.join(DIR, "tokens.json");
 const STATE = p.join(DIR, "state.json");
 const PROXY = p.join(DIR, "proxy.js");
 const PIDFILE = p.join(DIR, "proxy.pid");
+const STOPPED = p.join(DIR, "proxy.stopped"); // arret voulu : le gardien de la statusline ne relance pas (DR-012)
 
 function readConf() { return JSON.parse(fs.readFileSync(CONF, "utf8")); }
 function writeConf(c) { fs.writeFileSync(CONF, JSON.stringify(c, null, 2)); }
@@ -62,8 +63,10 @@ function targetApiUrlFromSettings() {
   } catch (e) { return null; }
 }
 function startProxy() {
+  // proxy.stopped n'est PAS efface ici : c'est le relais qui l'efface, une fois en ecoute. L'effacer avant
+  // ouvrirait une fenetre ou le gardien de la statusline relance un relais pendant un `cqr restart` (DR-012).
   const out = fs.openSync(OUT_LOG, "a");
-  const env = Object.assign({}, process.env);
+  const env = Object.assign({}, process.env, { CQR_STARTED_BY: "cli" });
   const target = targetApiUrlFromSettings();
   if (target && !env.ANTHROPIC_TARGET_API_URL) env.ANTHROPIC_TARGET_API_URL = target;
   const child = cp.spawn(process.execPath, [PROXY], { detached: true, stdio: ["ignore", out, out], windowsHide: true, env });
@@ -127,6 +130,9 @@ function pidAlive(pid) { try { process.kill(pid, 0); return true; } catch (e) { 
 // Arret portable : lit le PID file ecrit par le proxy, envoie SIGTERM (ou taskkill en dernier
 // recours Windows si le signal ne suffit pas). Pas de netstat/lsof — marche partout.
 function stopProxy(cb) {
+  // Pose avant d'arreter : sinon le gardien (10 s) pourrait relancer le relais qu'on tue. Aussi
+  // pour `restart` : le relais qui demarre retire le fichier lui-meme, une fois en ecoute.
+  try { fs.writeFileSync(STOPPED, new Date().toISOString()); } catch (e) {}
   let pid = null;
   try { pid = parseInt(fs.readFileSync(PIDFILE, "utf8").trim(), 10); } catch (e) {}
   if (!pid || !pidAlive(pid)) {

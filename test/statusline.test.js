@@ -179,4 +179,118 @@ function run(DIR) {
   assert.strictEqual(lib.creditsRemaining({ uRaw: 1.4 }, { budget: 10 }, "x"), 0, "jamais negatif");
 }
 
+// Gardien du relais (DR-012). Le relais peut mourir ; la statusline, qui tourne toutes les 10 s
+// (statusLine.refreshInterval) meme pendant que Claude Code reessaie, le relance. Dossier isole, port
+// libre : jamais le vrai relais de la machine. Un ensure-proxy.js "sentinelle" ecrit launched.txt
+// (avec CQR_STARTED_BY) pour prouver dans les DEUX sens : il est lance quand il faut, jamais sinon.
+(async () => {
+  const net = require("net");
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const freePort = () => new Promise((res) => { const s = net.createServer().listen(0, "127.0.0.1", () => { const pt = s.address().port; s.close(() => res(pt)); }); });
+  const OFFLINE = { CQR_UPSTREAM_HOST: "127.0.0.1", CQR_UPSTREAM_PORT: "9", CQR_UPSTREAM_HTTP: "1" }; // aucune sonde reseau reelle
+  const FAKE = "sk-ant-oat01-FAKE-TEST-TOKEN-not-real-000000";
+  const SENTINEL = 'require("fs").writeFileSync(require("path").join(__dirname, "launched.txt"), String(process.env.CQR_STARTED_BY));';
+  const runAsync = (DIR, extraEnv) => new Promise((res) => {
+    const t0 = Date.now(); let out = "";
+    const c = cp.spawn(process.execPath, [SCRIPT], { env: Object.assign({}, process.env, OFFLINE, { CQR_DIR: DIR }, extraEnv || {}), windowsHide: true });
+    c.stdout.on("data", (d) => (out += d)); c.stdin.end("{}");
+    c.on("close", () => res({ stdout: out, ms: Date.now() - t0 }));
+  });
+  const gdir = async (port, sentinel) => {
+    const DIR = fs.mkdtempSync(p.join(os.tmpdir(), "cqr-guard-"));
+    fs.writeFileSync(p.join(DIR, "tokens.json"), JSON.stringify({ port, switchAtPercent: 94, sevenDayBlockPercent: 99, tokens: [{ name: "compte1", token: FAKE, enabled: true }] }));
+    fs.writeFileSync(p.join(DIR, "statusline.json"), JSON.stringify({ original: null }));
+    if (sentinel) fs.writeFileSync(p.join(DIR, "ensure-proxy.js"), SENTINEL);
+    return DIR;
+  };
+  const launched = (DIR) => { try { return fs.readFileSync(p.join(DIR, "launched.txt"), "utf8"); } catch (e) { return null; } };
+  const deadPid = () => { const r = cp.spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8", windowsHide: true }); return r.stdout.trim(); };
+
+  // --- six situations, sentinelle : seul le test TCP decide (un PID peut avoir ete reattribue a un autre
+  // processus, le gardien serait aveugle). Trois lancements attendus (relais mort), trois silences ---
+  const dead = await gdir(await freePort(), true);                                               // 1. rien : ni PID ni ecoute
+  const stale = await gdir(await freePort(), true); fs.writeFileSync(p.join(stale, "proxy.pid"), deadPid());   // 2. PID perime
+  const stopped = await gdir(await freePort(), true); fs.writeFileSync(p.join(stopped, "proxy.stopped"), "x"); // 3. arret voulu
+  const pidAlive = await gdir(await freePort(), true); fs.writeFileSync(p.join(pidAlive, "proxy.pid"), String(process.pid)); // 4. PID vivant MAIS port ferme (PID reattribue) -> relance
+  const lport = await freePort();
+  const listening = await gdir(lport, true); fs.writeFileSync(p.join(listening, "proxy.pid"), deadPid());      // 5. PID mort mais quelque chose ecoute
+  const lport2 = await freePort();
+  const listeningAlive = await gdir(lport2, true); fs.writeFileSync(p.join(listeningAlive, "proxy.pid"), String(process.pid)); // 6. PID vivant et le port repond
+  const srv = net.createServer((s) => s.destroy()); await new Promise((r) => srv.listen(lport, "127.0.0.1", r));
+  const srv2 = net.createServer((s) => s.destroy()); await new Promise((r) => srv2.listen(lport2, "127.0.0.1", r));
+  const results = await Promise.all([dead, stale, stopped, pidAlive, listening, listeningAlive].map((d) => runAsync(d)));
+  await sleep(1500); // le temps qu'un ensure-proxy.js detache, s'il y en a un, ecrive son temoin
+  srv.close(); srv2.close();
+  assert.strictEqual(launched(dead), "statusline", "relais mort (ni PID ni port) -> ensure-proxy.js lance avec CQR_STARTED_BY=statusline");
+  assert.strictEqual(launched(stale), "statusline", "PID perime + port ferme -> lance");
+  assert.strictEqual(launched(stopped), null, "proxy.stopped present (cqr stop) -> JAMAIS relance");
+  assert.strictEqual(launched(pidAlive), "statusline", "proxy.pid vivant mais port ferme -> lance (le PID ne decide pas)");
+  assert.strictEqual(launched(listening), null, "PID mort mais le port repond -> aucun lancement");
+  assert.strictEqual(launched(listeningAlive), null, "port qui repond -> aucun lancement");
+  for (const r of results) assert.strictEqual(strip(r.stdout).split("\n").length, 2, "la ligne de statusline sort normalement dans tous les cas: " + JSON.stringify(r.stdout));
+  for (const r of results) assert.ok(r.ms < 3000, "jamais de blocage au-dela de quelques centaines de ms de plus: " + r.ms + " ms");
+  for (const d of [dead, stale, stopped, pidAlive, listening, listeningAlive]) fs.rmSync(d, { recursive: true, force: true });
+
+  // --- pas de rafale : deux statuslines a la suite sur un relais mort -> UN seul lancement (proxy.guard,
+  // 60 s, partage entre sessions) ; un guard plus vieux que 60 s ne retient plus rien ---
+  {
+    const COUNTER = 'require("fs").appendFileSync(require("path").join(__dirname, "launches.txt"), "x");';
+    const D = await gdir(await freePort(), false);
+    fs.writeFileSync(p.join(D, "ensure-proxy.js"), COUNTER);
+    const launches = () => { try { return fs.readFileSync(p.join(D, "launches.txt"), "utf8").length; } catch (e) { return 0; } };
+    await runAsync(D); await sleep(800);
+    await runAsync(D); await sleep(800);
+    assert.strictEqual(launches(), 1, "relais mort, deux statuslines de suite -> un seul lancement, or: " + launches());
+    assert.ok(fs.existsSync(p.join(D, "proxy.guard")), "le lancement a pose proxy.guard");
+    const old = new Date(Date.now() - 61000); fs.utimesSync(p.join(D, "proxy.guard"), old, old);
+    await runAsync(D); await sleep(800);
+    assert.strictEqual(launches(), 2, "proxy.guard vieux de 61 s -> la relance repart, or: " + launches());
+    fs.rmSync(D, { recursive: true, force: true });
+  }
+
+  // --- qui a lance le relais : ensure-proxy.js transmet CQR_STARTED_BY au relais (proxy.js factice
+  // qui note sa variable), la valeur du gardien d'abord, "sessionstart" quand c'est le hook ---
+  {
+    const D = await gdir(await freePort(), false);
+    fs.copyFileSync(p.join(__dirname, "..", "src", "ensure-proxy.js"), p.join(D, "ensure-proxy.js"));
+    fs.writeFileSync(p.join(D, "proxy.js"), 'require("fs").writeFileSync(require("path").join(__dirname, "started-by.txt"), String(process.env.CQR_STARTED_BY));');
+    const ensure = (extra) => { const e = Object.assign({}, process.env); delete e.CQR_STARTED_BY; return cp.spawnSync(process.execPath, [p.join(D, "ensure-proxy.js")], { env: Object.assign(e, extra || {}), windowsHide: true, timeout: 10000 }); };
+    const startedBy = () => { try { return fs.readFileSync(p.join(D, "started-by.txt"), "utf8"); } catch (e) { return null; } };
+    ensure({ CQR_STARTED_BY: "statusline" }); await sleep(500);
+    assert.strictEqual(startedBy(), "statusline", "ensure-proxy.js transmet CQR_STARTED_BY=statusline au relais");
+    fs.unlinkSync(p.join(D, "started-by.txt"));
+    ensure(); await sleep(500);
+    assert.strictEqual(startedBy(), "sessionstart", "lance par le hook SessionStart (variable absente) -> 'sessionstart'");
+    fs.rmSync(D, { recursive: true, force: true });
+  }
+
+  // --- chaine reelle : relais isole mort -> la statusline le fait revenir sur son port ---
+  const port = await freePort();
+  const DIR = await gdir(port, false);
+  for (const f of ["ensure-proxy.js", "proxy.js", "lib.js", "compaction.js"]) fs.copyFileSync(p.join(__dirname, "..", "src", f), p.join(DIR, f));
+  const alivePort = () => new Promise((res) => { const q = require("http").get("http://127.0.0.1:" + port + "/__proxy_health", (r) => { r.resume(); res(r.statusCode === 200); }); q.on("error", () => res(false)); q.setTimeout(500, () => { q.destroy(); res(false); }); });
+  try {
+    assert.strictEqual(await alivePort(), false, "au depart rien n'ecoute sur le port isole");
+    const t0 = Date.now(); const r = await runAsync(DIR);
+    assert.strictEqual(strip(r.stdout).split("\n").length, 2, "la ligne sort normalement: " + r.stdout);
+    let up = false; while (!up && Date.now() - t0 < 8000) { up = await alivePort(); if (!up) await sleep(150); }
+    assert.ok(up, "le relais isole repond sur son port moins de 8 s apres la statusline");
+    console.log("   gardien : relais isole revenu en " + (Date.now() - t0) + " ms (statusline elle-meme : " + r.ms + " ms)");
+    assert.ok(fs.existsSync(p.join(DIR, "proxy.pid")), "le relais relance a ecrit son proxy.pid");
+    // qui l'a lance : ecrit par proxy.js dans sa ligne de demarrage (si cette version du relais le fait)
+    if (/CQR_STARTED_BY/.test(fs.readFileSync(p.join(DIR, "proxy.js"), "utf8"))) {
+      const log = fs.readFileSync(p.join(DIR, "proxy.log"), "utf8");
+      assert.ok(/statusline/.test(log), "la ligne de demarrage du relais porte 'statusline': " + log.slice(0, 400));
+    }
+    // et une 2e statusline, relais vivant, ne change rien : meme PID
+    const pid1 = fs.readFileSync(p.join(DIR, "proxy.pid"), "utf8").trim();
+    await runAsync(DIR); await sleep(1200);
+    assert.strictEqual(fs.readFileSync(p.join(DIR, "proxy.pid"), "utf8").trim(), pid1, "relais vivant -> la statusline ne relance rien");
+  } finally {
+    try { process.kill(parseInt(fs.readFileSync(p.join(DIR, "proxy.pid"), "utf8").trim(), 10)); } catch (e) {}
+    await sleep(300); try { fs.rmSync(DIR, { recursive: true, force: true }); } catch (e) {}
+  }
+  console.log("PASS — gardien: relais mort -> relance par la statusline (statusline, chaine reelle) ; port qui repond / proxy.stopped -> aucune relance ; PID vivant mais port ferme -> relance ; au plus une relance par minute");
+})().catch((e) => { console.error("FAIL:", e && e.stack || e); process.exit(1); });
+
 console.log("PASS — statusline: reset + comptes qui repartent, un bloc 5h/7j par compte, numero colore selon l'etat, wrapped ; reset ignore les comptes sans quota hebdo (sinon reset 7j date) ; credits visibles");

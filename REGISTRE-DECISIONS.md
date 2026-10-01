@@ -229,3 +229,84 @@ Registre ouvert le 2026-09-05. Les décisions antérieures vivent dans le `CHANG
 
 **État au 2026-09-29.** Correctif dans `src/proxy.js` : toute erreur sans réponse d'Anthropic est retentée 60 min depuis la première (`networkErrorMaxMs`), une connexion muette est refaite après 90 s (`upstreamIdleMs`, désactivable à 0), le signal SSE ne s'interrompt plus pendant l'attente d'Anthropic. Preuves : `test/network-hold.test.js` (échoue sur le `proxy.js` de HEAD ; quatre contre-épreuves par mutation) et `npm test` à 31 contrôles verts ; essais réels AVANT — certificat intercepté (sous-agent mort, 11/11 tentatives en 3 min), connexion muette (`Request timed out.` à 307 s), veille + certificat au réveil (sous-agent mort, `durationMs=400808`) ; essais réels APRÈS — certificat (réussi, aucune tentative client consommée), Wi-Fi coupé 3 min (réussi, mais l'ancien relais tenait déjà : pas de gain à en tirer). **Non prouvé** : les deux essais avec vraie veille du PC après correctif, et la reprise à 90 s (un essai a donné 180 s, corrigé depuis, essai de confirmation tué par manque de mémoire de la machine). Le message exact « Request timed out (server_error) » n'a pas été reproduit tel quel ; la trace de l'incident est sur le portable.
 
+
+---
+
+## DR-012 — Le relais lui-même meurt sans laisser de trace
+
+**Type** : exploitation · **État** : appliqué le 2026-10-02 en 0.20.0 sur ce PC (essai réel réussi) ; cause de l'incident non tranchée (traces du PC d'entreprise attendues) ; PC d'entreprise à installer
+
+**Constat.** Rapporté par l'utilisateur, PC d'entreprise, deux sessions Claude Code, huit sous-agents tués d'un coup : « *Agent "X21 — revue du lot BG" failed: Agent terminated early due to an API error: API Error: Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED) (error type server_error)* ». `ECONNREFUSED` = plus rien n'écoute sur le port du relais : le processus était mort, ce n'est pas une erreur relayée.
+
+Enquête de l'agent du PC d'entreprise, citée : « *le relais s'est arrêté vers 6 h 18 (heure de Paris), sans message d'erreur ni trace de plantage* » ; « *il est reparti tout seul à 7 h 00. Le script de démarrage ne le relance qu'à l'ouverture d'une session Claude, d'où 42 minutes de coupure* » ; écartés : « *la compaction de la conversation, les scripts automatiques de Claude Code, les quotas épuisés […] et une mise en veille ou un redémarrage de Windows* » ; « *Piste probable, non prouvée : quelque chose d'extérieur l'a arrêté* ».
+
+Hypothèse de l'utilisateur, citée : « *je pense que cela viens du faite que j'avais trop de sous-agents ouverts en même temps et que le relais a voulu switcher de compte de quota* ».
+
+Demande : « *Trouve une solution, ultrathink pourquoi ca a pu bugger. brainstorm une solution pour catcher ce genre d'erreur.* »
+
+**Analyse (2026-10-01, trois enquêtes en sous-agents, aucun fichier du dépôt touché).**
+
+Établi :
+- L'hypothèse « trop de sous-agents + bascule de compte » n'est **pas reproduite** : relais v0.19.0 isolé, 3 boucles de 6 vagues de 20 à 40 requêtes simultanées, ~1 300 requêtes amont dont ~670 en 429, coupures en plein flux, 5xx, 400 « conditions », abandons clients → processus vivant, stderr vide, mémoire 42-91 Mo sans croissance (`%TEMP%\cqr-stress\harness.js`). Réserve : version du relais du PC d'entreprise inconnue.
+- Un journal muet ne prouve pas un arrêt extérieur : `proxy.js` n'a ni `uncaughtException` ni `unhandledRejection`, la pile d'un plantage part dans `proxy.out.log` seulement (`ensure-proxy.js:26`, `cli.js:69`), jamais dans `proxy.log` ; lancé par le VBS de Démarrage (`Run …, 0, False`), elle est perdue. `SIGINT`/`SIGTERM` → `exit(0)` muet (`proxy.js:853-854`). Un arrêt brutal (TerminateProcess) ne laisse rien et laisse `proxy.pid` périmé — preuve écrasée par la relance de 07:00.
+- Deux plantages réels reproduits : `notifyWindows` lance `wscript.exe` sans écouteur `'error'` (`lib.js:317-318`, appelé `proxy.js:723`) → si wscript ne peut pas se lancer au moment d'un 400 « conditions », le relais meurt (`spawn wscript.exe ENOENT`, code 1) ; jeton à caractère invalide → `ERR_INVALID_CHAR` depuis un minuteur (`proxy.js:253`, `:650`).
+- 42 min parce que rien ne relance un relais mort en cours de session : seul le hook SessionStart `startup|resume|clear` le fait (`install.js:166`).
+- Ce PC : relais vivant depuis le 13/09 (17,5 j), aucune mort, mais le journal ne garde ni démarrage (coupé à 500 Ko, `proxy.js:83`) ni arrêt.
+- Défauts annexes (pas des causes de mort) : `probeToken` appelle `done()` deux fois (`proxy.js:288`, `:291`) → seconde requête amont facturée pour le même client ; abandon client → requête amont jamais annulée (`proxy.js:444`, `:646`) ; `ping()` 800 ms d'`ensure-proxy.js:16` → 2e relais qui efface `proxy.pid` du premier.
+
+Ouvert : la cause réelle sur le PC d'entreprise (fin de `proxy.out.log`, lignes de `proxy.log` avant 06:18, journal Windows, version, mode de lancement) ; la stratégie de relance ; la forme de l'alerte ; les défauts annexes à inclure.
+
+**Mesure D (2026-10-01, Claude Code 2.1.286, port fermé, faux serveur).** Plus rien n'écoute → 11 tentatives (0,5 s doublé, plafond 32 s, gigue 0-25 %), abandon à **~180 s** (181,9 s mesurées) avec exactement le message de l'incident. Serveur rouvert à 30/60/120/160 s → la requête aboutit (code 0) ; à 200 s → échec. Même chose pour un sous-agent : rouvert à 30 s il termine (`exitPath=completed`), jamais rouvert il meurt à 178,9 s avec « *Agent terminated early due to an API error: API Error: Connection refused…* ». `CLAUDE_CODE_MAX_RETRIES` existe : 15 → 16 tentatives, 363 s ; au-delà, ramené à 15 (`clamped to 15`) sauf `CLAUDE_CODE_RETRY_WATCHDOG=1` (plafond 300, ~2 h 40 — lu dans le binaire, non testé en entier). Sorties : `%TEMP%\cqr-retry\`. Incident de mesure : le premier essai a atteint le vrai relais, car le bloc `env` de `~/.claude/settings.json` écrase l'environnement du processus — une vraie requête, ~0,01 $ ; essais suivants isolés par `CLAUDE_CONFIG_DIR` vide.
+**Conséquence** : un relais relancé en moins de ~3 min sauve les sous-agents en cours ; en 42 min, aucun.
+
+**Round 1 (2026-10-01).**
+
+**Question posée** : « La vraie cause est sur le PC d'entreprise : il faut lire la fin de proxy.out.log, le journal du relais juste avant 6 h 18, le journal Windows, et la version installée. Comment récupère-t-on ces traces ? » (proposé : via /relais, recommandé)
+**Réponse citée** : « **Message à coller** »
+
+**Question posée** : « Quand le relais est mort puis relancé, comment veux-tu être prévenu ? » (proposé : statusline + journal, recommandé)
+**Réponse citée** : « **Journal seulement** »
+
+**Question posée** : « Les enquêtes ont trouvé des défauts qui ne tuent pas le relais. Lesquels corriger dans la foulée ? »
+**Réponse citée** : « **Double requête de sonde, Requête non annulée, proxy.pid effacé, Journal sans démarrages** » — les quatre.
+
+**Round 2 (2026-10-01).**
+
+**Question posée** : « Mesuré : Claude Code réessaie ~3 min quand le relais ne répond plus ; relancé avant, les sous-agents en cours survivent. Quel gardien pour relancer le relais ? » (proposé : tâche Windows chaque minute, recommandé ; gardien résident ; les deux)
+**Réponse citée** (Autre) : « **Je ne sais pas quoi faire, car sur PC d'entreprise soummis a des restrictions A.V, je ne sais pas ce qui est le mieux. Je ne dit pas que ca va bloquer, mais que cela peut.** » → question rouverte au round 3, avec une option qui n'ajoute aucun mécanisme Windows (ni tâche planifiée, ni wscript).
+
+**Question posée** : « Faut-il aussi allonger la patience de Claude Code de ~3 min à ~6 min (CLAUDE_CODE_MAX_RETRIES=15 dans ~/.claude/settings.json, sur chaque PC) ? »
+**Réponse citée** : « **Oui, 15 (Recommandé)** »
+
+**Question posée** : « Quand le relais rencontre une erreur imprévue (le genre qui le tue aujourd'hui), que doit-il faire ? » (proposé : noter + redémarrer, recommandé ; noter + continuer)
+**Réponse citée** (Autre) : « **Je ne veux pas que les requettes soit coupés, sinon ca veux dire que claude code bouffe des tokens a tout refaire, l'idée étais de conserver la requette quand même.** » → le relais note l'erreur et continue ; chaque cause connue est ramenée dans le chemin normal de la requête (retentée/basculée), pas abandonnée.
+
+**Question posée** : « Une fois tout prouvé par les tests, jusqu'où je vais ? » (proposé : commit + déploiement ici, recommandé)
+**Réponse citée** : « **Tout + push** » — commit, installation sur ce PC, push, message à coller pour le PC d'entreprise.
+
+**Correction de ma part** : le point 8 du message à coller créait une tâche planifiée d'essai ; sur un PC d'entreprise sous EDR, c'est un geste de persistance classique qui peut lever une alerte. Remplacé par des lectures seules.
+
+**Mesure E (2026-10-01, Claude Code 2.1.286, sessions interactives isolées, port fermé).** Le binaire porte `statusLine.refreshInterval` (« *Re-run the status line command every N seconds in addition to event-driven updates* », secondes, minimum 1). Pendant les 11 tentatives `ECONNREFUSED` (~3 min) : sans ce réglage, la statusline tourne **2 fois** (démarrage, fin du tour en erreur) ; avec `refreshInterval: 5`, **39 fois**, toutes les 5,0 s, sans interruption. Aucun hook ne part pendant les tentatives (`StopFailure` vient après leur épuisement). `cqr-statusline.js` ne fait aucun appel HTTP (lit `stdin` et trois fichiers, `:57-61`) ; un contrôle `process.kill(pid,0)` est gratuit, un refus TCP coûte ~4 ms. Traces : `%TEMP%\cqr-statusline-essai\`.
+**Conséquence** : un gardien logé dans la statusline relance le relais en quelques secondes, sans tâche planifiée ni wscript, tant qu'une session Claude est ouverte.
+
+**Round 3 (2026-10-01).**
+
+**Question posée** : « Mesuré : la statusline de Claude Code peut tourner toutes les N secondes, même pendant que Claude Code réessaie de joindre un relais mort. Quel gardien ? » (proposé : statusline 10 s, recommandé ; statusline + tâche Windows ; statusline 5 s)
+**Réponse citée** : « **Statusline, 10 s (Recommandé)** »
+
+**Frontière vide.** Périmètre retenu : tracer toute mort (démarrage, arrêt, signal, erreur imprévue, arrêt brutal détecté au redémarrage) dans `proxy.log` seulement ; ne plus mourir d'une erreur imprévue et ramener chaque cause connue dans le chemin normal de la requête ; gardien dans la statusline toutes les 10 s ; `CLAUDE_CODE_MAX_RETRIES=15` ; les quatre défauts annexes ; commit, installation ici, push, message pour le PC d'entreprise.
+
+**Question posée** (2026-10-01) : « Étape 5 : après installation sur CE PC, je veux tuer brutalement le vrai relais pour prouver que le gardien le relance seul (~10 s). […] D'accord ? »
+**Réponse citée** : « **Oui, essai réel (Recommandé)** »
+
+**Fait (0.20.0).** Le relais ne s'arrête plus sur une erreur : gardes `uncaughtException`/`unhandledRejection` (noter + continuer), et garde par requête — une exception en pleine requête rejoue la requête une fois si rien n'est encore parti vers le client, sinon termine la réponse pour que Claude Code retente aussitôt. Causes connues ramenées dans la requête (`wscript` introuvable, `http.request` qui lève → compte écarté et bascule, `'error'` sur la réponse client). Journal de vie `VIE` dans `proxy.log` (démarrage avec PID, version, Node, `lance_par` ; sortie ; signal ; erreur imprévue ; « arret brutal precedent detecte » au redémarrage), qui survit à la rotation. Gardien dans la statusline (`refreshInterval: 10`) : port qui ne répond pas, pas de `proxy.stopped`, pas de relance depuis moins de 60 s (`proxy.guard`) → `ensure-proxy.js` détaché. `CLAUDE_CODE_MAX_RETRIES=15`. Annexes : sonde à un seul `done()`, amont détruit quand le client part, `proxy.pid` écrit après `listen`.
+
+**Corrigé après revue** (`thermo-review`, verdict À CORRIGER). (1) Rester vivant laissait une requête orpheline, pendue des jours (`API_TIMEOUT_MS` 7 j, battements SSE sans fin) — c'est l'inverse de « conserver la requête » → garde par requête. (2) Gardien fondé sur `process.kill(pid,0)` : aveugle si Windows réattribue le PID d'un relais tué — mesuré, 1 essai sur 2 après 25 lancements → test du port seul. (3) Relances sans limite si le relais ne peut pas démarrer (motif d'alerte EDR) → une par minute. (4) `cli.js` effaçait `proxy.stopped` avant le démarrage (fenêtre pendant `cqr restart`) → retiré. (5) Une tempête d'erreurs évinçait les lignes de démarrage → piles tronquées à 1 500 caractères, 300 lignes `VIE`, les vieilles erreurs partent en premier. **Refusé** : (6) déplacer des fonctions de `proxy.js` vers `lib.js` — refonte hors demande. Contre-revue de la garde par requête : 0 défaut à corriger, 4 mineurs acceptés.
+
+**Boucle 1 (ratée, de ma part).** J'ai cru qu'un `cqr stop` sous Windows laisserait une fausse alerte « arret brutal » (TerminateProcess, aucun gestionnaire) et fait ajouter une ligne « arret voulu ». Mesuré à l'installation : `stopProxy` (`cli.js:132-148`) efface déjà `proxy.pid` après l'arrêt, le cas ne se produit pas → code retiré. Leçon : vérifier le chemin réel avant de corriger une alerte supposée.
+
+**Écarté avec raison.** Deux gardiens qui tirent dans la même milliseconde lancent deux relais : mesuré à l'essai réel, le perdant sort sur `EADDRINUSE` et `proxy.pid` reste juste. Pas de dégât, un verrou atomique coûterait plus que le processus de trop.
+
+**Preuve.** `npm test` vert (49 contrôles avant le retrait de la boucle 1) ; `test/relais-vie.test.js` échoue 9/9 sur HEAD, chaque correctif a sa mutation qui fait tomber son seul scénario. **Essai réel sur ce PC (2026-10-02 01:45, heure de Paris)** : installation → `VIE demarrage pid=30540 version=0.20.0 node=v22.22.0 lance_par=cli`, `refreshInterval` = 10 et `CLAUDE_CODE_MAX_RETRIES` = "15" dans `settings.json` ; relais tué par `taskkill /F` à 23:45:57,5 UTC → `VIE demarrage pid=37068 version=0.20.0 … lance_par=statusline` à 23:46:06,531, puis `VIE arret brutal precedent detecte pid=30540 derniere_ligne_du_journal=2026-10-01T23:45:51.749Z` — **~9 s de coupure au lieu de 42 min**, sans le filet de l'essai (`%TEMP%\cqr-essai-reel\essai.log`). La statusline a pris `refreshInterval` à chaud.
+
+**Non prouvé.** La cause de l'incident du PC d'entreprise ; le comportement du gardien sous l'antivirus de ce PC-là ; la levée d'une exception dans les rouages internes de `pipe` (hors garde par requête).

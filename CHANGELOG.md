@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.20.0
+
+Le relais lui-même mourait sans laisser de trace : `Agent terminated early due to an API error: API Error: Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED)`, huit sous-agents tués d'un coup sur un PC d'entreprise (DR-012). `ECONNREFUSED` veut dire que plus rien n'écoute sur le port : ce n'était pas une erreur relayée, le processus était parti, et rien ne le relançait avant la prochaine session Claude Code (42 minutes de coupure). Essais du 2026-10-01 sur un relais isolé, 3 boucles de 20 à 40 requêtes simultanées avec ~670 refus 429 : le relais survit ; les plantages reproduits ont des causes précises, corrigées ci-dessous.
+
+- **Le relais ne meurt plus sur une erreur imprévue : il la note et continue.** Une requête coupée, c'est Claude Code qui refait tout et brûle de nouveau ses jetons. Toute exception ou promesse rejetée non rattrapée laisse maintenant sa pile complète au journal (une seule ligne) et le relais reste en ligne ; seule exception, tant qu'il n'a pas fini de démarrer (configuration illisible), où continuer n'aurait aucun sens.
+- **Un journal de vie dans `proxy.log`** (lignes `VIE`) : démarrage (PID, version, version de Node, qui l'a lancé — `cli`, `sessionstart` ou `statusline`), sortie avec son code, signal reçu (`SIGINT`, `SIGTERM`, `SIGHUP`, `SIGBREAK`), erreur imprévue, et **arrêt brutal détecté au redémarrage** (un processus tué de force ne peut rien écrire : c'est le démarrage suivant qui constate le `proxy.pid` périmé et note la dernière ligne du journal). La coupe du journal à 2 Mo garde désormais les 1 000 dernières lignes de vie au lieu de les jeter avec le reste : on peut compter les redémarrages.
+- **Un gardien dans la barre d'état relance un relais mort en quelques secondes.** Mesuré : pendant les ~3 min de tentatives `ECONNREFUSED`, la barre d'état ne s'exécutait que 2 fois ; avec `statusLine.refreshInterval: 10`, toutes les 10 s sans interruption. Si le PID est mort ou absent, que le port refuse la connexion et que `cqr stop` n'a pas été demandé, elle lance `ensure-proxy.js` en tâche détachée (relais isolé relancé en ~450 ms). Aucune tâche planifiée, aucun `wscript` : sur un PC sous antivirus d'entreprise, rien de nouveau à autoriser. La mise à jour pose la cadence aussi sur une installation existante, sauf si vous en aviez choisi une.
+- **Claude Code patiente 15 tentatives au lieu de 10** (`CLAUDE_CODE_MAX_RETRIES=15`, ~6 min au lieu de ~3 min avant d'abandonner). Mesuré : un relais relancé avant l'abandon sauve les sous-agents en cours. Retiré par la désinstallation, comme les autres réglages.
+- **`cqr stop` est un arrêt voulu.** Il pose un fichier `proxy.stopped` que le gardien respecte (il ne relance pas ce que vous venez d'arrêter) ; le démarrage du relais l'efface.
+
+Correctifs :
+
+- **La sonde d'un jeton n'appelait plus `done()` qu'une fois.** Elle pouvait le faire deux fois, donc une seconde requête amont facturée pour le même client.
+- **Le client qui part annule la requête vers Anthropic.** Elle continuait jusqu'au bout pour personne.
+- **`proxy.pid` est écrit après `listen`, et effacé seulement s'il porte notre PID.** Un second relais lancé par erreur (le contrôle de présence abandonne à 800 ms) écrivait son PID avant d'échouer en `EADDRINUSE`, puis effaçait le fichier du relais bien vivant : `cqr stop` devenait aveugle.
+- **Une fenêtre d'alerte qui ne peut pas s'ouvrir ne tue plus le relais.** `wscript` introuvable ou impossible à lancer (le cas qui avait été reproduit sur un refus 400 « conditions ») est noté et la requête continue ; de même un jeton à caractère invalide ou une erreur côté amont ou client ne sortent plus du chemin de la requête.
+- **La mise à jour copie `package.json`** à côté du relais installé : sans lui, sa ligne de démarrage disait `version=inconnue`.
+
 ## 0.19.0
 
 Un sous-agent mourait au réveil du PC sur un autre réseau : `Agent terminated early due to an API error: Request timed out (error type server_error)` (DR-011). Essais réels du 2026-09-28 — vrai Claude Code, vrai relais, vrai Anthropic, vraies pannes, d'abord sur l'ancien relais puis sur le nouveau.

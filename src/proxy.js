@@ -80,7 +80,26 @@ function now() { return Date.now(); }
 function log(...a) {
   const line = `[${ts()}] ${a.map((x) => (typeof x === "object" ? JSON.stringify(x) : x)).join(" ")}\n`;
   try { fs.appendFileSync(LOG, line); } catch (e) {}
-  try { const st = fs.statSync(LOG); if (st.size > 2_000_000) fs.writeFileSync(LOG, fs.readFileSync(LOG, "utf8").slice(-500_000)); } catch (e) {}
+  try { const st = fs.statSync(LOG); if (st.size > 2_000_000) rotateLog(); } catch (e) {}
+}
+// Journal de vie (DR-012) : demarrage, sortie, signal, arret brutal, erreur imprevue. Ce sont les
+// seules lignes qui permettent de compter les redemarrages, donc la coupe du journal les GARDE
+// (les 300 dernieres) au lieu de les jeter avec le reste. Une ligne de vie = une seule ligne.
+const VIE_RE = /^\[[^\]]*\] VIE /;
+const VIE_ERREUR_RE = /^\[[^\]]*\] VIE erreur /;
+function logVie(...a) { log("VIE", ...a); }
+// Pile d'erreur sur UNE ligne (survit a la coupe du journal), tronquee : sans ca, une rafale d'erreurs
+// repasse aussitot le seuil de coupe et chaque ligne gardee pese plusieurs Ko.
+const stackOf = (e) => String((e && e.stack) || e).replace(/\s*\n\s*/g, " | ").slice(0, 1500);
+function rotateLog() {
+  const txt = fs.readFileSync(LOG, "utf8");
+  const cut = txt.indexOf("\n", txt.length - 500_000) + 1; // ne coupe pas une ligne en deux
+  const vie = txt.slice(0, cut).split("\n").filter((l) => VIE_RE.test(l));
+  // Au-dela de 300, les plus vieilles ERREURS partent d'abord : une rafale d'erreurs ne doit pas chasser
+  // les demarrages et les sorties, seuls a permettre de compter les redemarrages.
+  let trop = vie.length - 300;
+  const gardees = vie.filter((l) => { if (trop > 0 && VIE_ERREUR_RE.test(l)) { trop--; return false; } return true; }).slice(-300);
+  fs.writeFileSync(LOG, (gardees.length ? gardees.join("\n") + "\n" : "") + txt.slice(cut));
 }
 
 function readConf() {
@@ -246,11 +265,22 @@ const PROBE_BODY = JSON.stringify({ model: "claude-haiku-4-5", max_tokens: 0, me
 const PROBE_REFRESH_MS = 2 * 60 * 1000; // pendant une attente de quota : une sonde / 2 min / compte
 const lastProbeAt = {};
 
+// http.request LEVE en synchrone quand un en-tete est invalide (jeton abime : ERR_INVALID_CHAR sur
+// "authorization"). Appele depuis un minuteur ou un gestionnaire, cela tuait le relais (DR-012) :
+// l'appelant recoit l'erreur dans onThrow et la traite comme un echec de CE compte.
+function safeRequest(opts, cb, onThrow) {
+  try { return UPSTREAM.request(opts, cb); } catch (e) { onThrow(e); return null; }
+}
+
 function probeToken(conf, idx, done) {
   const tok = conf.tokens[idx];
-  if (!tok || isPlaceholder(tok)) { if (done) done(false); return; }
+  // done() n'agit qu'UNE fois : une sonde lente repondait (en-tetes) puis expirait, et le second
+  // appel relancait la requete du client -- une seconde requete amont facturee pour rien.
+  let finished = false;
+  const finish = (ok) => { if (finished) return; finished = true; if (done) done(ok); };
+  if (!tok || isPlaceholder(tok)) { finish(false); return; }
   lastProbeAt[tok.name] = now();
-  const req = UPSTREAM.request({
+  const req = safeRequest({
     hostname: UPSTREAM_HOST, port: UPSTREAM_PORT, path: UPSTREAM_PATH_PREFIX + "/v1/messages", method: "POST",
     headers: {
       "authorization": "Bearer " + tok.token,
@@ -285,10 +315,11 @@ function probeToken(conf, idx, done) {
       log("PROBE", tok.name, "http" + pres.statusCode);
     }
     writeState(st);
-    if (done) done(allowed);
-  });
+    finish(allowed);
+  }, (e) => { log("PROBE err", tok.name, e.message); finish(false); });
+  if (!req) return;
   req.setTimeout(10000, () => { try { req.destroy(new Error("probe timeout")); } catch (e) {} });
-  req.on("error", (e) => { log("PROBE err", tok.name, e.message); if (done) done(false); });
+  req.on("error", (e) => { log("PROBE err", tok.name, e.message); finish(false); });
   req.write(PROBE_BODY);
   req.end();
 }
@@ -430,6 +461,8 @@ function decideCompaction(conf, state, bodyObj, prevActive, newIdx, ctx, switchi
 
 // ----- coeur : route puis (forward | wait->forward), avec rejeu sur rejet -----
 function serve(creq, cres) {
+  // sans ecouteur, une erreur d'ecriture sur la reponse (client parti) tuait le relais (DR-012)
+  cres.on("error", (e) => log("CLIENT res error", e.message));
   if (creq.url === "/__proxy_health") {
     cres.writeHead(200, { "content-type": "application/json" });
     cres.end(JSON.stringify({ ok: true, ts: ts(), state: readState() }));
@@ -437,17 +470,21 @@ function serve(creq, cres) {
   }
   const chunks = [];
   let clientGone = false;
+  // requete amont en cours pour ce client : detruite des qu'il part (DR-012), sinon elle continue de
+  // tirer (et de facturer) une reponse que personne ne lira, jusqu'a la fin du flux ou 90 s de silence.
+  let upstreamReq = null;
+  const abandon = () => { clientGone = true; if (upstreamReq) { try { upstreamReq.destroy(); } catch (e) {} } };
   const reqStart = now();
   creq.on("data", (c) => chunks.push(c));
-  creq.on("error", (e) => { clientGone = true; log("CLIENT error", e.message, "elapsedMs=" + (now() - reqStart)); });
-  creq.on("aborted", () => { clientGone = true; log("CLIENT aborted", "elapsedMs=" + (now() - reqStart)); });
-  cres.on("close", () => { if (!cres.writableFinished) { clientGone = true; log("CLIENT close (writableFinished=false)", "elapsedMs=" + (now() - reqStart)); } });
+  creq.on("error", (e) => { abandon(); log("CLIENT error", e.message, "elapsedMs=" + (now() - reqStart)); });
+  creq.on("aborted", () => { abandon(); log("CLIENT aborted", "elapsedMs=" + (now() - reqStart)); });
+  cres.on("close", () => { if (!cres.writableFinished) { abandon(); log("CLIENT close (writableFinished=false)", "elapsedMs=" + (now() - reqStart)); } });
   creq.on("end", () => {
     const body = Buffer.concat(chunks);
     let bodyObj = null;
     try { bodyObj = JSON.parse(body.toString("utf8")); } catch (e) {}
     const isStream = !!(bodyObj && bodyObj.stream === true);
-    const ctx = { tried: new Set(), waitStart: 0, polls: 0, sse: false, ka: null, netRetries: 0, cutRetries: 0, resumed: false };
+    const ctx = { tried: new Set(), waitStart: 0, polls: 0, sse: false, ka: null, netRetries: 0, cutRetries: 0, resumed: false, sent: false, replayed: false };
     function stopKeepalive() { if (ctx.ka) { clearInterval(ctx.ka); ctx.ka = null; } }
     // garde la connexion client ouverte pendant qu'on retente (quota, coupure reseau, panne
     // serveur) : en streaming, Claude coupe au bout de ~5 min sans octet -> commentaires SSE.
@@ -477,7 +514,37 @@ function serve(creq, cres) {
         cres.end();
       } catch (e) {}
     }
-    attempt();
+    // erreur rendue au client, sur le chemin habituel (flux SSE deja ouvert, ou 502)
+    function failClient(msg) {
+      stopKeepalive();
+      if (ctx.sse) { sseError(msg); return; }
+      if (!cres.headersSent) { try { cres.writeHead(502, { "content-type": "text/plain" }); } catch (x) {} }
+      try { cres.end("proxy: " + msg); } catch (x) {}
+    }
+    // Garde PAR REQUETE (DR-012). Une exception dans le trajet de cette requete (un callback, un minuteur de
+    // reprise) laissait le relais vivant mais la requete orpheline : client sans reponse, battements SSE sans
+    // fin (ctx.ka) -- jusqu'a API_TIMEOUT_MS, parfois des jours. Rien de la reponse amont n'est parti vers le
+    // client -> la requete est conservee et REJOUEE une fois (Claude Code ne refait rien, ne rebrule rien).
+    // Sinon (octets deja partis, ou le rejeu leve aussi) -> fin nette : il retente tout de suite.
+    function guard(fn) { return function () { try { return fn.apply(this, arguments); } catch (e) { crashed(e); } }; }
+    const after = (fn, ms) => setTimeout(guard(fn), ms);
+    const committed = () => ctx.sent || cres.writableEnded || (!ctx.sse && cres.headersSent);
+    function crashed(e) {
+      const replay = !clientGone && !ctx.replayed && !committed();
+      logVie("erreur en pleine requete", stackOf(e), replay ? "-> requete rejouee" : "-> requete terminee");
+      if (clientGone) { stopKeepalive(); return; }
+      if (replay) {
+        ctx.replayed = true;
+        // l'ancienne requete amont ne doit plus rien declencher (son 'error' relancerait un forward en double)
+        const old = upstreamReq; upstreamReq = null;
+        if (old) { old.removeAllListeners("error"); old.on("error", () => {}); try { old.destroy(); } catch (x) {} }
+        try { return attempt(); } catch (e2) { logVie("erreur en pleine requete (rejeu)", stackOf(e2), "-> requete terminee"); }
+      }
+      if (!cres.writableEnded) { if (committed()) { try { cres.destroy(); } catch (x) {} } else failClient("erreur interne du relais, requete a refaire"); }
+      stopKeepalive();
+      abandon(); // plus aucun minuteur ne doit reprendre cette requete
+    }
+    guard(attempt)();
 
     function attempt() {
       if (clientGone) return;
@@ -547,7 +614,7 @@ function serve(creq, cres) {
       // jitter aleatoire : plusieurs requetes retenues ne doivent pas repartir au meme instant (rafale -> 429)
       const jitter = 1500 + Math.floor(Math.random() * 3000);
       const sleep = Math.max(1000, Math.min(conf.pollMs, route.untilMs - now() + jitter));
-      setTimeout(() => {
+      after(() => {
         ctx.tried.clear();
         if (clientGone) { stopKeepalive(); return; }
         // half-open : au reveil (reset atteint) ou toutes les 5 min, sonder le token
@@ -556,7 +623,7 @@ function serve(creq, cres) {
         // reprise apres attente de quota -> on compacte la requete qu'on relache
         if (wakeReached && conf.compaction && (conf.compaction.enabled || conf.compaction.dryRun) && conf.compaction.compactBeforeResume !== false) ctx.resumed = true;
         const probeDue = wakeReached || (now() - (lastProbeAt[tName] || 0)) >= PROBE_REFRESH_MS;
-        if (probeDue) probeToken(conf, route.idx, () => { if (!clientGone) attempt(); });
+        if (probeDue) probeToken(conf, route.idx, guard(() => { if (!clientGone) attempt(); }));
         else attempt();
       }, sleep);
     }
@@ -616,10 +683,11 @@ function serve(creq, cres) {
         // en-tetes retenues jusqu'au PREMIER octet : tant que rien n'est parti, la requete reste
         // rejouable avec ses propres en-tetes. (En SSE, holdOpen les a deja envoyees.)
         const openOnce = () => { try { if (!cres.headersSent) cres.writeHead(pres.statusCode, pres.headers); } catch (x) {} };
-        pres.on("data", (c) => { relayed += c.length; openOnce(); });
+        pres.on("data", (c) => { relayed += c.length; ctx.sent = true; openOnce(); });
         pres.on("end", openOnce);
-        function onCut(e) {
+        const onCut = guard(function onCut(e) {
           if (cut) return; cut = true;
+          if (clientGone) { pres.destroy(); return; } // client parti (DR-012) : rien a rejouer ni a journaliser en coupure
           // Couper la SOURCE, pas seulement la debrancher. `unpipe` suppose que pres
           // alimente cres DIRECTEMENT ; le jour ou un maillon s'intercale (mesure,
           // decompression...), il ne debranche plus rien et le corps tronque continue de
@@ -637,8 +705,8 @@ function serve(creq, cres) {
           ctx.cutRetries += 1;
           const delay = Math.min(30000, 2000 * Math.pow(2, ctx.cutRetries - 1));
           holdOpen("coupure reseau pendant la reponse, nouvelle tentative automatique");
-          setTimeout(() => { if (!clientGone) forward(conf, idx, lastResort, compactInfo); }, delay);
-        }
+          after(() => { if (!clientGone) forward(conf, idx, lastResort, compactInfo); }, delay);
+        });
         pres.on("error", onCut);
         // selon la version de Node, une reponse tronquee emet "error", "aborted" ou juste
         // "close" : `complete` est le seul temoin fiable qu'on a bien recu tout le corps.
@@ -647,7 +715,7 @@ function serve(creq, cres) {
       }
 
       let answered = false;
-      const preq = UPSTREAM.request({ hostname: UPSTREAM_HOST, port: UPSTREAM_PORT, path: UPSTREAM_PATH_PREFIX + creq.url, method: creq.method, headers }, (pres) => {
+      const preq = safeRequest({ hostname: UPSTREAM_HOST, port: UPSTREAM_PORT, path: UPSTREAM_PATH_PREFIX + creq.url, method: creq.method, headers }, guard((pres) => {
         answered = true;
         ctx.netRetries = 0; ctx.netStart = 0; // une reponse (meme un rejet HTTP) prouve que le reseau fonctionne
         logRate(pres.headers, pres.statusCode, tok.name);
@@ -676,7 +744,7 @@ function serve(creq, cres) {
             log("SERVER err http" + pres.statusCode, "token=" + tok.name, "panne Anthropic -> tentative #" + ctx.srvRetries, "dans", Math.round(delay / 1000) + "s");
             pres.resume(); // draine la reponse d'erreur
             holdOpen("erreur serveur Anthropic (http " + pres.statusCode + "), nouvelle tentative automatique");
-            setTimeout(() => { if (!clientGone) forward(conf, idx, lastResort, compactInfo); }, delay);
+            after(() => { if (!clientGone) forward(conf, idx, lastResort, compactInfo); }, delay);
             return;
           }
           log("SERVER err http" + pres.statusCode, "token=" + tok.name, "abandon apres", Math.round(elapsed / 1000) + "s et", ctx.srvRetries || 0, "tentatives -> erreur rendue au client");
@@ -695,7 +763,7 @@ function serve(creq, cres) {
           // corps coupe en route : "end" ne vient jamais et le client resterait pendu. On coupe sa
           // connexion -- une erreur reseau, qu'il sait retenter (meme choix que relay()).
           pres.on("close", () => { if (!pres.complete) { try { cres.destroy(); } catch (x) {} } });
-          pres.on("end", () => {
+          pres.on("end", guard(() => {
             const raw = Buffer.concat(chunks);
             const txt = lib.decodeBody(raw, pres.headers["content-encoding"]);
             // TOUT 400 est journalise avec son corps : le jour ou Anthropic reformule ce message,
@@ -726,7 +794,8 @@ function serve(creq, cres) {
               + " conditions d'utilisation / de confidentialite." + "\n" + "\n"
               + "A FAIRE : ouvrir claude.ai, se connecter avec l'e-mail de CE compte," + "\n"
               + "puis accepter les conditions. Rien d'autre ne debloque ce compte." + "\n" + "\n"
-              + "En attendant, le relais met ce compte de cote 6 h et travaille avec les autres comptes.");
+              + "En attendant, le relais met ce compte de cote 6 h et travaille avec les autres comptes.",
+              null, (e) => log("ALERTE fenetre impossible", e.message)); // wscript introuvable : une ligne au journal (DR-012)
             // bascule : la requete en cours part sur un autre compte, le client ne perd rien
             if (terms && !lastResort && !clientGone) return attempt();
             // 400 ordinaire (corps invalide, modele inconnu...) ou compte epingle : l'erreur
@@ -736,7 +805,7 @@ function serve(creq, cres) {
               ? "compte " + tok.name + " bloque : conditions a accepter sur claude.ai (http 400)"
               : "requete refusee par Anthropic (http 400)");
             try { cres.writeHead(400, pres.headers); cres.end(raw); } catch (x) {}
-          });
+          }));
           return;
         }
 
@@ -790,7 +859,20 @@ function serve(creq, cres) {
         } else {
           relay(pres);
         }
-      });
+      }), guard((e) => {
+        // La requete n'a meme pas pu partir (jeton a caractere invalide...) : echec de CE compte, pas de
+        // la requete. Comme un 401 : le compte est ecarte 5 min et la requete repart sur un autre ; sans
+        // autre compte (ou compte epingle) elle suit le chemin d'erreur habituel (DR-012).
+        log("REQUEST impossible", tok.name, e.message, "-> compte ecarte 5 min");
+        const st = readState();
+        st.exhausted = st.exhausted || {}; st.exhausted[tok.name] = now() + AUTH_COOLDOWN_MS;
+        writeState(st);
+        if (clientGone) return;
+        if (lastResort) return failClient("requete impossible: " + e.message);
+        attempt();
+      }));
+      if (!preq) return;
+      upstreamReq = preq;
       // Connexion morte sans erreur (PC mis en veille, reseau change, VPN qui la laisse pendre) :
       // le systeme ne previent pas, on attendrait indefiniment. Un silence trop long devient une
       // erreur, traitee plus bas comme une coupure. Streaming seulement : une reponse non-stream
@@ -802,7 +884,7 @@ function serve(creq, cres) {
       // ponytail: non-stream sans garde (un silence y est legitime) ; une connexion morte y reste
       // pendue jusqu'a l'erreur TCP du systeme. Ajouter setKeepAlive cote amont si on l'observe.
       if (isStream && conf.upstreamIdleMs > 0) preq.setTimeout(conf.upstreamIdleMs + Math.ceil(sendBody.length / 32768) * 1000, () => preq.destroy(new Error("aucun octet d'Anthropic (connexion morte)")));
-      preq.on("error", (e) => {
+      preq.on("error", guard((e) => {
         // Aucune reponse HTTP n'est arrivee -- a distinguer d'un vrai rejet HTTP (429/401/529),
         // gere dans le callback pres ci-dessus. Coupure internet, wifi qui tombe, VPN ou Zscaler
         // qui se reconnecte, certificat intercepte, connexion muette : TOUTES retentees, car depuis
@@ -812,20 +894,18 @@ function serve(creq, cres) {
         // Node emet aussi cette erreur quand la connexion meurt APRES les en-tetes : c'est alors
         // relay() qui decide (rejouer ou couper) -- relancer ici doublerait la requete.
         if (answered) return;
-        if (!clientGone && netBudgetLeft(conf)) {
+        if (clientGone) { stopKeepalive(); return; } // client parti (DR-012) : on ne retente ni ne rend rien
+        if (netBudgetLeft(conf)) {
           ctx.netRetries = (ctx.netRetries || 0) + 1;
           const delay = Math.min(30000, 2000 * Math.pow(2, ctx.netRetries - 1));
           log("NETWORK err", e.message, "token=" + tok.name, "retry #" + ctx.netRetries, "in", Math.round(delay / 1000) + "s");
           holdOpen("coupure reseau detectee, nouvelle tentative automatique");
-          setTimeout(() => { if (!clientGone) forward(conf, idx, lastResort, compactInfo); }, delay);
+          after(() => { if (!clientGone) forward(conf, idx, lastResort, compactInfo); }, delay);
           return;
         }
         log("UPSTREAM err", e.message, "token=" + tok.name, ctx.netRetries ? ("abandon apres " + ctx.netRetries + " tentatives") : "");
-        stopKeepalive();
-        if (ctx.sse) { sseError("erreur upstream: " + e.message); return; }
-        if (!cres.headersSent) { try { cres.writeHead(502, { "content-type": "text/plain" }); } catch (x) {} }
-        try { cres.end("proxy: erreur upstream: " + e.message); } catch (x) {}
-      });
+        failClient("erreur upstream: " + e.message);
+      }));
       if (sendBody.length) preq.write(sendBody);
       preq.end();
     }
@@ -835,7 +915,44 @@ function serve(creq, cres) {
 // Pure decision helpers are exported for tests; the server only boots when run directly.
 module.exports = { pickRoute, decideCompaction, readQuotaHeaders, startLivePolling, probeToken, noteOverload, overloadActive, clearOverload, LIVE_POLL_DEFAULT_MS, resolveUpstream, UPSTREAM_HOST, UPSTREAM_PORT, UPSTREAM_PATH_PREFIX };
 
+// Horodatage de la derniere ligne du journal (ligne "[ISO] ..."), ou "inconnue".
+function lastLogStamp() {
+  try {
+    const txt = fs.readFileSync(LOG, "utf8").trimEnd();
+    const m = /^\[([^\]]+)\]/.exec(txt.slice(txt.lastIndexOf("\n") + 1));
+    return m ? m[1] : "inconnue";
+  } catch (e) { return "inconnue"; }
+}
+// PID ecrit dans proxy.pid s'il est MORT et n'est pas le notre, sinon 0.
+// ponytail: Windows reutilise les PID. Un PID mort repris par un autre processus passe pour un relais
+// vivant et masque la detection (arret brutal non signale) ; verifier le nom du processus
+// couterait un appel externe (tasklist) pour un cas rare.
+function deadPidInFile() {
+  try {
+    const pid = parseInt(fs.readFileSync(path.join(DIR, "proxy.pid"), "utf8").trim(), 10);
+    if (!pid || pid === process.pid) return 0;
+    try { process.kill(pid, 0); return 0; } catch (e) { return e.code === "EPERM" ? 0 : pid; }
+  } catch (e) { return 0; }
+}
+// Version du relais : package.json a cote (copie installee) ou au-dessus (depot : src/..), sinon "inconnue".
+function relayVersion() {
+  for (const f of ["package.json", path.join("..", "package.json")]) {
+    try { const j = JSON.parse(fs.readFileSync(path.join(DIR, f), "utf8")); if (j.name === "claude-quota-relay" && j.version) return j.version; } catch (e) {}
+  }
+  return "inconnue";
+}
+
 if (require.main === module) {
+  // Gardes de processus (DR-012) : le relais ne s'arrete JAMAIS sur une erreur imprevue -- une requete
+  // coupee, c'est Claude Code qui refait tout et rebrule ses jetons. Pile complete au journal, on continue.
+  // Seule exception : tant que le relais n'est pas en ligne (conf illisible...), continuer n'a pas de sens.
+  let up = false;
+  process.on("uncaughtException", (e, origin) => {
+    logVie("erreur imprevue", origin, stackOf(e), up ? "-> le relais continue" : "-> demarrage impossible, arret");
+    if (!up) process.exit(1);
+  });
+  process.on("unhandledRejection", (r) => logVie("erreur imprevue unhandledRejection", stackOf(r), "-> le relais continue"));
+
   const conf0 = readConf();
   const server = http.createServer(serve);
   // pas de timeout : on doit pouvoir retenir une requete longtemps
@@ -844,16 +961,25 @@ if (require.main === module) {
   server.timeout = 0;
   server.keepAliveTimeout = 75_000;
   server.on("connection", (s) => { try { s.setKeepAlive(true, 30_000); } catch (e) {} });
-  server.on("error", (e) => { log("SERVER err", e.message); process.exit(1); });
+  server.on("error", (e) => { log("SERVER err", e.message); if (!up) process.exit(1); }); // port pris : on s'efface ; en ligne : on continue
   // PID file : permet un arret portable (sans netstat/taskkill/lsof) depuis le CLI.
   const PIDFILE = path.join(DIR, "proxy.pid");
-  try { fs.writeFileSync(PIDFILE, String(process.pid)); } catch (e) {}
   function cleanupPid() { try { if (fs.readFileSync(PIDFILE, "utf8").trim() === String(process.pid)) fs.unlinkSync(PIDFILE); } catch (e) {} }
-  process.on("exit", cleanupPid);
-  process.on("SIGINT", () => process.exit(0));
-  process.on("SIGTERM", () => process.exit(0));
+  process.on("exit", (code) => { logVie("sortie code=" + code + " pid=" + process.pid); cleanupPid(); });
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"]) process.on(sig, () => { logVie("signal " + sig + " recu pid=" + process.pid); process.exit(0); });
 
   server.listen(conf0.port, "127.0.0.1", () => {
+    up = true;
+    // A lire AVANT d'ecrire notre PID et notre premiere ligne : un PID mort dans proxy.pid = un relais
+    // tue sans avoir pu nettoyer (TerminateProcess ne laisse aucune trace), et la derniere ligne du
+    // journal date alors son dernier souffle.
+    const dernier = lastLogStamp(), mort = deadPidInFile();
+    logVie("demarrage pid=" + process.pid, "version=" + relayVersion(), "node=" + process.version, "lance_par=" + (process.env.CQR_STARTED_BY || "inconnu"));
+    if (mort) logVie("arret brutal precedent detecte pid=" + mort, "derniere_ligne_du_journal=" + dernier);
+    // PID ecrit seulement maintenant : un second relais qui echoue sur le port (EADDRINUSE) effacait
+    // celui du premier. Le marqueur "arret voulu" de `cqr stop` tombe aussi : un relais qui demarre l'annule.
+    try { fs.writeFileSync(PIDFILE, String(process.pid)); } catch (e) {}
+    try { fs.unlinkSync(path.join(DIR, "proxy.stopped")); } catch (e) {}
     log("PROXY v3 up http://127.0.0.1:" + conf0.port,
       "switch=" + conf0.switchAtPercent + "% bloc7j=" + conf0.sevenDayBlockPercent + "% softWait=" + conf0.waitAtSoftPercent + " maxWait=" + Math.round(conf0.maxWaitMs / 60000) + "min",
       "credits=" + (conf0.overage.use ? "autorises (max " + conf0.overage.maxPercent + "%)" : "non utilises"),

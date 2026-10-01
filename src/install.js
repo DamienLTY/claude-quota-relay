@@ -71,7 +71,9 @@ const TIMEOUTS = {
   CLAUDE_STREAM_IDLE_TIMEOUT_MS: "605400000",      // ~7 days, semantic stream idle (THE fix)
   CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS: "605400000",// ~7 days, subagent stall watchdog
   CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS: "120000",    // 2 min, byte-level idle (fed by 20s keepalive)
+  CLAUDE_CODE_MAX_RETRIES: "15",                   // ~6 min de patience si le relais est mort (defaut 10 = ~3 min), DR-012
 };
+const STATUSLINE_REFRESH_S = 10; // la statusline tourne toutes les 10 s, meme pendant ces tentatives : elle sert de gardien du relais
 
 function arg(name, def) {
   const i = process.argv.indexOf(name);
@@ -181,10 +183,14 @@ function setupStatusline(settings) {
   const slPath = p.join(INSTALL_DIR, "statusline.json");
   const cur = settings.statusLine;
   const curCmd = (cur && (typeof cur === "string" ? cur : cur.command)) || "";
-  if (curCmd.includes("cqr-statusline.js")) return "kept";
+  if (curCmd.includes("cqr-statusline.js")) {
+    // Installation anterieure a DR-012 : elle n'a pas la cadence. Une cadence posee a la main reste.
+    if (typeof cur === "object" && cur.refreshInterval == null) cur.refreshInterval = STATUSLINE_REFRESH_S;
+    return "kept";
+  }
   const original = cur ? (typeof cur === "string" ? { type: "command", command: cur } : cur) : null;
   fs.writeFileSync(slPath, JSON.stringify({ original }, null, 2));
-  settings.statusLine = { type: "command", command: 'node "' + p.join(INSTALL_DIR, "cqr-statusline.js") + '"' };
+  settings.statusLine = { type: "command", command: 'node "' + p.join(INSTALL_DIR, "cqr-statusline.js") + '"', refreshInterval: STATUSLINE_REFRESH_S };
   return original ? "wrapped" : "added";
 }
 
@@ -221,6 +227,8 @@ async function main() {
 
   fs.mkdirSync(INSTALL_DIR, { recursive: true });
   for (const f of COPY_FILES) fs.copyFileSync(p.join(SRC_DIR, f), p.join(INSTALL_DIR, f));
+  // package.json (a la racine du depot, pas dans src/) : le relais y lit sa version pour sa ligne de demarrage (DR-012)
+  fs.copyFileSync(p.join(REPO_ROOT, "package.json"), p.join(INSTALL_DIR, "package.json"));
 
   const tokensPath = p.join(INSTALL_DIR, "tokens.json");
   let conf, tokensLine;

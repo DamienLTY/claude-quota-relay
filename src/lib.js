@@ -303,7 +303,9 @@ function isTermsBlock(text) { return TERMS_RE.test(String(text || "")); }
 //     commande : aucune limite de longueur, et plus rien a echapper pour le shell.
 // Message sans accents : wscript lit le .vbs dans la codepage ANSI (meme raison que le journal).
 // CQR_NO_POPUP=1 coupe les fenetres -- la suite de tests ne doit rien ouvrir a l'ecran.
-function notifyWindows(title, msg, spawnFn) {
+// onError(e) : wscript introuvable ou bloque (antivirus d'entreprise...) arrive en evenement 'error' sur
+// l'enfant ; sans ecouteur il tuait le processus appelant (DR-012). Toujours ecoute, journalise par l'appelant.
+function notifyWindows(title, msg, spawnFn, onError) {
   if (process.platform !== "win32" || process.env.CQR_NO_POPUP) return false;
   // Litteral VBScript : un guillemet se double, et Chr(10) porte les retours a la ligne.
   const vb = (s) => String(s).split(/\r?\n/).map((l) => '"' + l.replace(/"/g, '""') + '"').join(" & Chr(10) & ");
@@ -316,6 +318,7 @@ function notifyWindows(title, msg, spawnFn) {
     fs.writeFileSync(file, "MsgBox " + vb(msg) + ", 48, " + vb(title)); // 48 = icone avertissement
     const sp = spawnFn || cp.spawn;
     const child = sp("wscript.exe", ["//nologo", file], { detached: true, stdio: "ignore", windowsHide: true });
+    if (child && child.on) child.on("error", (e) => { if (onError) onError(e); });
     if (child && child.unref) child.unref();
     return true;
   } catch (e) { return false; }

@@ -52,8 +52,15 @@ assert.strictEqual(count(s.hooks, /ensure-proxy\.js/g), 1, "ensure-proxy hook on
 assert.strictEqual(count(s.hooks, /memory-hook\.js/g), 3, "memory hook on 3 events");
 assert.strictEqual(count(s.hooks, /cqr-workflow-guard\.js/g), 1, "guard hook once");
 assert.ok(s.statusLine.command.includes("cqr-statusline.js"), "statusline wrapped");
+// DR-012 : la statusline tourne toutes les 10 s (c'est elle qui relance un relais mort) et Claude Code
+// patiente 15 tentatives (~6 min) au lieu de 10 (~3 min)
+assert.strictEqual(s.statusLine.refreshInterval, 10, "statusLine.refreshInterval = 10");
+assert.strictEqual(s.env.CLAUDE_CODE_MAX_RETRIES, "15", "env.CLAUDE_CODE_MAX_RETRIES = 15");
 assert.strictEqual(rd(p.join(IDIR, "statusline.json")).original.command, "echo MINE", "original statusline saved");
 ["compaction.js", "memory-hook.js", "cqr-statusline.js", "cqr-workflow-guard.js"].forEach((f) => assert.ok(fs.existsSync(p.join(IDIR, f)), f + " copied on upgrade"));
+// DR-012 : le relais installe lit sa version dans package.json a cote de proxy.js (sinon sa ligne de demarrage dit « inconnue »)
+assert.ok(fs.existsSync(p.join(IDIR, "package.json")), "package.json copied on upgrade (sinon version=inconnue)");
+assert.strictEqual(rd(p.join(IDIR, "package.json")).version, rd(p.join(__dirname, "..", "package.json")).version, "package.json copied on upgrade (version of the relay)");
 assert.ok(fs.existsSync(p.join(IDIR, "bin", "cqr")), "posix cqr wrapper created on upgrade (no more manual alias needed)");
 assert.ok(fs.existsSync(p.join(IDIR, "bin", "cqr.cmd")), "windows cqr.cmd wrapper created on upgrade");
 
@@ -76,6 +83,21 @@ assert.strictEqual(count(s2.hooks, /ensure-proxy\.js/g), 1, "ensure-proxy still 
 assert.strictEqual(count(s2.hooks, /memory-hook\.js/g), 3, "memory hooks still 3 (no dup)");
 assert.strictEqual(count(s2.hooks, /cqr-workflow-guard\.js/g), 1, "guard still once (no dup)");
 assert.strictEqual(rd(p.join(IDIR, "statusline.json")).original.command, "echo MINE", "not re-wrapped (original intact)");
+assert.strictEqual(s2.statusLine.refreshInterval, 10, "refreshInterval toujours 10 apres la 2e passe");
+
+// installation anterieure a DR-012 (notre statusline, sans cadence) -> la cadence est ajoutee ;
+// une cadence posee a la main est respectee
+{
+  const f = p.join(CFG, "settings.json");
+  const old = rd(f); delete old.statusLine.refreshInterval; fs.writeFileSync(f, JSON.stringify(old));
+  assert.strictEqual(install().status, 0, "install OK sur une statusline sans cadence");
+  assert.strictEqual(rd(f).statusLine.refreshInterval, 10, "ancienne installation -> cadence ajoutee");
+  assert.strictEqual(rd(p.join(IDIR, "statusline.json")).original.command, "echo MINE", "et l'original n'a pas ete re-enveloppe");
+  const mine = rd(f); mine.statusLine.refreshInterval = 30; fs.writeFileSync(f, JSON.stringify(mine));
+  assert.strictEqual(install().status, 0, "install OK avec une cadence personnalisee");
+  assert.strictEqual(rd(f).statusLine.refreshInterval, 30, "cadence posee a la main preservee");
+  const back = rd(f); back.statusLine.refreshInterval = 10; fs.writeFileSync(f, JSON.stringify(back));
+}
 
 // --- mise a jour avec un proxy EN COURS : les fichiers copies ne servent a rien tant que le
 // process n'a pas redemarre (il garde l'ancien code en memoire). L'installeur doit s'en charger.
