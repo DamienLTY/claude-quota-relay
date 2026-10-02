@@ -9,7 +9,8 @@ Tâche de fond lancée le 2026-10-02 (1 sous-agent `ouvrier` : `src/lib.js`, nou
 - [x] C2. (Preuve : verdict À CORRIGER, 1 constat réel `bestHeadroom` + cooldown corrigé, cas de test échoue sans le correctif `0 !== 70`, `npm test` exit 0.) Revue `thermo-review` (sous-agent Sonnet) puis corrections.
 - [x] C3. (Preuve : statusline réelle `↻ 16h40 ②` au lieu de `↻ 10h40 ③` ; `lib.js` + `package.json` copiés sans redémarrer le relais, `cmp` identique ; `cqr update` rattrapera au prochain redémarrage voulu.) Version 0.20.1 + CHANGELOG, installation sur ce PC.
 - [x] C4. (Preuve : `d69b227` poussé, `main...origin/main` sans écart.) Commit + push.
-- [ ] C5. PC d'entreprise : message à coller envoyé le 2026-10-02 ; attendre le rapport (`lib.js` identique, état par compte avant/après, statusline avant/après). Fin = sortie citée au registre DR-013.
+- [x] C5. (Preuve : rapport de l'agent du PC d'entreprise, `lib.js` `cmp` identique, statusline `↻ 10h40 ③` → `↻ 16h40 ②`, ③ `5h 100 %` → `0 %`, relais non redémarré ; cité au registre DR-013.) PC d'entreprise.
+- [ ] C6. Compte ③ : 403 sans en-têtes depuis le 2026-10-01 08:40:02 UTC sur les deux PC. À trancher avec l'utilisateur : renouveler son jeton (`claude setup-token`) ou vérifier le compte sur claude.ai ; journaliser le corps des 403 si on veut la cause. Hors DR-013.
 
 ## Enquête — date de reset de la statusline faussée depuis le reset offert par Anthropic (2026-10-02)
 
