@@ -8,7 +8,8 @@ Tâche de fond lancée le 2026-10-02 (1 sous-agent `ouvrier` : `src/lib.js`, nou
 - [x] C1. (Preuve : `npm test` exit 0, 48 PASS, 0 FAIL ; tests échouent sur `lib.js` de HEAD, 5 mutations tombent.) `lib.accounts(conf, state, now)` : reset5/reset7 ≤ now → ignoré (null) et h5/d7 correspondants à 0, comme `proxy.js:182-183`. Fin = test qui échoue sur HEAD et passe après ; mutation (garde retirée) qui le fait retomber ; `npm test` vert.
 - [x] C2. (Preuve : verdict À CORRIGER, 1 constat réel `bestHeadroom` + cooldown corrigé, cas de test échoue sans le correctif `0 !== 70`, `npm test` exit 0.) Revue `thermo-review` (sous-agent Sonnet) puis corrections.
 - [x] C3. (Preuve : statusline réelle `↻ 16h40 ②` au lieu de `↻ 10h40 ③` ; `lib.js` + `package.json` copiés sans redémarrer le relais, `cmp` identique ; `cqr update` rattrapera au prochain redémarrage voulu.) Version 0.20.1 + CHANGELOG, installation sur ce PC.
-- [ ] C4. Commit + push (à demander) puis message à coller pour le PC d'entreprise (DR-012).
+- [x] C4. (Preuve : `d69b227` poussé, `main...origin/main` sans écart.) Commit + push.
+- [ ] C5. PC d'entreprise : message à coller envoyé le 2026-10-02 ; attendre le rapport (`lib.js` identique, état par compte avant/après, statusline avant/après). Fin = sortie citée au registre DR-013.
 
 ## Enquête — date de reset de la statusline faussée depuis le reset offert par Anthropic (2026-10-02)
 
