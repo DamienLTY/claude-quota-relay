@@ -194,14 +194,21 @@ function fmtDur(ms) {
 
 // One row per configured (non-placeholder) account, numbered by its original index, with the
 // quota view from proxy state. Used by the statusline, the workflow guard, and `cqr preflight`.
-function accounts(conf, state) {
+// Fenetre echue (reset <= now) -> reset ignore (null) et utilisation 0, comme le routeur (DR-013).
+function accounts(conf, state, now) {
+  now = now == null ? Date.now() : now;
   const pct = (state && state.pct) || {}, r5 = (state && state.reset5h) || {}, r7 = (state && state.reset7d) || {};
   const ov = (state && state.overage) || {};
-  return (conf.tokens || []).map((t, i) => ({
-    idx: i, name: t.name, enabled: t.enabled !== false, placeholder: isPlaceholder(t),
-    h5: (pct[t.name] || {}).h5, d7: (pct[t.name] || {}).d7, reset5: r5[t.name], reset7: r7[t.name],
-    ov: ov[t.name] || null,
-  })).filter((x) => !x.placeholder);
+  return (conf.tokens || []).map((t, i) => {
+    const a = {
+      idx: i, name: t.name, enabled: t.enabled !== false, placeholder: isPlaceholder(t),
+      h5: (pct[t.name] || {}).h5, d7: (pct[t.name] || {}).d7, reset5: r5[t.name], reset7: r7[t.name],
+      ov: ov[t.name] || null,
+    };
+    if (a.reset5 && now >= a.reset5) { a.reset5 = null; a.h5 = 0; }
+    if (a.reset7 && now >= a.reset7) { a.reset7 = null; a.d7 = 0; }
+    return a;
+  }).filter((x) => !x.placeholder);
 }
 
 // ---- Credits d'usage supplementaire ("extra usage" / overage) ----
@@ -267,7 +274,9 @@ function overageReasonFr(reason) {
 
 // Lowest 5h utilization among usable accounts (the "freshest" account), or null if unknown.
 function bestHeadroom(conf, state) {
-  const vals = accounts(conf, state).filter((a) => a.enabled && a.h5 != null).map((a) => a.h5);
+  // Cooldown en cours (compte refuse) : pas de marge, meme si accounts() a remis sa fenetre perimee a 0 (DR-013).
+  const ex = (state && state.exhausted) || {};
+  const vals = accounts(conf, state).filter((a) => a.enabled).map((a) => (ex[a.name] > Date.now() ? 100 : a.h5)).filter((h) => h != null);
   return vals.length ? Math.min.apply(null, vals) : null;
 }
 

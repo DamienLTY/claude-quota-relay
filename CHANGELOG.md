@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.20.1
+
+La barre d'état affichait l'heure d'un reset déjà passé (`↻ 10h40 ③`, celle d'hier) et laissait un compte figé à 5h 100 % (DR-013). Un compte qui ne répond plus (un 403 sans en-têtes, par exemple) n'envoie plus de nouvel instant de reset : le relais garde l'ancien, et la barre le prenait pour le prochain alors qu'il était échu.
+
+- **Un reset passé est ignoré : la fenêtre est écoulée, l'utilisation vaut 0 %.** Même règle que le routeur du relais, posée dans `lib.accounts()`, la source commune : la barre d'état, le garde de workflow (`cqr guard`) et `cqr preflight` en profitent d'un coup. Joue pour la fenêtre 5h comme pour la fenêtre 7j, chacune indépendamment.
+- **Le garde de workflow ne prend pas pour libre un compte qui vient d'être refusé.** Un compte muet (403) dont le reset est passé et dont le cooldown court encore valait 0 % depuis la correction ci-dessus, alors que le routeur l'exclut : le garde se taisait à tort. Il compte désormais pour 100 % tant que son cooldown dure.
+
 ## 0.20.0
 
 Le relais lui-même mourait sans laisser de trace : `Agent terminated early due to an API error: API Error: Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED)`, huit sous-agents tués d'un coup sur un PC d'entreprise (DR-012). `ECONNREFUSED` veut dire que plus rien n'écoute sur le port : ce n'était pas une erreur relayée, le processus était parti, et rien ne le relançait avant la prochaine session Claude Code (42 minutes de coupure). Essais du 2026-10-01 sur un relais isolé, 3 boucles de 20 à 40 requêtes simultanées avec ~670 refus 429 : le relais survit ; les plantages reproduits ont des causes précises, corrigées ci-dessous.

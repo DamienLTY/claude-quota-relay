@@ -312,3 +312,25 @@ Ouvert : la cause réelle sur le PC d'entreprise (fin de `proxy.out.log`, lignes
 **Non prouvé.** La cause de l'incident du PC d'entreprise ; le comportement du gardien sous l'antivirus de ce PC-là ; la levée d'une exception dans les rouages internes de `pipe` (hors garde par requête).
 
 **PC d'entreprise (2026-10-02).** Rapport de l'agent de là-bas, cité : « *Dernière ligne du journal : [2026-10-02T03:52:02.620Z] VIE demarrage pid=29200 version=0.20.0 node=v22.22.2 lance_par=cli* » ; `statusLine.refreshInterval` « *10, comme attendu* » ; `env.CLAUDE_CODE_MAX_RETRIES` « *"15", comme attendu* » ; « *Aucune alerte antivirus, aucun blocage* » ; « *les 6 comptes sont conservés* ». L'installeur y a aussi laissé une sauvegarde `settings.json.bak-*` qui contient des jetons (comportement antérieur de l'installeur, une sauvegarde par installation).
+
+## DR-013 — La statusline affichait un reset de quota déjà passé
+
+**Type** : correctif · **État** : corrigé en 0.20.1 et copié (`lib.js` + `package.json`, sans redémarrer le relais) sur ce PC le 2026-10-02 ; PC d'entreprise : message à coller à envoyer (voir TODO)
+
+**Constat (enquête, 3 sous-agents `ouvrier`, lecture seule).** Le relais garde l'ancien instant de reset d'un compte tant que celui-ci n'envoie pas de nouvel en-tête (`src/proxy.js:406-407`) ; la statusline prend le plus petit reset parmi les comptes qui ont encore du quota hebdomadaire sans le comparer à maintenant (`src/cqr-statusline.js:91-95`). Sur ce PC, le compte ③ répond en 403 sans en-têtes depuis le 2026-10-01 08:40 UTC : son `reset5h` périmé (−20 h) gagne, la statusline affiche `↻ 10h40 ③` au lieu de `↻ 11h40 ② ⑤`, et ③ reste figé à 5h 100 %. Le routeur, lui, a déjà la garde (`src/proxy.js:182-183`, fenêtre échue → utilisation 0) ; Claude Code aussi (`R4e`, binaire 2.1.287 : reset passé ignoré).
+
+**Non prouvé.** Le lien avec le reset de limite offert par Anthropic : aucun en-tête de reset offert n'a été capturé (1 681 réponses lues, `5h-reset`/`7d-reset` toujours présents et futurs, même à 0 %). Cause du 403 du compte ③ : inconnue (corps de réponse non journalisé).
+
+**Demande de l'utilisateur, citée (2026-10-02).** « *Corrige-le : ignore les resets passés dans la statusline et fait en sorte que le soucis ne revienne pas. C'est pareil sur mon PC d'entreprise* »
+
+**Décision (reprise de la garde déjà posée dans le routeur, pas de nouvelle règle).** Un reset passé = fenêtre écoulée : l'utilisation de cette fenêtre vaut 0 et le reset est ignoré. Posé dans `lib.accounts()` (source unique de la statusline, du garde de workflow et de `cqr preflight`), pas dans la statusline seule, pour que le défaut ne revienne par aucune autre porte. Hors périmètre, signalé : comptes déjà à 0 % comptés dans « prochain reset » ; cause du 403 de ③.
+
+**Corrigé après revue** (`thermo-review`, verdict À CORRIGER, 1 constat réel). Un compte muet avec reset périmé ET cooldown en cours (`state.exhausted`, posé par un 403) devenait « libre à 0 % » pour `bestHeadroom` → le garde de workflow se taisait alors que le routeur écarte ce compte (`proxy.js:184`). Corrigé : `bestHeadroom` compte pour 100 un compte en cooldown (100 et non `null` : `cqr-workflow-guard.js:36` laisse passer en silence sur `null`). Écarté avec raison : paramètre `now` par défaut, commentaire croisé dans `proxy.js`, cas de test redondants — mineurs, hors demande.
+
+**Preuve.** `npm test` exit 0, 48 PASS, 0 FAIL (relancé par l'agent principal, `%TEMP%\cqr-npmtest-final-dr013.log`) ; `test/lib.test.js` et `test/statusline.test.js` échouent sur le `lib.js` de HEAD (`↻ 11h54 ③`, `5h/100%`), 5 mutations font chacune tomber leur test, le cas `bestHeadroom` + cooldown échoue sans son correctif (`0 !== 70`). **Sur ce PC, état réel** : avant, `↻ 10h40 ③` ; après, `↻ 16h40 ②` (14:40 UTC = prochain reset réel), ③ affiché à `5h/  0%` (fenêtre échue) au lieu de 100 %.
+
+**Choix d'installation.** Seul `src/lib.js` a changé : la statusline, le garde et `preflight` le rechargent à chaque lancement, le relais en cours ne s'en sert pas. Copie directe de `lib.js` + `package.json` plutôt que `cqr update`, qui redémarre le relais et coupe les requêtes en vol des sessions ouvertes ; `cqr update` rattrapera le reste (aucun autre fichier utile n'a changé) au prochain redémarrage voulu. Sauvegardes de l'ancien : `%TEMP%\lib.js.0.20.0.bak`, `%TEMP%\package.json.0.20.0.bak`.
+
+**Non prouvé / hors périmètre.** Cause du 403 du compte ③ (corps non journalisé) ; lien avec le reset offert par Anthropic ; sur ce PC ③ s'affiche désormais à 0 % alors qu'il répond 403 (le cooldown le sépare du routage, la statusline ne le sait pas) ; comptes déjà à 0 % comptés dans « prochain reset ». Le PC d'entreprise n'a pas été examiné : la correction repose sur l'identité du code, pas sur une lecture de son `state.json`.
+
+**Round de clôture (2026-10-02).** Question : commit + push de la 0.20.1 pour le PC d'entreprise ? **Réponse citée** : « **Commit + push + message (Recommandé)** » — commit sur `main`, push, puis message à coller en lecture seule pour le PC d'entreprise.

@@ -167,6 +167,34 @@ function run(DIR) {
   assert.ok(!/CGU/.test(strip(run(setup({ original: null })))), "aucun blocage -> aucun marqueur");
 }
 
+// Case G: un compte muet (ex. 403 sans en-tetes) garde dans state.json un reset PASSE et son 100 %.
+// La fenetre est echue : 0 %, reset ignore, comme le routeur (DR-013). Avant : "↻ <heure d'hier> ③"
+// au lieu de l'heure du vrai prochain reset, et ③ restait fige a 5h 100 %.
+{
+  const FAKE = "sk-ant-oat01-FAKE-TEST-TOKEN-not-real-000000";
+  const tokens = ["1", "2", "3"].map((name) => ({ name, token: FAKE, enabled: true }));
+  const stale = Date.now() - 20 * 3600000, rNext = Date.now() + 20 * 60000, rLater = Date.now() + 65 * 60000;
+  const out = strip(run(setup({ original: null }, { conf: { tokens }, state: {
+    pct: { 1: { h5: 40, d7: 12 }, 2: { h5: 73, d7: 55 }, 3: { h5: 100, d7: 93 } },
+    reset5h: { 1: rLater, 2: rNext, 3: stale },
+    reset7d: { 1: Date.now() + 3 * 3600000, 2: Date.now() + 5 * 3600000, 3: Date.now() + 86400000 },
+  } })));
+  const lines = out.split("\n");
+  assert.ok(out.startsWith("↻ " + hhmm(rNext) + " ②"), "affiche le reset futur du compte sain, pas le reset passe: " + out);
+  assert.ok(!out.includes(hhmm(stale)), "n'affiche JAMAIS l'heure du reset passe (" + hhmm(stale) + "): " + out);
+  assert.ok(lines[3].includes("③ 5h/  0%") && !/100%/.test(out), "le compte muet n'est plus fige a 5h 100 %: " + lines[3]);
+  assert.ok(lines[3].includes("7J/ 93%"), "sa fenetre 7j, elle, n'est pas echue : inchangee: " + lines[3]);
+  assert.ok(lines[1].includes("① 5h/ 40%") && lines[2].includes("② 5h/ 73%"), "les comptes sains sont intacts");
+  // meme chose cote 7j : un 7j a 100 % dont le reset est passe n'impose plus l'attente hebdo ("↻7j")
+  const out7 = strip(run(setup({ original: null }, { conf: { tokens: tokens.slice(0, 2) }, state: {
+    pct: { 1: { h5: 90, d7: 100 }, 2: { h5: 73, d7: 99 } },
+    reset5h: { 1: rLater, 2: rNext },
+    reset7d: { 1: Date.now() - 3600000, 2: Date.now() + 2 * 86400000 },
+  } })));
+  assert.ok(!/↻7j/.test(out7), "7j echu -> le compte est revenu : pas d'attente hebdomadaire: " + out7);
+  assert.ok(out7.includes("↻ " + hhmm(rLater) + " ①") && out7.split("\n")[1].includes("7J/  0%"), "le compte revenu affiche 7J/ 0% et son reset 5h: " + out7);
+}
+
 // lib : conversion % -> argent (l'API ne donne pas le montant a nos tokens, l'utilisateur le saisit)
 {
   assert.strictEqual(lib.fmtMoney(18.4, "EUR"), "18,40 €");

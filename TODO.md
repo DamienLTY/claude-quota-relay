@@ -2,6 +2,22 @@
 
 Une case ne se coche que sur une preuve (chiffre, journal, contrôle qui échoue quand on casse).
 
+## DR-013 — Correctif : ignorer les resets passés (2026-10-02)
+
+Tâche de fond lancée le 2026-10-02 (1 sous-agent `ouvrier` : `src/lib.js`, nouveau test, `CHANGELOG.md`, `package.json` ; si la session meurt, relancer d'après ce plan).
+- [x] C1. (Preuve : `npm test` exit 0, 48 PASS, 0 FAIL ; tests échouent sur `lib.js` de HEAD, 5 mutations tombent.) `lib.accounts(conf, state, now)` : reset5/reset7 ≤ now → ignoré (null) et h5/d7 correspondants à 0, comme `proxy.js:182-183`. Fin = test qui échoue sur HEAD et passe après ; mutation (garde retirée) qui le fait retomber ; `npm test` vert.
+- [x] C2. (Preuve : verdict À CORRIGER, 1 constat réel `bestHeadroom` + cooldown corrigé, cas de test échoue sans le correctif `0 !== 70`, `npm test` exit 0.) Revue `thermo-review` (sous-agent Sonnet) puis corrections.
+- [x] C3. (Preuve : statusline réelle `↻ 16h40 ②` au lieu de `↻ 10h40 ③` ; `lib.js` + `package.json` copiés sans redémarrer le relais, `cmp` identique ; `cqr update` rattrapera au prochain redémarrage voulu.) Version 0.20.1 + CHANGELOG, installation sur ce PC.
+- [ ] C4. Commit + push (à demander) puis message à coller pour le PC d'entreprise (DR-012).
+
+## Enquête — date de reset de la statusline faussée depuis le reset offert par Anthropic (2026-10-02)
+
+Tâches de fond lancées le 2026-10-02 (3 sous-agents `ouvrier`, lecture seule, aucun fichier modifié ; rapports dans le fil de la session — si elle meurt, relancer d'après ce plan). Pas de DR : enquête, la correction se grillera après.
+- [x] E1. (Preuve : `cqr-statusline.js:91-95` `soonest` sans comparaison à maintenant ; `proxy.js:406-407` garde l'ancien reset si l'en-tête manque ; `pickRoute` `proxy.js:182` a la garde, pas la statusline.) Code : comment `src/cqr-statusline.js` et `src/lib.js` calculent/affichent la date de reset (5 h et 7 j), d'où vient le champ, et ce qui casse quand la fenêtre est remise à 0 % avant son échéance. Fin = chemin de code + ligne fautive citée `fichier:ligne`.
+- [x] E2. (Preuve : `state.json` compte ③ `reset5h`=1790844000 = 2026-10-01 08:40 UTC, −20 h ; 403 sans en-têtes depuis 08:40:02, 2 369 sondes `http403` ; statusline rendue `↻ 10h40 ③` au lieu de `↻ 11h40 ② ⑤` ; aucun reset offert observé sur ce PC.) Données réelles sur ce PC : valeurs de reset/utilisation lues dans les jetons, le cache de quota et les journaux du relais, comparées entre comptes ; identifier la valeur anormale. Fin = chiffres bruts cités.
+- [x] E3. (Preuve : binaire 2.1.287, `R4e` ignore tout reset passé ; programmes `cedar_ember`/`juniper_tide`, `forgetHeldWindows` après réclamation, absents du relais ; 1 681 réponses du journal toutes avec `5h-reset`/`7d-reset` futurs, y compris à 0 % ; en-têtes de reset offert jamais capturés.) Côté Anthropic : en-têtes `anthropic-ratelimit-unified-*` réellement reçus après un reset offert (capture dans les journaux/sondes si elle existe), et ce que le binaire Claude Code 2.1.x en fait. Fin = forme exacte des en-têtes observés vs attendus.
+- [ ] E4. Ouvert : reproduire sur le PC d'entreprise (état `state.json` + ce que la statusline y affiche) et savoir ce que l'utilisateur voit exactement ; la cause du 403 du compte ③ (corps de réponse non journalisé) est inconnue. Pas de correctif avant le grill.
+
 ## DR-011 — Requête retenue à travers la veille et le changement de réseau
 
 - [x] Banc d'essai réel (`%TEMP%\cqr-banc\banc.js`, relais de test port 8799, copie des jetons — dossier à supprimer à la fin) : essai témoin réussi. Preuve : `run-temoin-avant-*` → sortie `SOUS-AGENT-OK`, 4 requêtes dans le journal du relais de test.
