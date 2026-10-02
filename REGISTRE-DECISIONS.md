@@ -234,7 +234,7 @@ Registre ouvert le 2026-09-05. Les décisions antérieures vivent dans le `CHANG
 
 ## DR-012 — Le relais lui-même meurt sans laisser de trace
 
-**Type** : exploitation · **État** : appliqué le 2026-10-02 en 0.20.0 sur ce PC (essai réel réussi) ; cause de l'incident non tranchée (traces du PC d'entreprise attendues) ; PC d'entreprise à installer
+**Type** : exploitation · **État** : appliqué le 2026-10-02 en 0.20.0 sur ce PC (essai réel réussi) ; installé sur le PC d'entreprise le 2026-10-02 ; cause de l'incident non tranchée (message d'enquête pas encore rapporté)
 
 **Constat.** Rapporté par l'utilisateur, PC d'entreprise, deux sessions Claude Code, huit sous-agents tués d'un coup : « *Agent "X21 — revue du lot BG" failed: Agent terminated early due to an API error: API Error: Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED) (error type server_error)* ». `ECONNREFUSED` = plus rien n'écoute sur le port du relais : le processus était mort, ce n'est pas une erreur relayée.
 
@@ -310,3 +310,5 @@ Ouvert : la cause réelle sur le PC d'entreprise (fin de `proxy.out.log`, lignes
 **Preuve.** `npm test` vert (49 contrôles avant le retrait de la boucle 1) ; `test/relais-vie.test.js` échoue 9/9 sur HEAD, chaque correctif a sa mutation qui fait tomber son seul scénario. **Essai réel sur ce PC (2026-10-02 01:45, heure de Paris)** : installation → `VIE demarrage pid=30540 version=0.20.0 node=v22.22.0 lance_par=cli`, `refreshInterval` = 10 et `CLAUDE_CODE_MAX_RETRIES` = "15" dans `settings.json` ; relais tué par `taskkill /F` à 23:45:57,5 UTC → `VIE demarrage pid=37068 version=0.20.0 … lance_par=statusline` à 23:46:06,531, puis `VIE arret brutal precedent detecte pid=30540 derniere_ligne_du_journal=2026-10-01T23:45:51.749Z` — **~9 s de coupure au lieu de 42 min**, sans le filet de l'essai (`%TEMP%\cqr-essai-reel\essai.log`). La statusline a pris `refreshInterval` à chaud.
 
 **Non prouvé.** La cause de l'incident du PC d'entreprise ; le comportement du gardien sous l'antivirus de ce PC-là ; la levée d'une exception dans les rouages internes de `pipe` (hors garde par requête).
+
+**PC d'entreprise (2026-10-02).** Rapport de l'agent de là-bas, cité : « *Dernière ligne du journal : [2026-10-02T03:52:02.620Z] VIE demarrage pid=29200 version=0.20.0 node=v22.22.2 lance_par=cli* » ; `statusLine.refreshInterval` « *10, comme attendu* » ; `env.CLAUDE_CODE_MAX_RETRIES` « *"15", comme attendu* » ; « *Aucune alerte antivirus, aucun blocage* » ; « *les 6 comptes sont conservés* ». L'installeur y a aussi laissé une sauvegarde `settings.json.bak-*` qui contient des jetons (comportement antérieur de l'installeur, une sauvegarde par installation).
