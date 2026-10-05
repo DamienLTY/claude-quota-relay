@@ -12,8 +12,8 @@
  *   - "strip" (fallback): the proxy itself stubs the content of old tool_result
  *     blocks. The response shape is unchanged, so Claude Code can't choke on it.
  *
- * The persistent per-project memory file (task list + notes) is produced by
- * memory-hook.js on the client side; this module only reduces tokens + flags the
+ * The persistent per-project memory file (factual state built without any model + notes)
+ * is produced by memory-hook.js on the client side; this module only reduces tokens + flags the
  * switch via a marker in state.json.
  */
 
@@ -76,8 +76,7 @@ function estimateTokens(bodyObj) {
 // la taille DEJA connue de la conversation (donc de la PROCHAINE requete, puisque Claude
 // Code renvoie tout l'historique a chaque fois) ? Plus le contexte est deja rempli, plus le
 // saut d'utilisation que provoquerait un futur gros message est important -> il faut
-// switcher plus tot. safetyBufferPoints couvre l'appel Haiku de compaction lui-meme
-// (negligeable, ~1000 tokens) + l'imprecision de mesure (polling non temps-reel).
+// switcher plus tot. safetyBufferPoints couvre l'imprecision de mesure (polling non temps-reel).
 function dynamicThreshold(model, bodyObj, opts) {
   const o = opts || {};
   const weight = modelWeight(model);

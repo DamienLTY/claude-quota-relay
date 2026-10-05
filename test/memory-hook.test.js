@@ -1,271 +1,327 @@
-// Integration test for memory-hook.js — no network (Haiku call is faked via CQR_FAKE_SUMMARY).
-// Exercises: refresh-on-switch + inject, marker dedup, archive, SessionStart inject, inactive no-op.
+// Integration test for memory-hook.js (0.21.0, DR-050 / DR-060) -- no network, no model: the memory is a
+// FACTUAL STATE built from git, TODO.md and REGISTRE-DECISIONS.md, plus a "Notes" section nothing rewrites.
+// Real hook process, throwaway directories (with git, without git, worktree, broken .git).
 // Run: node test/memory-hook.test.js
 const assert = require("assert");
 const fs = require("fs"), os = require("os"), p = require("path");
 const cp = require("child_process");
 
 const HOOK = p.join(__dirname, "..", "src", "memory-hook.js");
-const FAKE_TOKEN = "sk-ant-oat01-FAKE-TEST-TOKEN-not-real-000000";
+const enabled = { enabled: true, dryRun: false, memoryFile: ".cqr-memory.md", archiveDir: ".cqr-archive" };
+const HEADER = "état factuel bâti sans modèle ; les fichiers du projet font foi";
+const TITLE = "# État factuel bâti sans modèle ; les fichiers du projet font foi";
 
+try { cp.execFileSync("git", ["--version"], { stdio: "ignore", windowsHide: true }); }
+catch (e) { console.log("SKIP — memory-hook.js : git introuvable, le test ne peut pas construire de depot"); process.exit(0); }
+
+const roots = [];
 function setup(compaction) {
-  const T = fs.mkdtempSync(p.join(os.tmpdir(), "cqr-mem-"));
+  const T = fs.mkdtempSync(p.join(os.tmpdir(), "cqr-mem-")); roots.push(T);
   const INSTALL = p.join(T, "install"); fs.mkdirSync(INSTALL);
   const PROJ = p.join(T, "project"); fs.mkdirSync(PROJ);
-  fs.writeFileSync(p.join(INSTALL, "tokens.json"), JSON.stringify({ tokens: [{ name: "a", token: FAKE_TOKEN, enabled: true }], compaction }));
-  fs.writeFileSync(p.join(INSTALL, "state.json"), JSON.stringify({ pct: { a: { h5: 10 } }, compaction: { at: 1000, from: "a", to: "b", reason: "switch" } }));
-  const TR = p.join(T, "t.jsonl");
-  fs.writeFileSync(TR, [
-    JSON.stringify({ type: "user", message: { role: "user", content: "construis le scraper" } }),
-    JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "ok je lis" }, { type: "tool_use", name: "Read" }] } }),
-    JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "tool_result", content: "contenu fichier".repeat(50) }] } }),
-  ].join("\n"));
-  return { T, INSTALL, PROJ, TR };
+  fs.writeFileSync(p.join(INSTALL, "tokens.json"), JSON.stringify({ tokens: [], compaction }));
+  // L'ancien relais posait ce marqueur a chaque bascule de compte pour declencher un resume de fond.
+  // Il est toujours ecrit (cqr compact l'affiche) : le hook ne doit plus rien en faire.
+  fs.writeFileSync(p.join(INSTALL, "state.json"), JSON.stringify({ compaction: { at: 1000, from: "a", to: "b", reason: "switch" } }));
+  return { T, INSTALL, PROJ };
 }
-
-function run(env, INSTALL, PROJ, TR, event, fakeSummary) {
-  const r = cp.spawnSync(process.execPath, [HOOK], {
-    input: JSON.stringify({ hook_event_name: event, cwd: PROJ, transcript_path: TR, session_id: (env && env.__sid) || "sess-1" }),
-    env: Object.assign({}, process.env, { CQR_DIR: INSTALL, CQR_FAKE_SUMMARY: fakeSummary }, env || {}),
+function run(INSTALL, PROJ, event, sid, env) {
+  return cp.spawnSync(process.execPath, [HOOK], {
+    input: JSON.stringify({ hook_event_name: event, cwd: PROJ, session_id: sid || "sess-1" }),
+    env: Object.assign({}, process.env, { CQR_DIR: INSTALL }, env || {}),
     encoding: "utf8",
   });
-  return r;
 }
-
-const enabled = { enabled: true, dryRun: false, memoryFile: ".cqr-memory.md", archiveDir: ".cqr-archive", memoryMaxLines: 400 };
-
-// Le resume tourne desormais dans un processus DETACHE (il depassait les 5 s accordees au hook).
-// Les tests doivent donc attendre son effet au lieu de le supposer fait au retour de run().
-function patiente(cond, msg, ms) {
-  const fin = Date.now() + (ms || 8000);
-  while (Date.now() < fin) { if (cond()) return; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25); }
-  assert.fail(msg);
+function git(dir, ...args) {
+  return cp.execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "core.autocrlf=false"].concat(args), { cwd: dir, encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
 }
+function commit(dir, msg) { fs.writeFileSync(p.join(dir, "f.txt"), msg); git(dir, "add", "f.txt"); git(dir, "commit", "-qm", msg); }
 const lu = (f) => { try { return fs.readFileSync(f, "utf8"); } catch (e) { return ""; } };
-// Un resume doit porter la structure imposee, sinon il est refuse : les faux resumes des tests
-// la portent donc, sauf la ou c'est precisement le sujet.
-const MEM = (s) => "# MEMOIRE PROJET\n## Taches faites\n- " + s;
+const injected = (r) => { try { return JSON.parse(r.stdout).hookSpecificOutput.additionalContext; } catch (e) { return ""; } };
+// corps d'une section « ## <titre> » du fichier memoire, jusqu'au prochain titre
+const section = (mem, titre) => { const m = new RegExp("^## " + titre + "[^\\n]*\\n([\\s\\S]*?)(?=^## |$(?![\\s\\S]))", "m").exec(mem); return m ? m[1] : null; };
+const LEGACY = "# MEMOIRE PROJET\n## Taches faites\n- ancien contenu ecrit par Haiku\n## Taches en cours\n- une tache perimee\n";
+const TODO = "# TODO\n\n## En cours — fond\n- [ ] tache ouverte A\n- [x] tache finie B\n### sous-titre\n- [ ] tache ouverte C\n\n## Plus tard\n- hors section D\n";
+const rows = (n, longue) => Array.from({ length: n }, (_, i) => "| DR-" + String(i + 1).padStart(3, "0") + " | technique | " + (i === n - 1 && longue ? "Question tres longue " + "x".repeat(300) : "Question " + (i + 1) + " ?") + " | « reponse » | 2026-10-04 | round 1 | vivante |").join("\n") + "\n";
 
-// --- Case 1: UserPromptSubmit with a fresh marker -> refresh memory + inject it ---
+// --- 1. Depot complet + ancien resume : faits rebatis, ancien contenu recopie tel quel dans Notes ---
 {
-  const { INSTALL, PROJ, TR } = setup(enabled);
-  const r = run({}, INSTALL, PROJ, TR, "UserPromptSubmit", MEM("lu les sources"));
-  const memFile = p.join(PROJ, ".cqr-memory.md");
-  patiente(() => lu(memFile).includes("lu les sources"), "memory file written by the detached refresh");
-  const lastFile = p.join(PROJ, ".cqr-archive", ".last");
-  patiente(() => lu(lastFile).includes("1000"), "marker consumed (last.at = marker.at)");
-  assert.strictEqual(JSON.parse(lu(lastFile)).at, 1000, "marker consumed (last.at = marker.at)");
-  // Le tour qui declenche le refresh n'injecte rien : le fichier n'existe pas encore, le resume
-  // arrive apres. C'est au tour SUIVANT que la memoire fraiche part -- et c'est ca qu'il faut
-  // verifier, sinon on n'a teste que le detachement.
-  assert.strictEqual(r.stdout.trim(), "", "rien a injecter au tour qui declenche le premier resume");
-  const r2 = run({}, INSTALL, PROJ, TR, "UserPromptSubmit", MEM("lu les sources"));
-  assert.ok(r2.stdout.trim(), "le tour suivant emet bien quelque chose");
-  const out = JSON.parse(r2.stdout);
-  assert.strictEqual(out.hookSpecificOutput.hookEventName, "UserPromptSubmit", "injects for the right event");
-  assert.ok(out.hookSpecificOutput.additionalContext.includes("lu les sources"), "le tour suivant injecte la memoire fraiche");
-}
-
-// --- Case 2: marker dedup — running again with the same marker does NOT refresh ---
-{
-  const { INSTALL, PROJ, TR } = setup(enabled);
-  run({}, INSTALL, PROJ, TR, "UserPromptSubmit", MEM("FIRST SUMMARY"));
-  const memFile = p.join(PROJ, ".cqr-memory.md");
-  patiente(() => lu(memFile).includes("FIRST SUMMARY"), "first run wrote FIRST");
-  run({}, INSTALL, PROJ, TR, "UserPromptSubmit", MEM("SECOND SUMMARY"));
-  patiente(() => !fs.existsSync(p.join(PROJ, ".cqr-archive", ".lock")), "le second enfant a fini");
-  assert.ok(lu(memFile).includes("FIRST SUMMARY"), "dedup: same marker.at -> no re-summarize");
-  assert.ok(!lu(memFile).includes("SECOND SUMMARY"), "second summary NOT applied");
-}
-
-// --- Case 3: archive — an existing memory file is archived before overwrite ---
-{
-  const { INSTALL, PROJ, TR } = setup(enabled);
-  const memFile = p.join(PROJ, ".cqr-memory.md");
-  fs.writeFileSync(memFile, "ANCIENNE MEMOIRE");
-  run({}, INSTALL, PROJ, TR, "UserPromptSubmit", MEM("NOUVELLE MEMOIRE"));
-  patiente(() => lu(memFile).includes("NOUVELLE MEMOIRE"), "memory updated");
-  const archived = fs.readdirSync(p.join(PROJ, ".cqr-archive")).filter((f) => f.startsWith("memory-"));
-  assert.ok(archived.length === 1, "previous memory archived");
-  assert.ok(fs.readFileSync(p.join(PROJ, ".cqr-archive", archived[0]), "utf8").includes("ANCIENNE"), "archive holds the old memory");
-}
-
-// --- Case 4: SessionStart injects existing memory without refreshing ---
-{
-  const { INSTALL, PROJ, TR } = setup(enabled);
-  const memFile = p.join(PROJ, ".cqr-memory.md");
-  fs.writeFileSync(memFile, "MEMOIRE EXISTANTE");
-  const r = run({}, INSTALL, PROJ, TR, "SessionStart", "SHOULD NOT BE USED");
-  assert.ok(fs.readFileSync(memFile, "utf8") === "MEMOIRE EXISTANTE", "SessionStart does not refresh the file");
-  const out = JSON.parse(r.stdout);
-  assert.ok(out.hookSpecificOutput.additionalContext.includes("MEMOIRE EXISTANTE"), "SessionStart injects the existing memory");
-}
-
-// --- Case 5: inactive (enabled:false, dryRun:false) -> no output, no file ---
-{
-  const { INSTALL, PROJ, TR } = setup({ enabled: false, dryRun: false });
-  const r = run({}, INSTALL, PROJ, TR, "UserPromptSubmit", "X");
-  assert.strictEqual(r.stdout.trim(), "", "inactive: emits nothing");
-  assert.ok(!fs.existsSync(p.join(PROJ, ".cqr-memory.md")), "inactive: creates no memory file");
-}
-
-// --- Case 6: compaction Haiku call spends the OLD (just-abandoned) account's margin,
-// NOT the fresh one's -- this is the fix for the user-reported bug (compaction always
-// consumed tokens on the fresh key even though the old one still had headroom left) ---
-{
-  const T = fs.mkdtempSync(p.join(os.tmpdir(), "cqr-mem-"));
-  const INSTALL = p.join(T, "install"); fs.mkdirSync(INSTALL);
-  const PROJ = p.join(T, "project"); fs.mkdirSync(PROJ);
-  const TOK_OLD = "sk-ant-oat01-FAKE-OLD-ACCOUNT-still-has-margin-00";
-  const TOK_FRESH = "sk-ant-oat01-FAKE-FRESH-ACCOUNT-pristine-quota-00";
-  fs.writeFileSync(p.join(INSTALL, "tokens.json"), JSON.stringify({
-    tokens: [{ name: "old", token: TOK_OLD, enabled: true }, { name: "fresh", token: TOK_FRESH, enabled: true }],
-    compaction: enabled,
-  }));
-  // old (just switched away from) still has plenty of margin (90% < block); fresh is much fresher (20%).
-  // Naive "pick freshest" would wrongly choose "fresh"; the fix must choose "old" (marker.from).
-  fs.writeFileSync(p.join(INSTALL, "state.json"), JSON.stringify({
-    pct: { old: { h5: 90 }, fresh: { h5: 20 } }, exhausted: {},
-    compaction: { at: 2000, from: "old", to: "fresh", reason: "switch" },
-  }));
-  const TR = p.join(T, "t.jsonl");
-  fs.writeFileSync(TR, JSON.stringify({ type: "user", message: { role: "user", content: "continue" } }));
-  const recordFile = p.join(T, "recorded-token.txt");
-  run({ CQR_RECORD_TOKEN_TO: recordFile }, INSTALL, PROJ, TR, "UserPromptSubmit", MEM("MEM"));
-  patiente(() => fs.existsSync(recordFile), "the detached refresh made its Haiku call");
-  assert.strictEqual(lu(recordFile), TOK_OLD, "compaction Haiku call uses the OLD account's token, not the fresh one's");
-}
-
-// --- Case 7: if the old account is genuinely exhausted (blocked), fall back to the freshest ---
-{
-  const T = fs.mkdtempSync(p.join(os.tmpdir(), "cqr-mem-"));
-  const INSTALL = p.join(T, "install"); fs.mkdirSync(INSTALL);
-  const PROJ = p.join(T, "project"); fs.mkdirSync(PROJ);
-  const TOK_OLD = "sk-ant-oat01-FAKE-OLD-ACCOUNT-blocked-000000000";
-  const TOK_FRESH = "sk-ant-oat01-FAKE-FRESH-ACCOUNT-fallback-0000000";
-  fs.writeFileSync(p.join(INSTALL, "tokens.json"), JSON.stringify({
-    tokens: [{ name: "old", token: TOK_OLD, enabled: true }, { name: "fresh", token: TOK_FRESH, enabled: true }],
-    compaction: enabled,
-  }));
-  fs.writeFileSync(p.join(INSTALL, "state.json"), JSON.stringify({
-    pct: { old: { h5: 99 }, fresh: { h5: 20 } }, exhausted: { old: Date.now() + 3600000 },
-    compaction: { at: 3000, from: "old", to: "fresh", reason: "switch" },
-  }));
-  const TR = p.join(T, "t.jsonl");
-  fs.writeFileSync(TR, JSON.stringify({ type: "user", message: { role: "user", content: "continue" } }));
-  const recordFile = p.join(T, "recorded-token.txt");
-  run({ CQR_RECORD_TOKEN_TO: recordFile }, INSTALL, PROJ, TR, "UserPromptSubmit", MEM("MEM"));
-  patiente(() => fs.existsSync(recordFile), "the detached refresh made its Haiku call");
-  assert.strictEqual(lu(recordFile), TOK_FRESH, "old account genuinely blocked -> falls back to the freshest account");
-}
-
-// --- Dedup d'injection : la memoire ne repart que si elle a CHANGE dans la session ---
-// Elle coutait ~730-830 tokens a CHAQUE tour pour un fichier qui bouge une quinzaine de fois en
-// trois semaines. Le point delicat n'est pas l'economie mais la compaction : elle reecrit le
-// contexte, donc une memoire "deja injectee" peut en avoir disparu.
-{
-  const { T, INSTALL, PROJ, TR } = setup(enabled);
+  const { INSTALL, PROJ } = setup(enabled);
+  git(PROJ, "init", "-q");
+  for (let i = 1; i <= 7; i++) commit(PROJ, "commit n" + i);
+  fs.writeFileSync(p.join(PROJ, "TODO.md"), TODO);
+  fs.writeFileSync(p.join(PROJ, "REGISTRE-DECISIONS.md"), "# Registre\n\n| Ref | Type | Question |\n|---|---|---|\n" + rows(7, true));
   const mem = p.join(PROJ, ".cqr-memory.md");
-  const inject = (out) => { try { return !!JSON.parse(out).hookSpecificOutput.additionalContext; } catch (e) { return false; } };
-  const arch = p.join(PROJ, ".cqr-archive");
-  fs.mkdirSync(arch, { recursive: true });
-  fs.writeFileSync(p.join(arch, ".last"), JSON.stringify({ at: 99999 })); // marqueur deja consomme
+  fs.writeFileSync(mem, LEGACY);
+  fs.writeFileSync(p.join(PROJ, "nouveau.txt"), "x"); // non suivi
+  fs.writeFileSync(p.join(PROJ, "f.txt"), "modifie sans commit"); // suivi, modifie
 
-  fs.writeFileSync(mem, "# MEMOIRE PROJET - premiere version");
-  assert.ok(inject(run({}, INSTALL, PROJ, TR, "UserPromptSubmit", "M").stdout), "1er tour : la memoire est injectee");
-  assert.ok(!inject(run({}, INSTALL, PROJ, TR, "UserPromptSubmit", "M").stdout), "2e tour, contenu inchange : plus rien n'est reinjecte");
+  const r = run(INSTALL, PROJ, "SessionStart");
+  const m = lu(mem);
+  assert.ok(m.startsWith("# État factuel bâti sans modèle ; les fichiers du projet font foi\n"), "en-tete : " + m.slice(0, 120));
+  assert.ok(m.toLowerCase().includes(HEADER), "l'en-tete dit que l'etat est bati sans modele et que les fichiers font foi");
 
-  fs.writeFileSync(mem, "# MEMOIRE PROJET - deuxieme version");
-  assert.ok(inject(run({}, INSTALL, PROJ, TR, "UserPromptSubmit", "M").stdout), "contenu change : la memoire repart");
-  assert.ok(!inject(run({}, INSTALL, PROJ, TR, "UserPromptSubmit", "M").stdout), "et se tait de nouveau ensuite");
+  const commits = section(m, "Derniers commits");
+  assert.ok(commits, "section commits presente");
+  assert.strictEqual(commits.trim().split("\n").length, 5, "5 derniers commits, pas plus : " + commits);
+  assert.ok(commits.includes("commit n7") && commits.includes("commit n3"), "du plus recent (n7) au 5e (n3)");
+  assert.ok(!commits.includes("commit n2"), "le 6e n'y est pas");
+  assert.ok(commits.indexOf("commit n7") < commits.indexOf("commit n3"), "le plus recent d'abord");
 
-  assert.ok(inject(run({ __sid: "sess-2" }, INSTALL, PROJ, TR, "UserPromptSubmit", "M").stdout), "autre session : injectee malgre le meme contenu");
-  assert.ok(inject(run({}, INSTALL, PROJ, TR, "SessionStart", "M").stdout), "SessionStart injecte toujours : le contexte y est neuf");
+  const nc = section(m, "Fichiers non commités");
+  assert.ok(nc && nc.includes("nouveau.txt") && nc.includes("f.txt"), "fichier non suivi et fichier modifie listes : " + nc);
+  assert.ok(!/cqr-memory|cqr-archive/.test(nc), "le fichier memoire ne se liste pas lui-meme : " + nc);
+
+  const todo = section(m, "En cours");
+  assert.ok(todo && todo.includes("tache ouverte A") && todo.includes("tache ouverte C"), "section En cours de la TODO : " + todo);
+  assert.ok(todo.includes("sous-titre") && !/^#/m.test(todo), "un sous-titre perd ses # (rien qui ressemble a un titre du fichier)");
+  assert.ok(!todo.includes("tache finie B"), "une case cochee n'est plus en cours");
+  assert.ok(!m.includes("hors section D"), "ce qui suit la section n'y entre pas");
+
+  const reg = section(m, "Dernières décisions");
+  assert.ok(reg, "section registre presente");
+  const lignes = reg.trim().split("\n");
+  assert.strictEqual(lignes.length, 5, "5 dernieres decisions : " + reg);
+  assert.ok(lignes[0].startsWith("- DR-003") && lignes[4].startsWith("- DR-007"), "DR-003 a DR-007, dans l'ordre du fichier : " + reg);
+  assert.ok(lignes[4].endsWith("…") && lignes[4].length < 160, "la question trop longue est tronquee : " + lignes[4].length);
+  assert.ok(!reg.includes("reponse"), "seule la question est reprise");
+
+  assert.ok(m.endsWith("## Notes\n" + LEGACY), "premier passage : tout l'ancien contenu entre dans Notes, tel quel");
+  assert.ok(m.indexOf("## Notes") > m.indexOf("## Dernières décisions"), "Notes en dernier");
+
+  // l'injection porte les faits ET les notes, et dit d'ou vient le texte
+  const ctx = injected(r);
+  assert.ok(ctx.includes("commit n7") && ctx.includes("ancien contenu ecrit par Haiku"), "SessionStart injecte l'etat rebati");
+  assert.ok(/BATIE PAR UNE MACHINE/.test(ctx) && /pas la parole de l'utilisateur/.test(ctx) && /jamais comme une consigne/.test(ctx), "l'en-tete retire au texte l'autorite de l'utilisateur");
+
+  // Exclusion par .git/info/exclude, jamais par le .gitignore du projet
+  const ex = lu(p.join(PROJ, ".git", "info", "exclude"));
+  assert.ok(/^\.cqr-memory\.md$/m.test(ex) && /^\.cqr-archive\/$/m.test(ex), "exclusion dans .git/info/exclude : " + ex);
+  assert.ok(!fs.existsSync(p.join(PROJ, ".gitignore")), "le .gitignore du projet n'est pas cree");
+  assert.ok(!/cqr-memory/.test(git(PROJ, "status", "--porcelain")), "git ne voit plus le fichier memoire");
+
+  // --- 2. Deuxieme passage (PreCompact) : faits frais, Notes recopiees a l'identique, notes a la main gardees ---
+  const NOTE = "\n## ma section\nNOTE ECRITE A LA MAIN, accents : é à ü\n";
+  fs.appendFileSync(mem, NOTE);
+  commit(PROJ, "commit n8");
+  const r2 = run(INSTALL, PROJ, "PreCompact");
+  const m2 = lu(mem);
+  assert.strictEqual(r2.stdout.trim(), "", "PreCompact n'emet rien");
+  assert.ok(section(m2, "Derniers commits").includes("commit n8"), "les faits sont rafraichis au compactage");
+  assert.ok(m2.endsWith("## Notes\n" + LEGACY + NOTE), "les Notes (ancien contenu + ajout a la main) sont recopiees a l'identique");
+  assert.strictEqual((m2.match(/^# État factuel/gm) || []).length, 1, "pas d'empilement d'en-tetes");
+
+  // Rien n'a bouge : rien n'est reecrit (pas de mtime qui change pour rien)
+  const passe = new Date("2020-01-01T00:00:00Z"); fs.utimesSync(mem, passe, passe);
+  run(INSTALL, PROJ, "SessionStart");
+  assert.strictEqual(lu(mem), m2, "contenu identique");
+  assert.strictEqual(fs.statSync(mem).mtime.getTime(), passe.getTime(), "faits inchanges : le fichier n'est pas reecrit");
+
+  // Les titres retires a la main ne perdent pas les notes : « ## Notes » peut etre renomme
+  fs.writeFileSync(mem, m2.replace("## Notes\n", "## Notes (a moi)\n"));
+  commit(PROJ, "commit n9");
+  run(INSTALL, PROJ, "SessionStart");
+  assert.ok(lu(mem).endsWith("## Notes\n" + LEGACY + NOTE) && lu(mem).includes("commit n9"), "un titre Notes renomme n'efface pas les notes");
+}
+
+// --- 3. UserPromptSubmit ne reecrit RIEN et ne lance rien, meme avec le marqueur de bascule (DR-060) ---
+{
+  const { INSTALL, PROJ } = setup(enabled);
+  git(PROJ, "init", "-q"); commit(PROJ, "commit n1");
+  const mem = p.join(PROJ, ".cqr-memory.md");
+  run(INSTALL, PROJ, "SessionStart");
+  const avant = lu(mem);
+  commit(PROJ, "commit apres le demarrage");
+  // CQR_FAKE_SUMMARY : si l'ancien resume de fond existait encore, il ecraserait le fichier avec ceci
+  const r = run(INSTALL, PROJ, "UserPromptSubmit", "sess-2", { CQR_FAKE_SUMMARY: "# MEMOIRE PROJET\n## Taches faites\n- ECRASE PAR UN MODELE" });
+  assert.ok(injected(r).includes("commit n1"), "injecte la memoire courante");
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 600); // un enfant de fond aurait eu le temps d'ecrire
+  assert.strictEqual(lu(mem), avant, "UserPromptSubmit ne reecrit pas le fichier (ni resume, ni refresh des faits)");
+  assert.ok(!lu(mem).includes("ECRASE"), "aucun resume de modele");
+  for (const f of [".last", ".lock"]) assert.ok(!fs.existsSync(p.join(PROJ, ".cqr-archive", f)), "plus de " + f + " : plus de travail de fond");
+  // et le code ne sait plus appeler un modele
+  const src = fs.readFileSync(HOOK, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, ""); // le code, sans ses commentaires
+  assert.ok(!/haiku|anthropic\.com|\bspawn\b|CQR_FAKE_SUMMARY|require\(".\/lib.js"\)/i.test(src), "memory-hook.js n'a plus d'appel de modele ni de processus de fond");
+}
+
+// --- 4. Dossier sans git ---
+{
+  // 4a. avec une TODO : section TODO seule, aucune exclusion, aucun .gitignore cree
+  const { INSTALL, PROJ } = setup(enabled);
+  fs.writeFileSync(p.join(PROJ, "TODO.md"), TODO);
+  const r = run(INSTALL, PROJ, "SessionStart");
+  const m = lu(p.join(PROJ, ".cqr-memory.md"));
+  assert.ok(section(m, "En cours").includes("tache ouverte A"), "sans git : la TODO suffit");
+  assert.ok(section(m, "Derniers commits") === null && section(m, "Fichiers non commités") === null, "sans git : ni commits ni fichiers non commites");
+  assert.ok(m.endsWith("## Notes\n"), "sans ancien contenu : Notes vide");
+  assert.ok(injected(r).includes("tache ouverte A"), "et elle est injectee");
+  assert.ok(!fs.existsSync(p.join(PROJ, ".git")) && !fs.existsSync(p.join(PROJ, ".gitignore")), "rien d'ecrit cote git");
+
+  // 4b. ni git ni TODO ni registre, mais un ancien resume : notes seules
+  const b = setup(enabled);
+  fs.writeFileSync(p.join(b.PROJ, ".cqr-memory.md"), LEGACY);
+  run(b.INSTALL, b.PROJ, "SessionStart");
+  const mb = lu(p.join(b.PROJ, ".cqr-memory.md"));
+  assert.strictEqual(mb, "# État factuel bâti sans modèle ; les fichiers du projet font foi\n\n## Notes\n" + LEGACY, "notes seules : en-tete + Notes, rien d'autre");
+
+  // 4c. rien du tout : pas de fichier, rien d'injecte
+  const c = setup(enabled);
+  const rc = run(c.INSTALL, c.PROJ, "SessionStart");
+  assert.ok(!fs.existsSync(p.join(c.PROJ, ".cqr-memory.md")), "aucune source, aucun ancien fichier : pas de fichier cree");
+  assert.strictEqual(rc.stdout.trim(), "", "et rien n'est injecte");
+  assert.strictEqual(rc.status, 0, "le hook sort toujours en 0");
+
+  // 4d. sous-dossier d'un depot : le depot parent n'est pas le sien (le .git doit etre dans le dossier)
+  const d = setup(enabled);
+  git(d.T, "init", "-q"); commit(d.T, "commit du parent");
+  fs.writeFileSync(p.join(d.PROJ, "TODO.md"), TODO);
+  run(d.INSTALL, d.PROJ, "SessionStart");
+  const md = lu(p.join(d.PROJ, ".cqr-memory.md"));
+  assert.ok(!md.includes("commit du parent") && section(md, "Derniers commits") === null, "les commits d'un depot parent ne passent pas pour ceux du dossier");
+  assert.ok(!/cqr-memory/.test(lu(p.join(d.T, ".git", "info", "exclude"))), "et le depot parent n'est pas modifie");
+}
+
+// --- 5. .git qui est un FICHIER (worktree) : l'exclusion est posee la ou git la lit, et les faits restent ---
+{
+  const { T, INSTALL, PROJ } = setup(enabled);
+  git(PROJ, "init", "-q"); commit(PROJ, "commit principal");
+  const WT = p.join(T, "wt");
+  git(PROJ, "worktree", "add", "-q", WT, "-b", "branche-wt");
+  assert.ok(fs.statSync(p.join(WT, ".git")).isFile(), "le worktree a bien un fichier .git");
+  const excl = p.resolve(WT, git(WT, "rev-parse", "--git-path", "info/exclude").trim()); // le chemin que git lit, pas `.git/info/exclude`
+  assert.ok(!/cqr-memory|cqr-archive/.test(lu(excl)), "avant le hook : rien d'exclu");
+  fs.writeFileSync(p.join(WT, "TODO.md"), TODO);
+  run(INSTALL, WT, "SessionStart");
+  run(INSTALL, WT, "UserPromptSubmit", "sess-wt"); // la dedup cree .cqr-archive/ : il faut qu'il existe pour prouver son exclusion
+  const m = lu(p.join(WT, ".cqr-memory.md"));
+  assert.ok(section(m, "Derniers commits").includes("commit principal"), "les faits git du worktree sont la");
+  assert.ok(!/cqr-memory/.test(section(m, "Fichiers non commités")), "le fichier memoire ne se liste pas dans ses propres faits");
+  const ex = lu(excl);
+  assert.ok(/^\.cqr-memory\.md$/m.test(ex) && /^\.cqr-archive\/$/m.test(ex), "exclusion ecrite dans le fichier que git lit pour ce worktree : " + ex);
+  assert.ok(fs.existsSync(p.join(WT, ".cqr-archive", ".injected.json")), "l'archive existe bien (sinon l'epreuve suivante ne prouve rien)");
+  assert.ok(!/cqr-memory|cqr-archive/.test(git(WT, "status", "--porcelain")), "git status du worktree ne voit ni le fichier memoire ni l'archive");
+  assert.ok(!fs.existsSync(p.join(WT, ".gitignore")), "le .gitignore du projet n'est pas cree");
+  assert.ok(fs.statSync(p.join(WT, ".git")).isFile(), ".git du worktree intact");
+}
+
+// --- 6. Exclusion : le .gitignore existant n'est pas touche, et rien ne s'ajoute deux fois ---
+{
+  const { INSTALL, PROJ } = setup(enabled);
+  git(PROJ, "init", "-q"); commit(PROJ, "c1");
+  const GI = "node_modules/\n# deja la, ajoute par l'ancienne version :\n.cqr-memory.md\n.cqr-archive/\n";
+  fs.writeFileSync(p.join(PROJ, ".gitignore"), GI);
+  run(INSTALL, PROJ, "SessionStart"); run(INSTALL, PROJ, "PreCompact"); run(INSTALL, PROJ, "SessionStart", "sess-9");
+  assert.strictEqual(lu(p.join(PROJ, ".gitignore")), GI, "le .gitignore n'est ni modifie ni nettoye (ce que l'ancienne version y a ajoute reste)");
+  const ex = lu(p.join(PROJ, ".git", "info", "exclude"));
+  assert.strictEqual((ex.match(/^\.cqr-memory\.md$/gm) || []).length, 1, "une seule ligne pour le fichier memoire apres trois passages : " + ex);
+  assert.strictEqual((ex.match(/^\.cqr-archive\/$/gm) || []).length, 1, "une seule ligne pour l'archive");
+}
+
+// --- 7. Plafonds : section par section, et injection bornee a ~4 Ko, le fichier jamais tronque ---
+{
+  const { INSTALL, PROJ } = setup(enabled);
+  git(PROJ, "init", "-q");
+  for (let i = 1; i <= 7; i++) commit(PROJ, "commit " + "y".repeat(300) + i);
+  for (let i = 0; i < 40; i++) fs.writeFileSync(p.join(PROJ, "fichier-non-suivi-" + "z".repeat(150) + i + ".txt"), "x");
+  fs.writeFileSync(p.join(PROJ, "TODO.md"), "## En cours\n" + Array.from({ length: 30 }, (_, i) => "- [ ] tache " + i + " " + "w".repeat(500)).join("\n") + "\n");
+  fs.writeFileSync(p.join(PROJ, "REGISTRE-DECISIONS.md"), rows(30, true));
+  const NOTES = "# gros ancien resume\n" + "ligne de notes assez longue pour peser dans l'injection\n".repeat(400); // ~22 Ko
+  const mem = p.join(PROJ, ".cqr-memory.md");
+  fs.writeFileSync(mem, NOTES);
+
+  const r = run(INSTALL, PROJ, "SessionStart");
+  const m = lu(mem);
+  const faits = m.slice(0, m.indexOf("## Notes"));
+  assert.ok(faits.length < 3900, "les faits, tous plafonds atteints, restent sous ~4 Ko : " + faits.length);
+  assert.ok(/… et 32 autres/.test(section(m, "Fichiers non commités")), "fichiers non commites plafonnes (40 + TODO.md + REGISTRE, 10 montres), avec le reste compte : " + section(m, "Fichiers non commités").split("\n").slice(-2));
+  assert.ok(/… et 22 lignes de plus dans TODO.md/.test(section(m, "En cours")), "TODO plafonnee, avec le reste compte");
+  assert.ok(m.endsWith("## Notes\n" + NOTES), "le fichier garde TOUTES les notes, a l'identique (" + NOTES.length + " caracteres)");
+
+  const ctx = injected(r);
+  const corps = ctx.slice(ctx.indexOf("# État factuel"));
+  assert.ok(corps.length <= 4096 + 200, "l'injection est bornee (~4 Ko) : " + corps.length);
+  assert.ok(corps.includes("## Notes") && /caracteres non injectes \(notes\)/.test(corps), "les notes sont coupees avec un renvoi vers le fichier");
+  assert.ok(corps.includes(mem), "le renvoi donne le chemin du fichier");
+}
+
+// --- 8. Une panne de git omet la section, sans casser le reste ---
+{
+  const { INSTALL, PROJ } = setup(enabled);
+  fs.mkdirSync(p.join(PROJ, ".git")); // un .git vide : ce n'est pas un depot, git echoue
+  fs.writeFileSync(p.join(PROJ, "TODO.md"), TODO);
+  const r = run(INSTALL, PROJ, "SessionStart");
+  const m = lu(p.join(PROJ, ".cqr-memory.md"));
+  assert.strictEqual(r.status, 0, "le hook sort en 0 meme si git echoue");
+  assert.ok(section(m, "Derniers commits") === null && section(m, "Fichiers non commités") === null, "git en echec : sections omises, pas de message d'erreur dans la memoire");
+  assert.ok(section(m, "En cours").includes("tache ouverte A"), "les autres sections restent");
+  assert.ok(!/fatal|not a git/i.test(m), "aucune erreur de git ne fuit dans le fichier");
+}
+
+// --- 9. Inactif (enabled:false) : rien, ni fichier ni sortie ---
+{
+  const { INSTALL, PROJ } = setup({ enabled: false, dryRun: false });
+  git(PROJ, "init", "-q"); commit(PROJ, "c1");
+  for (const ev of ["SessionStart", "PreCompact", "UserPromptSubmit"]) {
+    const r = run(INSTALL, PROJ, ev);
+    assert.strictEqual(r.stdout.trim(), "", "inactif : " + ev + " n'emet rien");
+  }
+  assert.ok(!fs.existsSync(p.join(PROJ, ".cqr-memory.md")), "inactif : aucun fichier memoire");
+}
+
+// --- 10. Dedup d'injection : la memoire ne repart que si elle a CHANGE dans la session ---
+// Elle coutait ~730-830 tokens a CHAQUE tour. Le point delicat est la compaction : elle reecrit le
+// contexte, donc une memoire "deja injectee" peut en avoir disparu. Le dossier .cqr-archive n'est PAS
+// cree a la main ici : sans resume de fond, c'est la dedup elle-meme qui doit le creer.
+{
+  const { INSTALL, PROJ } = setup(enabled);
+  const mem = p.join(PROJ, ".cqr-memory.md");
+  const inject = (r) => !!injected(r);
+
+  fs.writeFileSync(mem, TITLE + "\n\n## Notes\npremiere version\n"); // deja au format : SessionStart ne la reecrit pas (rien a y changer)
+  assert.ok(inject(run(INSTALL, PROJ, "UserPromptSubmit")), "1er tour : la memoire est injectee");
+  assert.ok(fs.existsSync(p.join(PROJ, ".cqr-archive", ".injected.json")), "la dedup cree son dossier toute seule");
+  assert.ok(!inject(run(INSTALL, PROJ, "UserPromptSubmit")), "2e tour, contenu inchange : plus rien n'est reinjecte");
+
+  fs.writeFileSync(mem, TITLE + "\n\n## Notes\ndeuxieme version\n");
+  assert.ok(inject(run(INSTALL, PROJ, "UserPromptSubmit")), "contenu change : la memoire repart");
+  assert.ok(!inject(run(INSTALL, PROJ, "UserPromptSubmit")), "et se tait de nouveau ensuite");
+
+  assert.ok(inject(run(INSTALL, PROJ, "UserPromptSubmit", "sess-2")), "autre session : injectee malgre le meme contenu");
+  assert.ok(inject(run(INSTALL, PROJ, "SessionStart")), "SessionStart injecte toujours : le contexte y est neuf");
 
   // LE point que la greffe d'origine n'avait pas vu.
-  run({}, INSTALL, PROJ, TR, "PreCompact", "M");
-  assert.ok(inject(run({}, INSTALL, PROJ, TR, "UserPromptSubmit", "M").stdout),
-    "apres une compaction, la memoire est REINJECTEE (sinon elle disparait pour toute la session)");
+  assert.ok(!inject(run(INSTALL, PROJ, "UserPromptSubmit")), "(avant compaction : toujours deduplique)");
+  run(INSTALL, PROJ, "PreCompact");
+  assert.ok(inject(run(INSTALL, PROJ, "UserPromptSubmit")), "apres une compaction, la memoire est REINJECTEE (sinon elle disparait pour toute la session)");
 
   // et le reglage rend l'injection systematique a qui la veut
   const s2 = setup(Object.assign({}, enabled, { memoryDedup: false }));
-  fs.mkdirSync(p.join(s2.PROJ, ".cqr-archive"), { recursive: true });
-  fs.writeFileSync(p.join(s2.PROJ, ".cqr-archive", ".last"), JSON.stringify({ at: 99999 }));
-  fs.writeFileSync(p.join(s2.PROJ, ".cqr-memory.md"), "# MEMOIRE PROJET - x");
-  assert.ok(inject(run({}, s2.INSTALL, s2.PROJ, s2.TR, "UserPromptSubmit", "M").stdout), "memoryDedup:false, 1er tour");
-  assert.ok(inject(run({}, s2.INSTALL, s2.PROJ, s2.TR, "UserPromptSubmit", "M").stdout), "memoryDedup:false : injectee a chaque tour, comme avant");
-  fs.rmSync(T, { recursive: true, force: true });
+  fs.writeFileSync(p.join(s2.PROJ, ".cqr-memory.md"), TITLE + "\n\n## Notes\nx\n");
+  assert.ok(inject(run(s2.INSTALL, s2.PROJ, "UserPromptSubmit")), "memoryDedup:false, 1er tour");
+  assert.ok(inject(run(s2.INSTALL, s2.PROJ, "UserPromptSubmit")), "memoryDedup:false : injectee a chaque tour, comme avant");
 }
 
-// --- Un resume qui degenere ne doit PAS ecraser la memoire ---
-// Deux fois sur un poste reel : 2753 octets remplaces par 472 (prose narrative qui se lisait
-// comme une consigne de l'utilisateur), puis 3362 par 144 (un fragment de commande collee).
-// Le seul garde-fou etait "reponse non vide", donc les deux sont passes.
+// --- 11. SessionStart a deja injecte : le premier prompt de la MEME session ne reinjecte pas ---
+// Sans cela, la memoire arrivait deux fois en tete de session (SessionStart, puis le premier prompt).
 {
-  const { T, INSTALL, PROJ, TR } = setup(enabled);
-  const memFile = p.join(PROJ, ".cqr-memory.md");
-  const bonne = "# MEMOIRE PROJET\n## Taches faites\n- trois semaines de travail";
-  fs.writeFileSync(memFile, bonne);
+  const { INSTALL, PROJ } = setup(enabled);
+  const mem = p.join(PROJ, ".cqr-memory.md");
+  const inject = (r) => !!injected(r);
+  fs.writeFileSync(mem, TITLE + "\n\n## Notes\nversion A\n"); // deja au format : SessionStart ne la reecrit pas
+  assert.ok(inject(run(INSTALL, PROJ, "SessionStart", "sess-A")), "SessionStart injecte");
+  assert.ok(!inject(run(INSTALL, PROJ, "UserPromptSubmit", "sess-A")), "1er prompt de la meme session : rien de reinjecte (deja dans le contexte)");
+  assert.ok(inject(run(INSTALL, PROJ, "UserPromptSubmit", "sess-B")), "contre-epreuve : une autre session, sans SessionStart, recoit la memoire");
+  fs.writeFileSync(mem, TITLE + "\n\n## Notes\nversion B\n");
+  assert.ok(inject(run(INSTALL, PROJ, "UserPromptSubmit", "sess-A")), "contenu change depuis le SessionStart : le prompt reinjecte");
+  assert.ok(inject(run(INSTALL, PROJ, "SessionStart", "sess-A")), "SessionStart injecte toujours, meme avec une empreinte deja notee");
 
-  // L'enfant est detache : attendre l'absence du verrou ne prouve rien (il n'est pas encore
-  // pris). On attend la trace de l'appel Haiku, PUIS la liberation du verrou -- entre les deux
-  // se joue exactement la decision d'ecrire ou non.
-  let n = 0;
-  const refuse = (resume, msg) => {
-    const rec = p.join(T, "rec-" + (++n) + ".txt");
-    run({ CQR_RECORD_TOKEN_TO: rec }, INSTALL, PROJ, TR, "UserPromptSubmit", resume);
-    patiente(() => fs.existsSync(rec), "l'enfant a appele le resumeur");
-    patiente(() => !fs.existsSync(p.join(PROJ, ".cqr-archive", ".lock")), "l'enfant a rendu son verrou");
-    assert.strictEqual(lu(memFile), bonne, msg);
-  };
-
-  // les deux degenerescences reellement observees
-  refuse("```\ncqr compact\n```\n\nResultat attendu : affichage du statut.",
-    "un fragment de conversation ne remplace pas la memoire");
-  refuse("En attente de la finalisation de la revue.\n\nLorsque la revue reviendra, le cycle continuera ainsi.",
-    "une prose sans structure ne remplace pas la memoire");
-
-  // le marqueur n'est pas consomme -> la prochaine tentative repart, et un bon resume passe
-  assert.ok(!fs.existsSync(p.join(PROJ, ".cqr-archive", ".last")), "marqueur non consomme apres un refus");
-
-  // Un refus SYSTEMATIQUE coincerait la memoire pour de bon (un resume relance a chaque prompt,
-  // qui echoue toujours). Le titre accentue est donc accepte : l'instruction l'ecrit sans accent,
-  // le modele peut le "corriger".
-  {
-    const s3 = setup(enabled);
-    const m3 = p.join(s3.PROJ, ".cqr-memory.md");
-    run({}, s3.INSTALL, s3.PROJ, s3.TR, "UserPromptSubmit", "# MÉMOIRE PROJET\n## Tâches faites\n- accent accepte");
-    patiente(() => lu(m3).includes("accent accepte"), "un titre accentue reste un resume valide");
-  }
-  run({}, INSTALL, PROJ, TR, "UserPromptSubmit", MEM("resume valide"));
-  patiente(() => lu(memFile).includes("resume valide"), "un resume bien forme, lui, est ecrit");
+  // dedup coupee : aucune empreinte notee, injection a chaque tour comme avant
+  const s2 = setup(Object.assign({}, enabled, { memoryDedup: false }));
+  fs.writeFileSync(p.join(s2.PROJ, ".cqr-memory.md"), TITLE + "\n\n## Notes\nx\n");
+  assert.ok(inject(run(s2.INSTALL, s2.PROJ, "SessionStart", "sess-A")), "memoryDedup:false, SessionStart");
+  assert.ok(!fs.existsSync(p.join(s2.PROJ, ".cqr-archive", ".injected.json")), "memoryDedup:false : SessionStart ne note aucune empreinte");
+  assert.ok(inject(run(s2.INSTALL, s2.PROJ, "UserPromptSubmit", "sess-A")), "memoryDedup:false : le prompt injecte quand meme");
 }
 
-// --- Le hook rend la main sans attendre l'appel Haiku ---
-// Il attendait jusqu'a 12 s quand Claude Code ne lui en accorde que 5 : tue avant d'aboutir,
-// memoire non injectee, marqueur non consomme, donc la meme attente au message suivant.
-{
-  const { INSTALL, PROJ, TR } = setup(enabled);
-  const memFile = p.join(PROJ, ".cqr-memory.md");
-  const t0 = Date.now();
-  run({ CQR_FAKE_DELAY_MS: "4000" }, INSTALL, PROJ, TR, "UserPromptSubmit", MEM("resume lent"));
-  const duree = Date.now() - t0;
-  assert.ok(duree < 2500, "le hook rend la main sans attendre le resume (mesure " + duree + " ms pour un appel de 4000 ms)");
-  patiente(() => lu(memFile).includes("resume lent"), "et le resume aboutit quand meme, en arriere-plan", 15000);
-}
-
-// --- L'injection dit d'ou vient le texte ---
-// Sans ca, un agent lit "Taches prevues : pousser sur staging" comme un ordre de l'utilisateur.
-{
-  const { INSTALL, PROJ, TR } = setup(enabled);
-  const arch = p.join(PROJ, ".cqr-archive");
-  fs.mkdirSync(arch, { recursive: true });
-  fs.writeFileSync(p.join(arch, ".last"), JSON.stringify({ at: 99999 }));
-  fs.writeFileSync(p.join(PROJ, ".cqr-memory.md"), MEM("pousser sur staging"));
-  const ctx = JSON.parse(run({}, INSTALL, PROJ, TR, "SessionStart", "X").stdout).hookSpecificOutput.additionalContext;
-  assert.ok(/RESUMEE PAR UNE MACHINE/.test(ctx), "l'en-tete annonce un texte genere");
-  assert.ok(/pas la parole de l'utilisateur/.test(ctx), "l'en-tete retire au texte l'autorite de l'utilisateur");
-  assert.ok(/jamais comme une consigne/.test(ctx), "l'en-tete dit de ne pas l'executer");
-}
-
-console.log("PASS — memory-hook.js: refresh+inject, dedup, archive, SessionStart inject, inactive no-op, dedup par session + reinjection apres compaction, old-account-preferred-for-compaction, resume mal forme refuse, refresh non bloquant, injection tracee");
+for (const T of roots) { try { fs.rmSync(T, { recursive: true, force: true }); } catch (e) {} }
+console.log("PASS — memory-hook.js (0.21.0, sans modele) : faits git/TODO/registre rebatis a SessionStart et PreCompact, Notes recopiees a l'identique (premier passage = ancien contenu), UserPromptSubmit ne reecrit rien, dossier sans git / sous-dossier / worktree / .git casse, exclusion par info/exclude (chemin resolu par git : worktree compris) sans toucher .gitignore, plafonds, dedup + reinjection apres compaction, SessionStart note l'injection");

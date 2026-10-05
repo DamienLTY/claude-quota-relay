@@ -5,7 +5,6 @@ const os = require("os");
 const p = require("path");
 const cp = require("child_process");
 const readline = require("readline");
-const https = require("https");
 const zlib = require("zlib");
 
 const TOKEN_RE = /sk-ant-oat01-[A-Za-z0-9_\-]{20,}/;
@@ -106,80 +105,6 @@ function syncAuthToken(conf, sp) {
   s.env.ANTHROPIC_AUTH_TOKEN = first.token;
   fs.writeFileSync(sp, JSON.stringify(s, null, 2));
   return true;
-}
-
-// Pick the enabled, non-placeholder token with the lowest 5h utilization (from proxy
-// state). Used by the memory hook to run its cheap Haiku summary on the freshest account.
-function healthiestToken(conf, state) {
-  const cands = (conf.tokens || []).filter((t) => t.enabled && !isPlaceholder(t));
-  if (!cands.length) return null;
-  const pct = (state && state.pct) || {};
-  cands.sort((a, b) => {
-    const ha = (pct[a.name] || {}).h5; const hb = (pct[b.name] || {}).h5;
-    return (ha == null ? 50 : ha) - (hb == null ? 50 : hb);
-  });
-  return cands[0];
-}
-
-// The compaction Haiku call should spend the OLD account's last sliver of margin (it's
-// about to be abandoned anyway) rather than the fresh one's pristine quota. Use
-// `preferName` (state.compaction.from) if that account is still enabled and not currently
-// marked exhausted/blocked; otherwise fall back to the freshest account (it likely WAS
-// exhausted -- the exact scenario a user hit: proxy held the request, then resumed fresh).
-function preferredCompactionToken(conf, state, preferName) {
-  if (preferName) {
-    const t = (conf.tokens || []).find((x) => x.name === preferName);
-    const exhausted = state && state.exhausted && state.exhausted[preferName];
-    const stillBlocked = exhausted && Date.now() < exhausted;
-    if (t && t.enabled && !isPlaceholder(t) && !stillBlocked) return t;
-  }
-  return healthiestToken(conf, state);
-}
-
-// Upstream cible pour les appels Haiku (memory-hook.js). Meme logique que proxy.js :
-// api.anthropic.com par defaut, mais respecte ANTHROPIC_TARGET_API_URL si defini (reseau
-// d'entreprise ou l'API Anthropic directe est bloquee -- l'utilisateur passe par son propre
-// relais, ex. un Cloudflare Worker). Claude Code ne lit pas cette variable lui-meme.
-function resolveUpstream() {
-  const target = process.env.ANTHROPIC_TARGET_API_URL;
-  if (target) {
-    try {
-      const u = new URL(target);
-      return { hostname: u.hostname, port: Number(u.port) || (u.protocol === "http:" ? 80 : 443), mod: u.protocol === "http:" ? require("http") : https, pathPrefix: u.pathname.replace(/\/$/, "") };
-    } catch (e) { /* URL invalide -> defaut api.anthropic.com */ }
-  }
-  return { hostname: "api.anthropic.com", port: 443, mod: https, pathPrefix: "" };
-}
-
-// Minimal POST to api.anthropic.com (or ANTHROPIC_TARGET_API_URL if set). Resolves
-// {status, json, raw} (never rejects).
-function anthropicPost(pathname, token, body, extraHeaders, timeoutMs) {
-  return new Promise((resolve) => {
-    const data = Buffer.from(JSON.stringify(body));
-    const headers = Object.assign({
-      "authorization": "Bearer " + token,
-      "anthropic-version": "2023-06-01",
-      "content-type": "application/json",
-      "content-length": data.length,
-    }, extraHeaders || {});
-    const up = resolveUpstream();
-    const req = up.mod.request({ hostname: up.hostname, port: up.port, path: up.pathPrefix + pathname, method: "POST", headers }, (res) => {
-      let d = ""; res.on("data", (c) => (d += c)); res.on("end", () => { let j = null; try { j = JSON.parse(d); } catch (e) {} resolve({ status: res.statusCode, json: j, raw: d }); });
-    });
-    req.setTimeout(timeoutMs || 60000, () => { try { req.destroy(new Error("timeout")); } catch (e) {} });
-    req.on("error", (e) => resolve({ status: 0, err: e.message }));
-    req.write(data); req.end();
-  });
-}
-
-// One cheap Haiku call. Returns {text, usage} or {err}.
-async function haikuSummarize(token, system, user, maxTokens, timeoutMs) {
-  const r = await anthropicPost("/v1/messages", token, {
-    model: "claude-haiku-4-5", max_tokens: maxTokens || 1200, system,
-    messages: [{ role: "user", content: user }],
-  }, null, timeoutMs);
-  if (r.status !== 200) return { err: (r.status || "0") + " " + String(r.raw || r.err || "").slice(0, 300) };
-  return { text: (r.json.content || []).map((b) => b.text || "").join(""), usage: r.json.usage };
 }
 
 // Human duration until an epoch-ms reset: "4j09h" / "1h05min" / "45min" / "?" / "0min".
@@ -333,4 +258,4 @@ function notifyWindows(title, msg, spawnFn, onError) {
   } catch (e) { return false; }
 }
 
-module.exports = { TOKEN_RE, isPlaceholder, mask, configDir, settingsPath, readConf, writeConf, ask, findClaude, captureSetupToken, pasteTokenManually, syncAuthToken, healthiestToken, preferredCompactionToken, anthropicPost, haikuSummarize, fmtDur, accounts, bestHeadroom, resolveUpstream, overageUsable, overageReasonFr, OVERAGE_REASONS, creditsBudget, creditsRemaining, fmtMoney, decodeBody, isTermsBlock, notifyWindows };
+module.exports = { TOKEN_RE, isPlaceholder, mask, configDir, settingsPath, readConf, writeConf, ask, findClaude, captureSetupToken, pasteTokenManually, syncAuthToken, fmtDur, accounts, bestHeadroom, overageUsable, overageReasonFr, OVERAGE_REASONS, creditsBudget, creditsRemaining, fmtMoney, decodeBody, isTermsBlock, notifyWindows };

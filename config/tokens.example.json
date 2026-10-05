@@ -17,7 +17,6 @@
     "compactionCooldownMs": 600000,
     "dynamicSafetyBufferPoints": 4,
     "memoryFile": ".cqr-memory.md",
-    "memoryMaxLines": 400,
     "archiveDir": ".cqr-archive"
   },
   "workflowGuard": {

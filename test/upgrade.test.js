@@ -56,6 +56,8 @@ assert.ok(s.statusLine.command.includes("cqr-statusline.js"), "statusline wrappe
 // patiente 15 tentatives (~6 min) au lieu de 10 (~3 min)
 assert.strictEqual(s.statusLine.refreshInterval, 10, "statusLine.refreshInterval = 10");
 assert.strictEqual(s.env.CLAUDE_CODE_MAX_RETRIES, "15", "env.CLAUDE_CODE_MAX_RETRIES = 15");
+// DR-048 : Claude Code ajoute son type de requete et le motif d'un compactage, que le journal du relais note
+assert.strictEqual(s.env.CLAUDE_CODE_GATEWAY_HINT_HEADERS, "1", "env.CLAUDE_CODE_GATEWAY_HINT_HEADERS = 1");
 assert.strictEqual(rd(p.join(IDIR, "statusline.json")).original.command, "echo MINE", "original statusline saved");
 ["compaction.js", "memory-hook.js", "cqr-statusline.js", "cqr-workflow-guard.js"].forEach((f) => assert.ok(fs.existsSync(p.join(IDIR, f)), f + " copied on upgrade"));
 // DR-012 : le relais installe lit sa version dans package.json a cote de proxy.js (sinon sa ligne de demarrage dit « inconnue »)
@@ -97,6 +99,17 @@ assert.strictEqual(s2.statusLine.refreshInterval, 10, "refreshInterval toujours 
   assert.strictEqual(install().status, 0, "install OK avec une cadence personnalisee");
   assert.strictEqual(rd(f).statusLine.refreshInterval, 30, "cadence posee a la main preservee");
   const back = rd(f); back.statusLine.refreshInterval = 10; fs.writeFileSync(f, JSON.stringify(back));
+}
+
+// DR-048 : CLAUDE_CODE_GATEWAY_HINT_HEADERS n'est posee que si elle est absente ; une valeur choisie a la main survit
+{
+  const f = p.join(CFG, "settings.json");
+  const mine = rd(f); mine.env.CLAUDE_CODE_GATEWAY_HINT_HEADERS = "0"; fs.writeFileSync(f, JSON.stringify(mine));
+  assert.strictEqual(install().status, 0, "install OK avec CLAUDE_CODE_GATEWAY_HINT_HEADERS personnalisee");
+  assert.strictEqual(rd(f).env.CLAUDE_CODE_GATEWAY_HINT_HEADERS, "0", "valeur posee a la main preservee");
+  const back = rd(f); delete back.env.CLAUDE_CODE_GATEWAY_HINT_HEADERS; fs.writeFileSync(f, JSON.stringify(back));
+  assert.strictEqual(install().status, 0, "install OK sans la variable");
+  assert.strictEqual(rd(f).env.CLAUDE_CODE_GATEWAY_HINT_HEADERS, "1", "variable absente -> posee a 1");
 }
 
 // --- mise a jour avec un proxy EN COURS : les fichiers copies ne servent a rien tant que le

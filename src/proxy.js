@@ -39,7 +39,7 @@ const LOG = path.join(DIR, "proxy.log");
 //     api.anthropic.com est bloque -- l'utilisateur passe alors par son propre relais
 //     (ex. un Cloudflare Worker). Claude Code lui-meme ne lit PAS cette variable (verifie
 //     dans le binaire) ; c'est ce proxy qui doit la respecter pour que TOUT (bascule,
-//     sondes, statusline, appels Haiku de compaction) fonctionne derriere ce blocage.
+//     sondes, statusline) fonctionne derriere ce blocage.
 function resolveUpstream() {
   if (process.env.CQR_UPSTREAM_HOST) {
     return { host: process.env.CQR_UPSTREAM_HOST, port: Number(process.env.CQR_UPSTREAM_PORT) || 443, mod: process.env.CQR_UPSTREAM_HTTP ? require("http") : https, pathPrefix: "" };
@@ -413,9 +413,21 @@ function applyQuota(st, name, q) {
     st.overage[name] = { status: q.ovStatus, u: q.ovU, uRaw: q.ovURaw, reset: q.ovReset, reason: q.ovReason, inUse: q.ovInUse, onCredits: q.statuses.indexOf("rejected") >= 0 && q.ovAllowed, at: ts() };
   }
 }
-function logRate(headers, statusCode, name) {
+// DR-048 : ce que Claude Code annonce de sa requete (en-tetes x-claude-code-*, le type n'arrive que si
+// CLAUDE_CODE_GATEWAY_HINT_HEADERS=1, pose par l'installeur). Valeurs reduites a [A-Za-z0-9_-] (une ligne de
+// journal ne se laisse pas casser par un en-tete) ; la session n'est JAMAIS notee en entier : 8 caracteres.
+const tag = (v, n) => String(v == null ? "" : v).replace(/[^A-Za-z0-9_-]/g, "").slice(0, n) || "-";
+// Les 6 en-tetes que seule la variable ajoute : le journal les lit sur la requete du client, l'amont n'a pas a les recevoir.
+// x-claude-code-session-id / -agent-id / -parent-agent-id n'y sont PAS : Claude Code les envoie meme sans la variable.
+const INDICES_CLAUDE_CODE = ["x-claude-code-request-class", "x-claude-code-agent-type", "x-claude-code-prompt-id",
+  "x-claude-code-compaction", "x-claude-code-context-compacted", "x-claude-code-prev-tool-durations"];
+function tagsRequete(h) {
+  h = h || {};
+  return ["classe=" + tag(h["x-claude-code-request-class"], 20), "session=" + tag(h["x-claude-code-session-id"], 8)];
+}
+function logRate(headers, statusCode, name, reqHeaders) {
   const rl = {}; for (const k of Object.keys(headers)) if (/^anthropic-ratelimit/i.test(k) || k === "retry-after") rl[k] = headers[k];
-  if (Object.keys(rl).length || statusCode >= 400) log("RESP", statusCode, "token=" + name, "rl=", rl);
+  if (Object.keys(rl).length || statusCode >= 400) log("RESP", statusCode, "token=" + name, ...tagsRequete(reqHeaders), "rl=", rl);
 }
 
 // ----- decision d'auto-compaction -----
@@ -448,8 +460,8 @@ function decideCompaction(conf, state, bodyObj, prevActive, newIdx, ctx, switchi
   if (!compact) return null;
   // Cooldown (uniquement pour la compaction liee a un SWITCH/resume) : une fois tous les comptes
   // au-dessus de leur seuil, pickRoute (a raison, pour le failover) continue d'alterner -> sans
-  // ce garde-fou on recompacterait (et rappellerait Haiku) a CHAQUE requete. La compaction EN
-  // PLACE n'a pas ce probleme (0 token, pas de Haiku, on veut justement reduire chaque requete),
+  // ce garde-fou on recompacterait a CHAQUE requete. La compaction EN
+  // PLACE n'a pas ce probleme (0 token, on veut justement reduire chaque requete),
   // donc elle n'est PAS soumise au cooldown.
   if (!inPlace) {
     const cooldownMs = num(cc.compactionCooldownMs, 600000);
@@ -485,6 +497,9 @@ function serve(creq, cres) {
     try { bodyObj = JSON.parse(body.toString("utf8")); } catch (e) {}
     const isStream = !!(bodyObj && bodyObj.stream === true);
     const ctx = { tried: new Set(), waitStart: 0, polls: 0, sse: false, ka: null, netRetries: 0, cutRetries: 0, resumed: false, sent: false, replayed: false };
+    // DR-048 : Claude Code annonce lui-meme qu'il compacte (auto, manual, reactive). Une fois par requete, a son arrivee.
+    // Ligne distincte de COMPACT, qui est la compaction du relais a la bascule de compte.
+    if (creq.headers["x-claude-code-compaction"]) log("CLAUDE-COMPACT", "motif=" + tag(creq.headers["x-claude-code-compaction"], 20), ...tagsRequete(creq.headers), "model=" + tag(bodyObj && bodyObj.model, 60));
     function stopKeepalive() { if (ctx.ka) { clearInterval(ctx.ka); ctx.ka = null; } }
     // garde la connexion client ouverte pendant qu'on retente (quota, coupure reseau, panne
     // serveur) : en streaming, Claude coupe au bout de ~5 min sans octet -> commentaires SSE.
@@ -574,7 +589,7 @@ function serve(creq, cres) {
       const compactInfo = isMsgs ? decideCompaction(conf, state, bodyObj, prevActive, route.idx, ctx, switching) : null;
       if (compactInfo && compactInfo.compact && !compactInfo.inPlace) {
         // compaction liee a un SWITCH/resume : tamponne (reel ou dry-run) pour le cooldown, et
-        // ecrit le marqueur memoire (le hook resumera le compte quitte via Haiku).
+        // ecrit le marqueur de derniere compaction (state.compaction, affiche par `cqr compact`).
         state.lastCompactAt = now();
         if (!compactInfo.dryRun) {
           state.compaction = { at: now(), from: (conf.tokens[prevActive] || {}).name, to: (conf.tokens[route.idx] || {}).name, model: bodyObj && bodyObj.model, reason: compactInfo.reason };
@@ -641,6 +656,7 @@ function serve(creq, cres) {
       delete headers["x-api-key"];
       // we always send with an explicit content-length -> drop any chunked encoding from the client
       delete headers["transfer-encoding"];
+      for (const h of INDICES_CLAUDE_CODE) delete headers[h];
 
       // --- auto-compaction : reduit les tokens envoyes au compte cible (0 token) ---
       let sendBody = body;
@@ -718,7 +734,7 @@ function serve(creq, cres) {
       const preq = safeRequest({ hostname: UPSTREAM_HOST, port: UPSTREAM_PORT, path: UPSTREAM_PATH_PREFIX + creq.url, method: creq.method, headers }, guard((pres) => {
         answered = true;
         ctx.netRetries = 0; ctx.netStart = 0; // une reponse (meme un rejet HTTP) prouve que le reseau fonctionne
-        logRate(pres.headers, pres.statusCode, tok.name);
+        logRate(pres.headers, pres.statusCode, tok.name, creq.headers);
         const q = readQuotaHeaders(pres.headers);
         const st = readState();
         applyQuota(st, tok.name, q);
@@ -973,9 +989,11 @@ if (require.main === module) {
     // A lire AVANT d'ecrire notre PID et notre premiere ligne : un PID mort dans proxy.pid = un relais
     // tue sans avoir pu nettoyer (TerminateProcess ne laisse aucune trace), et la derniere ligne du
     // journal date alors son dernier souffle.
-    const dernier = lastLogStamp(), mort = deadPidInFile();
+    // `cqr stop` pose proxy.stopped avant de tuer le relais (sous Windows : TerminateProcess, donc
+    // meme PID mort que d'un vrai plantage) : le marqueur, lu avant d'etre efface plus bas, les distingue.
+    const dernier = lastLogStamp(), mort = deadPidInFile(), voulu = fs.existsSync(path.join(DIR, "proxy.stopped"));
     logVie("demarrage pid=" + process.pid, "version=" + relayVersion(), "node=" + process.version, "lance_par=" + (process.env.CQR_STARTED_BY || "inconnu"));
-    if (mort) logVie("arret brutal precedent detecte pid=" + mort, "derniere_ligne_du_journal=" + dernier);
+    if (mort) logVie(voulu ? "arret voulu precedent (cqr stop) pid=" + mort : "arret brutal precedent detecte pid=" + mort, "derniere_ligne_du_journal=" + dernier);
     // PID ecrit seulement maintenant : un second relais qui echoue sur le port (EADDRINUSE) effacait
     // celui du premier. Le marqueur "arret voulu" de `cqr stop` tombe aussi : un relais qui demarre l'annule.
     try { fs.writeFileSync(PIDFILE, String(process.pid)); } catch (e) {}

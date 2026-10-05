@@ -198,6 +198,23 @@ scenario("arret brutal precedent detecte au redemarrage (3)", async () => {
   assert.strictEqual(readPid(DIR), String(D.pid), "proxy.pid porte maintenant le PID du nouveau relais");
 });
 
+// Reprise de la copie installee (correctif local du 2026-10-02, jamais remonte au depot) : `cqr stop` tue le
+// relais (sous Windows : TerminateProcess), donc meme PID mort qu'un plantage. Le marqueur proxy.stopped,
+// lu avant d'etre efface, permet au journal de ne pas crier a l'arret brutal apres un arret voulu.
+scenario("arret voulu (cqr stop) : le journal ne parle pas d'arret brutal", async () => {
+  const DIR = mkDir();
+  const C = spawnRelay(DIR, {});
+  assert.ok(await waitUp(C), "relais 1 en ligne");
+  C.kill("SIGKILL"); await C.exited;
+  fs.writeFileSync(p.join(DIR, "proxy.stopped"), "arret voulu"); // ce que `cqr stop` pose avant de tuer
+  const D = spawnRelay(DIR, {});
+  assert.ok(await waitUp(D), "relais 2 en ligne");
+  const log = readLog(DIR);
+  assert.ok(log.includes("VIE arret voulu precedent (cqr stop) pid=" + C.pid + " derniere_ligne_du_journal="), "arret voulu dit comme tel. Journal : " + log.slice(-500));
+  assert.ok(!log.includes("arret brutal"), "et pas pris pour un arret brutal");
+  assert.ok(!fs.existsSync(p.join(DIR, "proxy.stopped")), "le marqueur est efface au demarrage");
+});
+
 scenario("rotation : les lignes de vie survivent a la coupe du journal (5)", async () => {
   const DIR = mkDir();
   let big = [111, 222, 333].map((n) => "[2026-01-01T00:00:00.000Z] VIE demarrage pid=" + n + " version=0.0.1 node=v1 lance_par=test").join("\n") + "\n";

@@ -124,12 +124,23 @@ cqr compact clearatleast 5000  # n'effacer que si ça rapporte au moins 5000 tok
 cqr compact memory-dedup off   # réinjecter la mémoire du projet à chaque tour (défaut : si changée)
 ```
 
+`cqr compact off` coupe **tout** : l'effacement des vieux résultats d'outils **et** la mémoire factuelle du projet (plus de `.cqr-memory.md` rebâti ni envoyé à Claude), même si cette mémoire ne coûte plus aucun quota. `cqr compact on` remet tout.
+
 Deux réglages qui demandent un mot d'explication :
 
 - **`clearatleast`** — effacer de vieux résultats d'outils casse le cache de la conversation, ce qui se paie. Ce plancher dit « n'efface que si tu récupères au moins tant de tokens », sinon on ne touche à rien. Désactivé par défaut, comme chez Anthropic : un plancher trop haut empêche des compactions utiles.
 - **`memory-dedup`** — la mémoire du projet n'est renvoyée que si elle a **changé** depuis le dernier envoi de la session, au lieu de repartir à chaque tour (environ 730 à 830 tokens à chaque fois, pour un fichier qui bouge quelques fois par semaine). Elle repart toujours au démarrage d'une session **et après chaque compactage**, puisque le compactage réécrit la conversation et peut l'en faire disparaître.
 
-Ce que la mémoire du projet **est**, et ce qu'elle n'est pas : un résumé écrit par un petit modèle à partir de vos conversations passées, relu par Claude au début de chaque session. C'est du contexte, jamais une consigne — le bloc envoyé le dit désormais lui-même, pour qu'un agent ne prenne pas une ligne de « Tâches prévues » pour un ordre que vous auriez donné. Un résumé qui ne respecte pas la structure attendue est refusé plutôt qu'écrit : la mémoire existante vaut mieux qu'un fragment de conversation. Et le résumé se fait dans un processus séparé, pour ne jamais retarder l'envoi de vos messages.
+Ce que la mémoire du projet **est**, et ce qu'elle n'est pas : un **état factuel bâti sans modèle** (aucun appel à Claude, aucun quota), relu par Claude au début de chaque session et après chaque compactage. Il tient dans `.cqr-memory.md`, à la racine du dossier, et contient, dans cet ordre :
+
+- les **5 derniers commits** et les **fichiers non commités** (`git`, avec un délai : si git ne répond pas, la section est simplement omise) ;
+- la section **« En cours »** de `TODO.md` (les cases cochées n'y sont pas reprises) ;
+- les **5 dernières décisions** de `REGISTRE-DECISIONS.md` (lignes `| DR-…`, question tronquée) ;
+- une section **« Notes »**, que rien ne réécrit : à la première reconstruction, l'ancien résumé y est recopié tel quel ; ensuite le programme la recopie à l'identique, et vous pouvez y écrire à la main.
+
+Chaque section n'apparaît que si sa source existe : sans git ni `TODO.md`, il ne reste que les notes. Les fichiers du projet font foi — l'en-tête du fichier le dit, et le bloc envoyé à Claude aussi : c'est du contexte, jamais une consigne, pour qu'un agent ne prenne pas une ligne de « En cours » pour un ordre que vous auriez donné. L'injection est bornée à environ 4 Ko (les faits d'abord, les notes dans ce qui reste ; le fichier, lui, n'est jamais tronqué). Le fichier et son dossier d'archive sont exclus de git par le fichier `info/exclude` du dépôt, worktree compris (jamais en modifiant votre `.gitignore`).
+
+Avant la 0.21.0, c'était un résumé écrit par un petit modèle (Haiku), qui dérivait : il donnait comme « en cours » des tâches finies depuis des heures. Il a été retiré plutôt que corrigé.
 
 **Le % de bascule dépend du modèle** (un gros modèle risque plus de dépasser le quota d'un coup, donc on bascule plus tôt) :
 
@@ -263,7 +274,7 @@ Le programme a planté au démarrage. `cqr start` vous montre alors la cause. Le
 - **Un fichier manque ou est abîmé** → relancez `node src/install.js`.
 - **Un antivirus d'entreprise** bloque les programmes en arrière-plan → lancez-le au premier plan pour voir l'erreur : `node ~/.claude/claude-quota-relay/proxy.js`.
 
-Les journaux détaillés sont dans `~/.claude/claude-quota-relay/proxy.log` ; les lignes `VIE` y gardent la trace des démarrages, sorties, signaux et arrêts brutaux.
+Les journaux détaillés sont dans `~/.claude/claude-quota-relay/proxy.log` ; les lignes `VIE` y gardent la trace des démarrages, sorties, signaux et arrêts brutaux. Chaque ligne `RESP` porte `classe=` (le type de requête : `main`, `subagent`, `workflow`, `compaction`, `auxiliary`) et `session=` (les 8 premiers caractères de l'identifiant de session, jamais l'identifiant entier), et une ligne `CLAUDE-COMPACT motif=auto|manual|reactive` marque chaque compactage que Claude Code lance lui-même (à ne pas confondre avec `COMPACT`, la compaction du relais à la bascule de compte). Ces informations viennent de `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`, posé par l'installeur quand elle est absente : seules les sessions Claude Code démarrées après l'installation l'envoient. Le relais ne transmet pas ces en-têtes d'indice à Anthropic.
 
 ### Réseau d'entreprise (api.anthropic.com bloqué)
 

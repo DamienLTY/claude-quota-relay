@@ -54,7 +54,7 @@ const COMPACTION_DEFAULT = {
   clearAtLeast: null,
   // Memoire reinjectee seulement quand elle a change dans la session. false = a chaque tour.
   memoryDedup: true,
-  memoryFile: ".cqr-memory.md", memoryMaxLines: 400, archiveDir: ".cqr-archive",
+  memoryFile: ".cqr-memory.md", archiveDir: ".cqr-archive",
 };
 
 // Credits d'usage supplementaire ("extra usage") : OFF par defaut, volontairement. Ils peuvent
@@ -147,11 +147,14 @@ function patchSettings(conf) {
   settings.env = settings.env || {};
   settings.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:" + PORT;
   for (const [k, v] of Object.entries(TIMEOUTS)) settings.env[k] = v;
+  // DR-048 : Claude Code ajoute a chaque requete son type (x-claude-code-request-class) et le motif d'un compactage ; le journal les note.
+  // Posee seulement si elle est ABSENTE : une valeur choisie par l'utilisateur est a lui (la desinstallation ne retire que "1").
+  if (!("CLAUDE_CODE_GATEWAY_HINT_HEADERS" in settings.env)) settings.env.CLAUDE_CODE_GATEWAY_HINT_HEADERS = "1";
   const tok = firstRealToken(conf);
   if (tok) settings.env.ANTHROPIC_AUTH_TOKEN = tok;
   // Reseau d'entreprise : si cette variable est deja presente (ex. api.anthropic.com bloque,
   // l'utilisateur passe par son propre relais), on ne la touche pas -- le proxy la lira lui-meme
-  // au demarrage (voir resolveUpstream dans proxy.js/lib.js). On informe juste que c'est detecte.
+  // au demarrage (voir resolveUpstream dans proxy.js). On informe juste que c'est detecte.
   const targetApiUrl = settings.env.ANTHROPIC_TARGET_API_URL || null;
 
   settings.hooks = settings.hooks || {};
@@ -166,9 +169,9 @@ function patchSettings(conf) {
     hooksAdded++;
   }
   registerHook("SessionStart", "startup|resume|clear", "ensure-proxy.js");          // proxy autostart
-  registerHook("SessionStart", "startup|resume|clear", "memory-hook.js");           // inject project memory
-  registerHook("UserPromptSubmit", null, "memory-hook.js");                        // refresh memory on switch
-  registerHook("PreCompact", null, "memory-hook.js");                              // enrich memory on manual /compact
+  registerHook("SessionStart", "startup|resume|clear", "memory-hook.js");           // rebuild + inject project memory
+  registerHook("UserPromptSubmit", null, "memory-hook.js");                        // re-inject memory (de-duplicated)
+  registerHook("PreCompact", null, "memory-hook.js");                              // rebuild memory before any compaction
   registerHook("PreToolUse", "Workflow", "cqr-workflow-guard.js");                 // workflow quota guard
 
   const sl = setupStatusline(settings);

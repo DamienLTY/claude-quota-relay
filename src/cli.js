@@ -430,7 +430,7 @@ switch (cmd) {
       if (cc.dynamicThreshold) console.log("marge    :", (cc.dynamicSafetyBufferPoints == null ? 4 : cc.dynamicSafetyBufferPoints) + " points (marge de la compaction en place)");
       console.log("mém.dedup:", cc.memoryDedup === false ? "désactivé : réinjectée à chaque tour" : "activée : réinjectée seulement si elle a changé (et après chaque compaction)", "-- cqr compact memory-dedup on|off");
       console.log("plancher :", cc.clearAtLeast ? cc.clearAtLeast + " tokens minimum effacés, sinon on n'applique pas (protège le cache)" : "aucun (défaut) -- cqr compact clearatleast <tokens|off>");
-      console.log("mémoire  :", cc.memoryFile || ".cqr-memory.md", "(par projet, max " + (cc.memoryMaxLines || 400) + " lignes)");
+      console.log("mémoire  :", cc.memoryFile || ".cqr-memory.md", "(par projet : état factuel bâti sans modèle au démarrage de session et avant un compactage, + notes)");
       const lc = lastCompactStr(readState());
       console.log("dernière :", lc ? lc + " -- détail dans proxy.log" : "aucune encore enregistrée (une ligne apparaîtra ici au 1er changement de compte compacté ; les compactions en place ne sont pas tracées -- voir proxy.log)");
     }

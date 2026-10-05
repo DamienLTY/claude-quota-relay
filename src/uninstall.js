@@ -36,6 +36,8 @@ if (fs.existsSync(SETTINGS)) {
 if (s) {
   if (s.env) {
     for (const k of OUR_ENV) delete s.env[k];
+    // DR-048 : retiree seulement si elle vaut "1", la valeur que pose l'installeur ; toute autre est un reglage de l'utilisateur.
+    if (s.env.CLAUDE_CODE_GATEWAY_HINT_HEADERS === "1") delete s.env.CLAUDE_CODE_GATEWAY_HINT_HEADERS;
     // Note: we intentionally KEEP ANTHROPIC_AUTH_TOKEN (removing it could log you out of the CLI).
   }
   // Remove all our hooks (proxy autostart + memory hook) from every event they touch.

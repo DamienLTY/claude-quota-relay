@@ -1,45 +1,56 @@
 // Tests for ANTHROPIC_TARGET_API_URL support (corporate networks where api.anthropic.com is
 // blocked -- the user routes through their own relay, e.g. a Cloudflare Worker). Claude Code
-// itself does NOT read this variable; our proxy + lib.js must, so the whole toolset (routing,
-// probes, statusline data, compaction's Haiku call) works behind that block.
+// itself does NOT read this variable; our proxy must, so the whole toolset (routing,
+// probes, statusline data) works behind that block.
 // Run: node test/upstream-override.test.js
 const assert = require("assert");
-const fs = require("fs"), os = require("os"), p = require("path"), http = require("http"), cp = require("child_process");
+const fs = require("fs"), os = require("os"), p = require("path"), http = require("http"), https = require("https"), cp = require("child_process");
 
-const lib = require("../src/lib.js");
+// --- resolveUpstream (pure) : repris de lib.resolveUpstream, qui a rejoint proxy.js ---
+// proxy.js est charge depuis une copie jetable : une URL invalide ecrit une ligne dans proxy.log, a cote du
+// fichier charge -- jamais dans src/.
+{
+  const PURE = fs.mkdtempSync(p.join(os.tmpdir(), "cqr-upstream-pure-"));
+  try {
+    for (const f of ["proxy.js", "compaction.js", "lib.js"]) fs.copyFileSync(p.join(__dirname, "..", "src", f), p.join(PURE, f));
+    delete process.env.ANTHROPIC_TARGET_API_URL;
+    const { resolveUpstream } = require(p.join(PURE, "proxy.js"));
+    {
+      const u = resolveUpstream();
+      assert.strictEqual(u.host, "api.anthropic.com", "no env var -> default host");
+      assert.strictEqual(u.port, 443, "default port 443");
+      assert.strictEqual(u.pathPrefix, "", "default: no path prefix");
+      assert.strictEqual(u.mod, https, "default: https");
+    }
+    {
+      process.env.ANTHROPIC_TARGET_API_URL = "https://claude.example-worker.workers.dev";
+      const u = resolveUpstream();
+      assert.strictEqual(u.host, "claude.example-worker.workers.dev", "custom host used");
+      assert.strictEqual(u.port, 443, "https default port 443");
+      assert.strictEqual(u.pathPrefix, "", "no path in the URL -> empty prefix");
+      assert.strictEqual(u.mod, https, "https URL -> https");
+      delete process.env.ANTHROPIC_TARGET_API_URL;
+    }
+    {
+      process.env.ANTHROPIC_TARGET_API_URL = "http://internal-relay.corp:8080/anthropic-proxy";
+      const u = resolveUpstream();
+      assert.strictEqual(u.host, "internal-relay.corp", "custom http host");
+      assert.strictEqual(u.port, 8080, "custom port parsed");
+      assert.strictEqual(u.pathPrefix, "/anthropic-proxy", "path prefix parsed (trailing slash stripped)");
+      assert.strictEqual(u.mod, http, "http URL -> http");
+      delete process.env.ANTHROPIC_TARGET_API_URL;
+    }
+    {
+      process.env.ANTHROPIC_TARGET_API_URL = "not a valid url  ";
+      const u = resolveUpstream();
+      assert.strictEqual(u.host, "api.anthropic.com", "invalid URL -> falls back to default, never throws");
+      assert.strictEqual(u.mod, https, "invalid URL -> default https");
+      delete process.env.ANTHROPIC_TARGET_API_URL;
+    }
+  } finally { try { fs.rmSync(PURE, { recursive: true, force: true }); } catch (e) {} }
+}
 
-// --- lib.resolveUpstream (pure) ---
-{
-  delete process.env.ANTHROPIC_TARGET_API_URL;
-  const u = lib.resolveUpstream();
-  assert.strictEqual(u.hostname, "api.anthropic.com", "no env var -> default host");
-  assert.strictEqual(u.port, 443, "default port 443");
-  assert.strictEqual(u.pathPrefix, "", "default: no path prefix");
-}
-{
-  process.env.ANTHROPIC_TARGET_API_URL = "https://claude.example-worker.workers.dev";
-  const u = lib.resolveUpstream();
-  assert.strictEqual(u.hostname, "claude.example-worker.workers.dev", "custom host used");
-  assert.strictEqual(u.port, 443, "https default port 443");
-  assert.strictEqual(u.pathPrefix, "", "no path in the URL -> empty prefix");
-  delete process.env.ANTHROPIC_TARGET_API_URL;
-}
-{
-  process.env.ANTHROPIC_TARGET_API_URL = "http://internal-relay.corp:8080/anthropic-proxy";
-  const u = lib.resolveUpstream();
-  assert.strictEqual(u.hostname, "internal-relay.corp", "custom http host");
-  assert.strictEqual(u.port, 8080, "custom port parsed");
-  assert.strictEqual(u.pathPrefix, "/anthropic-proxy", "path prefix parsed (trailing slash stripped)");
-  delete process.env.ANTHROPIC_TARGET_API_URL;
-}
-{
-  process.env.ANTHROPIC_TARGET_API_URL = "not a valid url  ";
-  const u = lib.resolveUpstream();
-  assert.strictEqual(u.hostname, "api.anthropic.com", "invalid URL -> falls back to default, never throws");
-  delete process.env.ANTHROPIC_TARGET_API_URL;
-}
-
-console.log("PASS — lib.resolveUpstream: default, https custom, http custom + path prefix, invalid falls back");
+console.log("PASS — proxy.resolveUpstream: default, https custom, http custom + path prefix, invalid falls back");
 
 // --- e2e: spawn the REAL proxy with ONLY ANTHROPIC_TARGET_API_URL set (not the CQR_UPSTREAM_*
 // test seam) and confirm it actually forwards to that relay, using the real env var name a
