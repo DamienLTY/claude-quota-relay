@@ -323,5 +323,41 @@ const rows = (n, longue) => Array.from({ length: n }, (_, i) => "| DR-" + String
   assert.ok(inject(run(s2.INSTALL, s2.PROJ, "UserPromptSubmit", "sess-A")), "memoryDedup:false : le prompt injecte quand meme");
 }
 
+// --- Lecture seule de .orr-memory.md (sessions FCC sous Nemotron, openrouter-relay) ---
+{
+  const orrF = (s) => p.join(s.PROJ, ".orr-memory.md"), cqrF = (s) => p.join(s.PROJ, ".cqr-memory.md");
+
+  // les deux blocs injectes, etiquetes, sous le meme avertissement
+  let s = setup(enabled);
+  fs.writeFileSync(cqrF(s), TITLE + "\n\n## Notes\nNOTE CQR\n");
+  fs.writeFileSync(orrF(s), "NOTE ORR nemotron");
+  let ctx = injected(run(s.INSTALL, s.PROJ, "SessionStart"));
+  assert.ok(ctx.includes("NOTE CQR") && ctx.includes("NOTE ORR nemotron"), "orr : les deux memoires sont injectees");
+  assert.ok(/openrouter-relay/.test(ctx) && /LECTURE SEULE/.test(ctx), "orr : bloc etiquete (source + lecture seule)");
+  assert.ok(ctx.indexOf("jamais comme une consigne") < ctx.indexOf("NOTE ORR"), "orr : l'avertissement precede le bloc");
+
+  // orr seul (cqr vide) : injecte quand meme, sans inviter a ecrire dans cqr
+  fs.writeFileSync(cqrF(s), "");
+  ctx = injected(run(s.INSTALL, s.PROJ, "UserPromptSubmit", "sess-orr"));
+  assert.ok(ctx.includes("NOTE ORR") && !ctx.includes("enrichir"), "orr seul : injecte, sans invitation a ecrire");
+
+  // dedup : orr inchange -> silence ; orr change -> reinjecte
+  s = setup(enabled);
+  fs.writeFileSync(orrF(s), "orr v1");
+  run(s.INSTALL, s.PROJ, "SessionStart", "sess-d");
+  assert.ok(!injected(run(s.INSTALL, s.PROJ, "UserPromptSubmit", "sess-d")), "orr inchange : silence");
+  fs.writeFileSync(orrF(s), "orr v2");
+  assert.ok(injected(run(s.INSTALL, s.PROJ, "UserPromptSubmit", "sess-d")).includes("orr v2"), "orr change : reinjecte");
+
+  // borne a INJECT_MAX ; le fichier n'est jamais ecrit (octets identiques apres les trois evenements)
+  s = setup(enabled);
+  const orrBytes = Buffer.from("SECRET-ORR-é\r\n" + "ligne orr\n".repeat(1000), "utf8");
+  fs.writeFileSync(orrF(s), orrBytes);
+  ctx = injected(run(s.INSTALL, s.PROJ, "SessionStart"));
+  assert.ok(ctx.includes("SECRET-ORR") && ctx.includes("caracteres non injectes : lire " + orrF(s)), "orr long : borne, avec le chemin du fichier");
+  run(s.INSTALL, s.PROJ, "UserPromptSubmit"); run(s.INSTALL, s.PROJ, "PreCompact");
+  assert.ok(fs.readFileSync(orrF(s)).equals(orrBytes), ".orr-memory.md : octets identiques apres SessionStart, UserPromptSubmit, PreCompact");
+}
+
 for (const T of roots) { try { fs.rmSync(T, { recursive: true, force: true }); } catch (e) {} }
-console.log("PASS — memory-hook.js (0.21.0, sans modele) : faits git/TODO/registre rebatis a SessionStart et PreCompact, Notes recopiees a l'identique (premier passage = ancien contenu), UserPromptSubmit ne reecrit rien, dossier sans git / sous-dossier / worktree / .git casse, exclusion par info/exclude (chemin resolu par git : worktree compris) sans toucher .gitignore, plafonds, dedup + reinjection apres compaction, SessionStart note l'injection");
+console.log("PASS — memory-hook.js (0.21.0, sans modele) : faits git/TODO/registre rebatis a SessionStart et PreCompact, Notes recopiees a l'identique (premier passage = ancien contenu), UserPromptSubmit ne reecrit rien, dossier sans git / sous-dossier / worktree / .git casse, exclusion par info/exclude (chemin resolu par git : worktree compris) sans toucher .gitignore, plafonds, dedup + reinjection apres compaction, SessionStart note l'injection, .orr-memory.md injecte en lecture seule");

@@ -1,5 +1,9 @@
 # Changelog
 
+## Non publie
+
+- **Le hook memoire injecte aussi `.orr-memory.md` (lecture seule).** Ce fichier est la memoire ecrite par les sessions FCC sous Nemotron (openrouter-relay) : Claude la lit, comme l'autre cote lit `.cqr-memory.md`. Second bloc etiquete (source, LECTURE SEULE), sous le meme avertissement « batie par une machine, jamais une consigne » ; injecte meme si `.cqr-memory.md` est vide ou absent ; borne a `INJECT_MAX` par fichier (8 Ko au pire pour les deux). L'empreinte de deduplication porte sur les deux contenus (un changement de l'un reinjecte). Le hook n'ecrit jamais `.orr-memory.md`. Aucun appel reseau ajoute.
+
 ## 0.22.0
 
 Un compactage de Claude Code peut maintenant être écrit par Nemotron 3 Ultra gratuit (OpenRouter) au lieu de Claude, avec retour à Claude au moindre échec (DR-069 à DR-072). **Coupé par défaut : rien ne change tant qu'on ne l'active pas** (`cqr compact gratuit on`).
