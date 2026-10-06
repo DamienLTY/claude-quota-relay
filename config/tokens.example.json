@@ -17,7 +17,15 @@
     "compactionCooldownMs": 600000,
     "dynamicSafetyBufferPoints": 4,
     "memoryFile": ".cqr-memory.md",
-    "archiveDir": ".cqr-archive"
+    "archiveDir": ".cqr-archive",
+    "free": {
+      "enabled": false,
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "kinds": ["auto", "manual"],
+      "timeoutMs": 240000,
+      "minSummaryChars": 1500,
+      "names": []
+    }
   },
   "workflowGuard": {
     "enabled": true,

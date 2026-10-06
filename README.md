@@ -167,6 +167,41 @@ cqr compact dynamic off    # revient à : on n'allège qu'au changement de compt
 ```
 </details>
 
+### Le compactage gratuit (coupé par défaut)
+
+Quand Claude Code compacte la conversation — tout seul vers 300 000 tokens, ou quand vous tapez `/compact` —, c'est normalement Claude qui écrit le résumé, et ça consomme du quota. Cette option fait écrire ce résumé par **Nemotron 3 Ultra** (NVIDIA, offre gratuite via OpenRouter) à la place. **Au moindre échec, Claude reprend** et écrit le résumé comme s'il ne s'était rien passé.
+
+**C'est coupé par défaut, et ça se règle poste par poste** (le réglage vit dans le `tokens.json` de chaque PC). Ne l'activez pas sur un poste ou un projet confidentiel : c'est la seule fonction du programme qui envoie du texte de conversation à un tiers.
+
+```bash
+export OPENROUTER_API_KEY=...        # votre clé OpenRouter, dans l'environnement du relais (puis : cqr restart)
+cqr compact gratuit on               # activer (effet immédiat)
+cqr compact gratuit noms "nom,pseudo"  # noms supplémentaires à masquer (facultatif, 3 caractères au moins chacun)
+cqr compact gratuit status           # état, modèle, noms, clé vue ou non dans ce terminal
+cqr compact gratuit off              # couper
+```
+
+La clé n'est lue que dans la variable d'environnement `OPENROUTER_API_KEY` du relais : elle n'est écrite ni dans `tokens.json` ni dans les journaux, et `cqr` ne l'affiche jamais.
+
+**Ce qui part chez NVIDIA** (via OpenRouter) : le texte de la conversation — vos messages, les commandes que Claude a lancées et leurs résultats. Ne partent pas : le prompt système, la liste des outils, le raisonnement interne de Claude. Avant l'envoi :
+
+- les **jetons et mots de passe** reconnus sont remplacés par `[SECRET-MASQUE]`, **définitivement** : ils ne reviennent jamais dans le résumé. Sont reconnus : les clés Anthropic, GitHub, AWS, Google, OpenAI/OpenRouter, Slack, Stripe (`sk_live_`, `sk_test_`, `rk_live_`), npm, Hugging Face et GitLab ; les jetons JWT ; les en-têtes `Authorization: Bearer|Basic`, `Cookie` et `Set-Cookie` ; le mot de passe d'une adresse (`https://nom:motdepasse@hôte`) ; `sshpass -p` et `mysql -p` ; les clés privées, **du `BEGIN` au `END`** (quand le `END` manque : jusqu'au message suivant de la conversation, ou jusqu'à la fin du texte) ; les affectations `token=`, `api_key=`, `password=`, `secret=`, `private_key=`, `access_key=` et `PASS=`, quelle que soit la valeur, sauf un nombre derrière `token` (`max_tokens: 32768` reste lisible) ; les options `--password`, `--passwd`, `--pwd`, `--token` et `--secret`, `curl -u nom:motdepasse` et `login -p` ; et la valeur exacte de `OPENROUTER_API_KEY` et de chaque jeton de `tokens.json`. Ce filtre repose sur des formes connues : un secret d'une forme inconnue passerait. À l'inverse, dans le doute il masque trop plutôt que trop peu : environ 1,3 % des lignes d'un dépôt chargé en `token` ont été masquées à tort (mesuré), et ce qui est masqué ne revient pas dans le résumé ;
+- votre **dossier personnel** (écrit `C:\Users\vous`, `C:/Users/vous`, `/c/Users/vous` ou `C--Users-vous`), votre **nom d'utilisateur**, le **nom de votre dossier personnel** et les **noms** ajoutés avec `cqr compact gratuit noms` sont remplacés par un repère (`[PERSO-a1b2c3-1]`…), un par chaîne d'origine, majuscules comprises. Un nom d'utilisateur ou de dossier de moins de 3 caractères n'est pas masqué seul (il couperait des mots ordinaires) ; le chemin complet l'est toujours. Les repères sont **remis en clair** dans le résumé que reçoit Claude Code : la session suivante retrouve ses vrais chemins. Le repère porte un nombre tiré au hasard à chaque envoi : un `[PERSO-1]` déjà présent dans votre texte n'est jamais remis en chemin, et si le résumé contient un repère que le relais n'a pas posé, Claude reprend la main.
+
+**Conditions de l'offre gratuite** (lues le 5 octobre 2026) : l'accès d'essai de NVIDIA est réservé à un usage d'essai, hors production ; il est interdit d'y envoyer des données confidentielles ou sensibles ; NVIDIA peut réutiliser le contenu envoyé et généré pour améliorer ses produits. Ce que vous envoyez peut donc être gardé et réutilisé.
+
+**Quels compactages** : les automatiques (`auto`) et les manuels (`manual`, la commande `/compact`). Les compactages « réactifs » (déclenchés en urgence quand le contexte déborde) restent toujours chez Claude, même si la config le demande. Le relais reconnaît un compactage à l'en-tête que Claude Code envoie (posé par l'installeur, session démarrée après l'installation) : sans cet en-tête, Claude écrit le résumé. L'invite native est cherchée dans le dernier message qui n'est pas de rôle `system` : Claude Code 2.1.289 termine sa requête de compactage par un message `system` vide.
+
+**Quand Claude reprend la main**, sans rien perdre :
+
+- avant tout envoi : réglage coupé, compactage coupé ou absent (`cqr compact off` coupe tout, ceci compris), clé absente, type non listé, conversation estimée à plus de 900 000 tokens, ou blocage de 10 minutes après une panne du service (erreur HTTP ou réseau, délai dépassé, réponse trop grosse, réponse illisible `json-invalide` ou sans choix `sans-choix` ; un résumé refusé, lui, ne bloque pas) ;
+- après l'envoi : erreur du service ou du réseau, plus de 240 s d'attente, réponse de plus de 2 Mio (la connexion est coupée), ou résumé refusé (réponse non terminée, balise `<summary>` absente, résumé de moins de 1 500 caractères, repère inconnu). Aucun résumé n'est rendu à Claude Code tant qu'il n'est pas valide. Pendant les 60 premières secondes, rien n'est envoyé du tout au client : un repli rapide lui rend la vraie réponse de Claude, erreur comprise (un 400 reste un 400). Au-delà de 60 s, des battements gardent la connexion ouverte, et un repli tardif ne peut plus rendre qu'une erreur de flux (SSE) si Claude refuse ;
+- si Claude Code abandonne sa requête, l'appel à OpenRouter est coupé.
+
+`proxy.log` note chaque cas sur une ligne, jamais le contenu : `COMPACT-GRATUIT ok motif=auto duree=… caracteres=…`, `COMPACT-GRATUIT repli raison=…`, `COMPACT-GRATUIT abandon raison=client-parti`.
+
+Réglages avancés, dans `compaction.free` de `tokens.json` : `model` (défaut `nvidia/nemotron-3-ultra-550b-a55b:free`), `kinds` (`["auto","manual"]`), `timeoutMs` (240000), `minSummaryChars` (1500), `names`.
+
 ### La statusline (barre d'état)
 
 Toujours visible dans Claude Code, elle montre le quota de tous vos comptes :
@@ -340,6 +375,7 @@ L'installeur règle aussi `statusLine.refreshInterval` à 10 s : la barre d'éta
 - `tokens.json`, `state.json` et les journaux sont **ignorés par git** : jamais commités par erreur.
 - Vos clés ne quittent jamais votre machine : le programme n'écoute que sur `127.0.0.1` (votre ordinateur seul).
 - Les journaux masquent toujours les clés.
+- Seul le compactage gratuit, coupé par défaut, envoie du texte de conversation à un tiers : voir sa section plus haut.
 
 ### Limites honnêtes
 

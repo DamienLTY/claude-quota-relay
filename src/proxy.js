@@ -28,6 +28,10 @@ const fs = require("fs");
 const path = require("path");
 const comp = require("./compaction.js");
 const lib = require("./lib.js"); // overageUsable : meme regle "credits utilisables" pour le routage et l'affichage
+// Compactage gratuit (DR-069) : charge a la premiere requete, pas au demarrage -- un fichier absent ou casse ne doit jamais
+// toucher le failover. null = indisponible, Claude sert.
+let _free;
+function freeModule() { if (_free === undefined) { try { _free = require("./free-compact.js"); } catch (e) { _free = null; log("COMPACT-GRATUIT module indisponible", e.code || e.name); } } return _free; }
 
 const DIR = __dirname;
 const CONF = path.join(DIR, "tokens.json");
@@ -559,7 +563,30 @@ function serve(creq, cres) {
       stopKeepalive();
       abandon(); // plus aucun minuteur ne doit reprendre cette requete
     }
-    guard(attempt)();
+    if (!tryFreeCompact()) guard(attempt)();
+
+    // DR-069 a DR-072 : un compactage de Claude Code (auto ou manuel) est ecrit par Nemotron gratuit au lieu de Claude.
+    // true = pris en charge (le chemin Claude ne part qu'en cas d'echec) ; false = Claude sert tout de suite.
+    function tryFreeCompact() {
+      let FC, plan;
+      try { FC = freeModule(); plan = FC && FC.decide({ url: creq.url, headers: creq.headers, body: bodyObj }, readConf); } catch (e) { return false; }
+      if (!plan) return false;
+      if (!plan.go) { if (!plan.quiet) log("COMPACT-GRATUIT", "repli", "raison=" + plan.raison); return false; }
+      if (plan.urlIgnoree) log("COMPACT-GRATUIT", "surcharge-ignoree", "raison=hote-non-local"); // jamais l'adresse
+      // Le flux ne s'ouvre qu'apres FC.holdMs() (60 s, sous la fenetre de premier octet du client, 120 s) : un repli rapide garde le
+      // vrai statut de Claude (un 400 reste un 400) ; au-dela, des battements partent et un repli tardif ne peut rendre qu'une erreur SSE.
+      const hold = after(() => holdOpen("compactage gratuit en cours"), FC.holdMs());
+      FC.run(plan, bodyObj, { onReq: (r) => { upstreamReq = r; }, gone: () => clientGone }).then(guard((r) => {
+        clearTimeout(hold);
+        upstreamReq = null;
+        if (clientGone) { stopKeepalive(); log("COMPACT-GRATUIT", "abandon", "raison=client-parti"); return; }
+        if (!r.ok) { log("COMPACT-GRATUIT", "repli", "raison=" + tag(r.raison, 40)); return attempt(); }
+        stopKeepalive(); ctx.sent = true;
+        FC.sendSummary(cres, bodyObj, r.text, isStream);
+        log("COMPACT-GRATUIT", "ok", "motif=" + tag(plan.kind, 20), "duree=" + Math.round(r.ms / 1000) + "s", "caracteres=" + r.text.length);
+      }));
+      return true;
+    }
 
     function attempt() {
       if (clientGone) return;

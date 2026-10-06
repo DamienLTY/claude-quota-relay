@@ -359,3 +359,41 @@ Ouvert : la cause réelle sur le PC d'entreprise (fin de `proxy.out.log`, lignes
 **Revues.** Qualité (`thermo-review`) et sécurité (DR-039 d'etabli) : aucun bloquant. Corrigés : en-têtes d'indice, 4 tests de `resolveUpstream` perdus, commentaires périmés, double injection au démarrage, exclusion dans un worktree (`git rev-parse --git-path info/exclude`), `-c core.fsmonitor=false`, variable posée seulement si absente. Non retenus : test du délai git, expurgation des lignes de TODO, ménage des restes à la désinstallation.
 
 **Preuve.** `npm test` exit 0, 50 lignes PASS (relancé par l'agent principal le 2026-10-05). Chaque correction défaite fait échouer son test ; restauration octet à octet. jalon, côté graphe : etabli:DR-067, jalon:DR-113.
+
+## DR-015 — Compactages détournés vers Nemotron 3 Ultra gratuit
+
+**Type** : évolution · **État** : 0.22.0, contrôle de bout en bout passé le 2026-10-06 ; activé sur ce PC seulement, coupé par défaut ailleurs
+
+**Constat (etabli, 2026-10-05).** Au banc de fidélité (20 questions, notation Haiku, moyennes sur 3 compactages), Nemotron 3 Ultra gratuit fait 11,00 contre 10,22 pour le compactage natif rejoué ; Nemotron 3.5 8,67, Gemini 3 Flash 7,11, Ornith 9 B local 7,00.
+
+**Décisions de l'utilisateur, citées (registre d'etabli).**
+- etabli:DR-069 : « Brancher 3 Ultra quand même » — « Le relais détourne les compactages vers Nemotron 3 Ultra, avec retour à Claude en cas d'échec. Plusieurs jours de travail, en passant outre les conditions de NVIDIA (données gardées pour l'entraînement, usage d'essai seulement). »
+- etabli:DR-070 : Nemotron « uniquement sur ce PC » (révisée sous condition par etabli:DR-080).
+- etabli:DR-071 : compactages `auto` et `manual` seulement, jamais `reactive`.
+- etabli:DR-072 : « Les chemins et le nom sont remplacés par des repères avant l'envoi, puis remis tels quels dans le résumé […]. Les jetons et mots de passe, eux, restent masqués définitivement. »
+- etabli:DR-073 : activation seulement si 3 compactages rejoués font au moins 10,22 de moyenne.
+- etabli:DR-066 : `cqr compact off` coupe tout, donc aussi le détournement.
+
+**Ce qui change.** `src/free-compact.js` reconnaît la demande de compactage (en-têtes `x-claude-code-compaction` et `request-class`, invite native dans le dernier message non `system`), rend la conversation en texte, masque les secrets puis les chemins et noms, appelle OpenRouter et valide le résumé (`<summary>` d'au moins 1 500 caractères). Ensuite, il rend le flux SSE complet. `src/proxy.js` s'y branche avant `attempt()` : tout échec revient à Claude. Réglage `compaction.free`, commande `cqr compact gratuit on|off|status|noms`.
+
+**Ce qui a échoué avant de marcher.** Boucle 1 du contrôle : tests verts et 33 mutations, mais aucun détournement avec le vrai Claude Code 2.1.289, qui met des messages `system` dans `messages` et en dernier un `system` vide. Seul un vrai `claude -p --resume` l'a montré.
+
+**Revues.** Trois passes, qualité et sécurité (DR-039 d'etabli). Corrigés :
+- corps de clé privée et 17 formes de secret en clair ;
+- 200 envoyé avant validation ;
+- réponse non bornée ;
+- `CQR_FREE_COMPACT_URL` vers tout hôte ;
+- `basename(home)` absent ;
+- motif quadratique (320 Ko → 111 s) ;
+- clé sans `END` qui avalait l'invite ;
+- formes de ligne de commande.
+
+Refusés, avec leur raison : réécriture en `fetch` (Node ≥ 18 sans `AbortSignal.any`) ; écriture atomique de `cli.js:35`, défaut antérieur, suivi à part.
+
+**Preuve.** `npm test` exit 0, 60 PASS ; chaque correctif défait fait échouer son test. Contrôle de bout en bout sur le code `e2e5dec5` :
+- 3 compactages `COMPACT-GRATUIT ok` (132 à 138 s), 0 compactage chez Claude ;
+- notes 9,67, 12,33 et 12,00, soit une **moyenne de 11,33** ;
+- corps sortants : scanner 0, nom 0, 288 repères et 27 secrets masqués ;
+- résumés : 0 repère resté, chemins revenus.
+
+Réserve : le `system` vide final n'est observé qu'en `claude -p --resume`. En interactif, un écart ferait seulement revenir à Claude.

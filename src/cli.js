@@ -418,6 +418,38 @@ switch (cmd) {
       const mf = p.join(process.cwd(), cc.memoryFile || ".cqr-memory.md");
       if (fs.existsSync(mf)) console.log(fs.readFileSync(mf, "utf8")); else console.log("(pas encore de fichier mémoire dans " + process.cwd() + ")");
     }
+    else if (a1 === "gratuit" || a1 === "free") {
+      // DR-069 a DR-072 : compactages auto/manuels ecrits par Nemotron gratuit. Coupe par defaut ; n'affiche jamais le fichier ni une cle.
+      const fc = require("./free-compact.js");
+      const f = cc.free = Object.assign({}, cc.free);
+      if (a2 === "on") {
+        f.enabled = true; writeConf(c);
+        console.log("Compactage gratuit ACTIVÉ : les compactages automatiques et manuels (/compact) de Claude Code sont écrits par Nemotron 3 Ultra (OpenRouter, offre gratuite de NVIDIA) au lieu de Claude ; au moindre échec, Claude reprend.");
+        console.log("Le texte de la conversation part chez un tiers : jetons et mots de passe masqués, dossier personnel et noms remplacés par des repères (voir le README pour ce que NVIDIA peut en faire).");
+        console.log("La clé OPENROUTER_API_KEY doit être dans l'environnement du relais (relancer le relais après l'avoir posée). Effet immédiat, aucun redémarrage nécessaire.");
+        if (!cc.enabled) console.log("compactage coupé : `cqr compact on` d'abord");
+      }
+      else if (a2 === "off") { f.enabled = false; writeConf(c); console.log("Compactage gratuit désactivé : Claude écrit tous les compactages."); }
+      else if (a2 === "noms" || a2 === "names") {
+        if (a3 === undefined) { console.error('Usage : cqr compact gratuit noms "<nom1,nom2>"  (liste vide "" pour tout retirer)'); process.exit(1); }
+        const noms = [...new Set(String(a3).split(",").map((n) => n.trim()).filter(Boolean))];
+        const courts = noms.filter((n) => n.length < 3);
+        if (courts.length) { console.error("Refusé : un nom de moins de 3 caractères (" + courts.join(", ") + ") masquerait aussi des mots courants. Rien n'a été modifié."); process.exit(1); }
+        f.names = noms; writeConf(c);
+        console.log(f.names.length ? "Noms masqués en plus du dossier personnel et du nom d'utilisateur : " + f.names.join(", ") + "." : "Liste de noms vidée (le dossier personnel et le nom d'utilisateur restent masqués).");
+      }
+      else if (a2 === "status" || !a2) {
+        const r = fc.resolveConfig(f);
+        console.log("détournement :", r.enabled ? "ACTIVÉ" : "coupé (défaut)", "-- cqr compact gratuit on|off");
+        if (!cc.enabled) console.log("             : compactage coupé (`cqr compact on` d'abord), donc rien n'est détourné");
+        console.log("modèle       :", r.model);
+        console.log("types        :", r.kinds.join(", ") || "aucun", "(les compactages « reactive » restent toujours chez Claude)");
+        console.log("délai        :", Math.round(r.timeoutMs / 1000) + "s, puis Claude reprend ; résumé d'au moins " + r.minSummaryChars + " caractères");
+        console.log("noms masqués :", r.names.join(", ") || "aucun", "(en plus du dossier personnel et du nom d'utilisateur) -- cqr compact gratuit noms \"<a,b>\"");
+        console.log("clé          :", process.env.OPENROUTER_API_KEY ? "OPENROUTER_API_KEY présente dans ce terminal" : "OPENROUTER_API_KEY absente de ce terminal", "(le relais la lit dans son propre environnement)");
+      }
+      else { console.error('Usage : cqr compact gratuit on|off|status|noms "<a,b>"'); process.exit(1); }
+    }
     else if (a1 === "status" || !a1) {
       console.log("activée  :", !!cc.enabled);
       console.log("dry-run  :", !!cc.dryRun);
@@ -431,10 +463,12 @@ switch (cmd) {
       console.log("mém.dedup:", cc.memoryDedup === false ? "désactivé : réinjectée à chaque tour" : "activée : réinjectée seulement si elle a changé (et après chaque compaction)", "-- cqr compact memory-dedup on|off");
       console.log("plancher :", cc.clearAtLeast ? cc.clearAtLeast + " tokens minimum effacés, sinon on n'applique pas (protège le cache)" : "aucun (défaut) -- cqr compact clearatleast <tokens|off>");
       console.log("mémoire  :", cc.memoryFile || ".cqr-memory.md", "(par projet : état factuel bâti sans modèle au démarrage de session et avant un compactage, + notes)");
+      const libre = cc.free && cc.free.enabled === true; // l'état effectif : sans compaction active, le proxy ne détourne rien
+      console.log("gratuit  :", libre && cc.enabled ? "ACTIVÉ (compactages auto/manuels écrits par un modèle gratuit)" : libre ? "sans effet : compactage coupé (`cqr compact on` d'abord)" : "coupé (défaut)", "-- cqr compact gratuit status|on|off");
       const lc = lastCompactStr(readState());
       console.log("dernière :", lc ? lc + " -- détail dans proxy.log" : "aucune encore enregistrée (une ligne apparaîtra ici au 1er changement de compte compacté ; les compactions en place ne sont pas tracées -- voir proxy.log)");
     }
-    else console.error("Usage : cqr compact [status|on|off|dry-run|mode native|strip|keep <n>|cooldown <min>|threshold <modèle> <pct>|dynamic on|off|buffer <points>|clearatleast <tokens|off>|memory-dedup on|off|memory]");
+    else console.error("Usage : cqr compact [status|on|off|dry-run|mode native|strip|keep <n>|cooldown <min>|threshold <modèle> <pct>|dynamic on|off|buffer <points>|clearatleast <tokens|off>|memory-dedup on|off|memory|gratuit on|off|status|noms]");
     break;
   }
   case "credits": case "credit": {
@@ -561,6 +595,8 @@ function printHelp() {
     "  cqr compact memory-dedup on|off        mémoire : seulement si changée, ou à chaque tour",
     "  cqr compact dynamic on|off réduit sur le MÊME compte quand le contexte est gros",
     "  cqr compact mode native|strip · keep <n> · cooldown <min> · buffer <pts> · memory",
+    "  cqr compact gratuit on|off|status   compactages écrits par Nemotron gratuit (coupé par défaut)",
+    "  cqr compact gratuit noms \"<a,b>\"   noms à masquer avant l'envoi",
     "",
     "Crédits d'usage supplémentaire (extra usage — non utilisés par défaut)",
     "  cqr credits                état des crédits, compte par compte",

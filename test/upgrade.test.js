@@ -59,7 +59,7 @@ assert.strictEqual(s.env.CLAUDE_CODE_MAX_RETRIES, "15", "env.CLAUDE_CODE_MAX_RET
 // DR-048 : Claude Code ajoute son type de requete et le motif d'un compactage, que le journal du relais note
 assert.strictEqual(s.env.CLAUDE_CODE_GATEWAY_HINT_HEADERS, "1", "env.CLAUDE_CODE_GATEWAY_HINT_HEADERS = 1");
 assert.strictEqual(rd(p.join(IDIR, "statusline.json")).original.command, "echo MINE", "original statusline saved");
-["compaction.js", "memory-hook.js", "cqr-statusline.js", "cqr-workflow-guard.js"].forEach((f) => assert.ok(fs.existsSync(p.join(IDIR, f)), f + " copied on upgrade"));
+["compaction.js", "free-compact.js", "memory-hook.js", "cqr-statusline.js", "cqr-workflow-guard.js"].forEach((f) => assert.ok(fs.existsSync(p.join(IDIR, f)), f + " copied on upgrade"));
 // DR-012 : le relais installe lit sa version dans package.json a cote de proxy.js (sinon sa ligne de demarrage dit « inconnue »)
 assert.ok(fs.existsSync(p.join(IDIR, "package.json")), "package.json copied on upgrade (sinon version=inconnue)");
 assert.strictEqual(rd(p.join(IDIR, "package.json")).version, rd(p.join(__dirname, "..", "package.json")).version, "package.json copied on upgrade (version of the relay)");

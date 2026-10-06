@@ -36,7 +36,7 @@ function warn(s) { console.log("  " + yellow("!") + " " + s); }
 const SRC_DIR = __dirname; // repo/src
 const REPO_ROOT = p.dirname(SRC_DIR);
 const EXAMPLE_TOKENS = p.join(REPO_ROOT, "config", "tokens.example.json");
-const COPY_FILES = ["proxy.js", "cli.js", "ensure-proxy.js", "lib.js", "compaction.js", "memory-hook.js", "cqr-statusline.js", "cqr-workflow-guard.js"];
+const COPY_FILES = ["proxy.js", "cli.js", "ensure-proxy.js", "lib.js", "compaction.js", "free-compact.js", "memory-hook.js", "cqr-statusline.js", "cqr-workflow-guard.js"];
 
 // Default workflow guard: warn (ask) before a Workflow when the freshest account is >=50% (5h),
 // because the Workflow tool's per-agent stall can't be extended by the relay.
