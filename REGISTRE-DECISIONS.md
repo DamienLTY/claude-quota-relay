@@ -362,7 +362,7 @@ Ouvert : la cause réelle sur le PC d'entreprise (fin de `proxy.out.log`, lignes
 
 ## DR-015 — Compactages détournés vers Nemotron 3 Ultra gratuit
 
-**Type** : évolution · **État** : 0.22.0, contrôle de bout en bout passé le 2026-10-06 ; activé sur ce PC seulement, coupé par défaut ailleurs
+**Type** : évolution · **État** : 0.22.0, contrôle de bout en bout passé, commit `b4ae318`, installé et activé sur ce PC le 2026-10-06 (fumée sur données inventées : `COMPACT-GRATUIT ok`, 55 s) ; coupé par défaut ailleurs
 
 **Constat (etabli, 2026-10-05).** Au banc de fidélité (20 questions, notation Haiku, moyennes sur 3 compactages), Nemotron 3 Ultra gratuit fait 11,00 contre 10,22 pour le compactage natif rejoué ; Nemotron 3.5 8,67, Gemini 3 Flash 7,11, Ornith 9 B local 7,00.
 
