@@ -580,10 +580,10 @@ function serve(creq, cres) {
         clearTimeout(hold);
         upstreamReq = null;
         if (clientGone) { stopKeepalive(); log("COMPACT-GRATUIT", "abandon", "raison=client-parti"); return; }
-        if (!r.ok) { log("COMPACT-GRATUIT", "repli", "raison=" + tag(r.raison, 40)); return attempt(); }
+        if (!r.ok) { log("COMPACT-GRATUIT", "repli", "raison=" + tag(r.raison, 40), ...(r.essais ? ["essais=" + r.essais] : [])); return attempt(); }
         stopKeepalive(); ctx.sent = true;
         FC.sendSummary(cres, bodyObj, r.text, isStream);
-        log("COMPACT-GRATUIT", "ok", "motif=" + tag(plan.kind, 20), "variante=" + tag(r.variante, 10), ...(plan.invalide ? ["variante=invalide"] : []), "entree=" + r.entree, "sortie=" + r.sortie, "duree=" + Math.round(r.ms / 1000) + "s", "repli=" + (r.repli ? tag(r.repli, 40) : "non"), "caracteres=" + r.text.length);
+        log("COMPACT-GRATUIT", "ok", "motif=" + tag(plan.kind, 20), "variante=" + tag(r.variante, 10), ...(plan.invalide ? ["variante=invalide"] : []), "entree=" + r.entree, "sortie=" + r.sortie, "duree=" + Math.round(r.ms / 1000) + "s", ...(r.essais ? ["essais=" + r.essais] : []), "repli=" + (r.repli ? tag(r.repli, 40) : "non"), "caracteres=" + r.text.length);
       }));
       return true;
     }

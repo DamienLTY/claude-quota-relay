@@ -28,6 +28,7 @@ const DEFAULT_BLOCK_MS = 10 * 60 * 1000; // apres une panne du service, Claude s
 const DEFAULT_HOLD_MS = 60 * 1000; // delai avant d'ouvrir le flux du client : sous sa fenetre de premier octet (120 s)
 const MAX_REPLY = 2 * 1024 * 1024; // octets : une reponse plus grosse est coupee, Claude sert
 const LOCAL_HOSTS = ["127.0.0.1", "localhost", "[::1]", "::1"]; // seuls hotes pour lesquels CQR_FREE_COMPACT_URL est honoree
+const ESSAIS_MAX = 6; // DR-127 : 1 appel + 5 reessais sur une surcharge du modele (statut 200 + corps "error", 502/503/529, sans choix, contenu vide)
 const REFUS_QUALITE = /^(texte-vide|sans-summary|trop-court|repere-inconnu|finish-)/; // un resume refuse ne pose pas de blocage
 const MASK = "[SECRET-MASQUE]";
 const MAX_DELAY = 2 ** 31 - 1; // setTimeout : au-dela, le delai retombe a 1 ms
@@ -283,6 +284,7 @@ let blockedUntil = 0; // apres une panne du service, Claude sert jusque-la (en m
 // Duree lue dans l'environnement : vide, non numerique, nulle ou negative = ignoree, la valeur par defaut vaut.
 const envMs = (nom, defaut) => { const n = Number(process.env[nom]); return process.env[nom] != null && isFinite(n) && n > 0 ? Math.min(n, MAX_DELAY) : defaut; };
 const blockMs = () => envMs("CQR_FREE_COMPACT_BLOCK_MS", DEFAULT_BLOCK_MS);
+const retryMs = () => envMs("CQR_FREE_COMPACT_RETRY_MS", 2000); // attente entre deux essais ; reglable pour les tests
 const holdMs = () => envMs("CQR_FREE_COMPACT_HOLD_MS", DEFAULT_HOLD_MS);
 const hasKey = () => !!String(process.env.OPENROUTER_API_KEY || "").trim();
 // CQR_FREE_COMPACT_URL n'est honoree que vers la machine elle-meme : sur un autre hote, la variable partirait avec la conversation
@@ -387,28 +389,59 @@ function validate(status, bodyText, cfg) {
   return { text };
 }
 
+// Echec transitoire (a reessayer) : "surcharge" (HTTP 502/503/529, ou statut 200 + corps "error" de code 429/502/503/529 ou
+// error_type provider_overloaded), "sans-choix" (ni choices ni error), "texte-vide" (stop sans contenu) ; sinon null (definitif :
+// 400, 401, 404, sans <summary>, finish_reason=length...). Ne lit que la forme de la reponse, jamais un contenu pour le journaliser.
+function transitoire(status, bodyText) {
+  if ([502, 503, 529].includes(status)) return "surcharge";
+  if (status !== 200) return null;
+  let j; try { j = JSON.parse(bodyText); } catch (e) { return null; }
+  if (j && j.error) {
+    const e = j.error, md = (e && e.metadata) || {};
+    return [429, 502, 503, 529].includes(Number(e && e.code)) || md.error_type === "provider_overloaded" ? "surcharge" : null;
+  }
+  const ch = j && j.choices && j.choices[0];
+  if (!ch) return "sans-choix";
+  const text = ch.message && ch.message.content;
+  return ch.finish_reason === "stop" && typeof text === "string" && !text.trim() ? "texte-vide" : null;
+}
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+
 // Fait le detour. Ne rejette jamais : { ok:true, text, ms } ou { ok:false, raison }. io.onReq recoit la requete sortante (pour
 // la couper si le client part), io.gone() dit si le client est parti. Une panne du service (HTTP, reseau, delai, reponse trop grosse) pose
 // le blocage ; un resume refuse (REFUS_QUALITE) ou un client parti, non.
 async function run(plan, body, io) {
   const t0 = Date.now();
   io = io || {};
-  const viaJournal = (repli) => { let text; try { text = journalSummary(body); } catch (e) { text = JOURNAL_SECOURS; } return { ok: true, text, ms: Date.now() - t0, variante: "journal", repli, entree: plan.text ? plan.text.length : 0, sortie: text.length }; };
+  let essais = 0; // appels faits a Nemotron
+  const viaJournal = (repli) => { let text; try { text = journalSummary(body); } catch (e) { text = JOURNAL_SECOURS; } return { ok: true, text, ms: Date.now() - t0, variante: "journal", repli, essais, entree: plan.text ? plan.text.length : 0, sortie: text.length }; };
   if (plan.variante === "journal") return viaJournal(plan.repli || null);
   try {
     const masker = makeMasker(personalStrings(plan.cfg.names));
     const sent = masker.mask(maskSecrets(plan.text, plan.secrets)); // les secrets d'abord : un secret ne doit jamais entrer dans la table des reperes
     const reqBody = JSON.stringify({ model: plan.cfg.model, messages: [{ role: "user", content: sent }], max_tokens: plan.maxTokens || 8000, reasoning: { effort: "low" }, stream: false });
-    const r = await post(plan.url, { "content-type": "application/json", "authorization": "Bearer " + String(process.env.OPENROUTER_API_KEY).trim() }, reqBody, plan.cfg.timeoutMs, io.onReq);
+    // Reessais (DR-127) : le meme corps (donc le meme masquage) a chaque essai, le tout dans le delai total timeoutMs.
+    const deadline = t0 + plan.cfg.timeoutMs, wait = retryMs();
+    let r;
+    for (;;) {
+      essais++;
+      r = await post(plan.url, { "content-type": "application/json", "authorization": "Bearer " + String(process.env.OPENROUTER_API_KEY).trim() }, reqBody, Math.max(1, deadline - Date.now()), io.onReq);
+      const t = transitoire(r.status, r.body);
+      if (!t) break;
+      if (essais >= ESSAIS_MAX) throw Object.assign(new Error(t), { raison: t });
+      if (deadline - Date.now() <= wait) throw Object.assign(new Error("delai"), { code: "DELAI" }); // plus de place pour un autre essai
+      await pause(wait);
+      if (io.gone && io.gone()) throw new Error("client-parti");
+    }
     const v = validate(r.status, r.body, plan.cfg);
     if (v.raison) throw Object.assign(new Error(v.raison), { raison: v.raison });
     const out = masker.unmask(v.text);
-    return { ok: true, text: out, ms: Date.now() - t0, variante: plan.variante, repli: null, entree: plan.text.length, sortie: out.length };
+    return { ok: true, text: out, ms: Date.now() - t0, variante: plan.variante, repli: null, essais, entree: plan.text.length, sortie: out.length };
   } catch (e) {
     if (io.gone && io.gone()) return { ok: false, raison: "client-parti" };
     const raison = e.raison || (e.code === "DELAI" ? "delai" : e.code ? "reseau-" + e.code : "erreur-" + e.name);
     if (!REFUS_QUALITE.test(raison)) blockedUntil = Date.now() + blockMs();
-    return plan.cfg.fallback === "journal" ? viaJournal(raison) : { ok: false, raison };
+    return plan.cfg.fallback === "journal" ? viaJournal(raison) : { ok: false, raison, essais };
   }
 }
 

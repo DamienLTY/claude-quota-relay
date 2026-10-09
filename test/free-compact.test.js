@@ -212,7 +212,7 @@ const AUTO = { "x-claude-code-compaction": "auto", "x-claude-code-request-class"
 console.log("PASS — fonctions pures : rendu, reconnaissance, masquage des secrets et des noms, configuration, derive des motifs");
 
 // ---------- 2. le relais contre de faux serveurs ----------
-let anthHits = 0, orHits = 0, orClosed = 0, orMode = "ok", anthMode = "ok"; const orBodies = [], orAuth = [];
+let anthHits = 0, orHits = 0, orClosed = 0, orMode = "ok", anthMode = "ok"; const orBodies = [], orAuth = [], orQueue = [];
 const RATE = { "anthropic-ratelimit-unified-5h-utilization": "0.1", "anthropic-ratelimit-unified-7d-utilization": "0.1", "anthropic-ratelimit-unified-status": "allowed" };
 function collect(req, cb) { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { let o = {}; try { o = JSON.parse(b); } catch (e) {} cb(o, b); }); }
 function startAnthropic() {
@@ -240,25 +240,28 @@ function startOpenRouter() {
   return new Promise((resolve) => {
     const srv = http.createServer((req, res) => collect(req, (body) => {
       orHits++; orBodies.push(body); orAuth.push(req.headers.authorization);
+      const mode = orQueue.length ? orQueue.shift() : orMode; // orQueue : une reponse par appel, avant de revenir a orMode
       res.on("close", () => { if (!res.writableFinished) orClosed++; });
       const json = (code, o) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(o)); };
       const reply = (finish, content) => json(200, { id: "gen-1", model: body.model, choices: [{ index: 0, finish_reason: finish, message: { role: "assistant", content } }], usage: { prompt_tokens: 1, completion_tokens: 1 } });
-      if (orMode === "429") return json(429, { error: { message: "rate limited" } });
-      if (orMode === "529") return json(529, { error: { message: "overloaded" } });
-      if (orMode === "500") return json(500, { error: { message: "boom" } });
-      if (orMode === "hang") return; // accepte et ne repond jamais
-      if (orMode === "garbage") return req.socket.destroy();
-      if (orMode === "empty") return reply("stop", "");
-      if (orMode === "length") return reply("length", RESUME_OK([], "-", []));
-      if (orMode === "nosummary") return reply("stop", "REPONSE-NEMOTRON-REJETEE " + "mot ".repeat(2000));
-      if (orMode === "short") return reply("stop", "<summary>REPONSE-NEMOTRON-REJETEE courte</summary>");
-      if (orMode === "gros") return reply("stop", RESUME_OK([], "-", []) + "x".repeat(2300000)); // valide, mais plus de 2 Mio
-      if (orMode === "piege") { res.writeHead(200, { "content-type": "application/json" }); return res.end("PIEGE-TOSTRING"); }
-      if (orMode === "hostile") return reply("length\nx \"y", RESUME_OK([], "-", [])); // finish_reason avec saut de ligne et guillemet
+      if (mode === "surcharge") return json(200, { id: "gen-2", error: { message: "Upstream error from Nvidia: Service temporarily overloaded", code: 503, metadata: { error_type: "provider_overloaded" } } }); // le cas reel du 2026-10-09 : statut 200, aucun choices
+      if (mode === "400") return json(400, { error: { message: "bad request", code: 400 } });
+      if (mode === "429") return json(429, { error: { message: "rate limited" } });
+      if (mode === "529") return json(529, { error: { message: "overloaded" } });
+      if (mode === "500") return json(500, { error: { message: "boom" } });
+      if (mode === "hang") return; // accepte et ne repond jamais
+      if (mode === "garbage") return req.socket.destroy();
+      if (mode === "empty") return reply("stop", "");
+      if (mode === "length") return reply("length", RESUME_OK([], "-", []));
+      if (mode === "nosummary") return reply("stop", "REPONSE-NEMOTRON-REJETEE " + "mot ".repeat(2000));
+      if (mode === "short") return reply("stop", "<summary>REPONSE-NEMOTRON-REJETEE courte</summary>");
+      if (mode === "gros") return reply("stop", RESUME_OK([], "-", []) + "x".repeat(2300000)); // valide, mais plus de 2 Mio
+      if (mode === "piege") { res.writeHead(200, { "content-type": "application/json" }); return res.end("PIEGE-TOSTRING"); }
+      if (mode === "hostile") return reply("length\nx \"y", RESUME_OK([], "-", [])); // finish_reason avec saut de ligne et guillemet
       // succes : recopie ce qu'elle a recu, comme le ferait un modele -- les reperes, mais aussi tout jeton ou nom qu'elle verrait en clair
       const seen = (body.messages[0] || {}).content || "";
       const marqueurs = [...new Set(seen.match(/\[PERSO-[\w-]+\]/g) || [])];
-      if (orMode === "fantome") { const n = /\[PERSO-([0-9a-f]{6})-/.exec(seen); marqueurs.push("[PERSO-" + (n ? n[1] : "000000") + "-999]"); } // un repere du bon nonce que le relais n'a jamais pose
+      if (mode === "fantome") { const n = /\[PERSO-([0-9a-f]{6})-/.exec(seen); marqueurs.push("[PERSO-" + (n ? n[1] : "000000") + "-999]"); } // un repere du bon nonce que le relais n'a jamais pose
       const jetons = [...new Set(seen.match(/sk-ant-oat01-[\w-]+|sk-or-v1-[\w-]+|Zq9xK2mLp7vB/g) || [])];
       reply("stop", RESUME_OK(marqueurs, seen.includes("[SECRET-MASQUE]") ? "[SECRET-MASQUE]" : "aucun", jetons));
     }));
@@ -274,7 +277,7 @@ function writeConf(dir, port, compaction) {
 }
 async function startRelay(dir, port, withKey, withoutModule, envExtra) {
   for (const f of ["proxy.js", "compaction.js", "lib.js", ...(withoutModule ? [] : ["free-compact.js"])]) fs.copyFileSync(p.join(SRC, f), p.join(dir, f));
-  const env = Object.assign({}, process.env, { CQR_UPSTREAM_HOST: "127.0.0.1", CQR_UPSTREAM_PORT: String(MOCK_ANTH), CQR_UPSTREAM_HTTP: "1", CQR_NO_POPUP: "1", CQR_FREE_COMPACT_URL: "http://127.0.0.1:" + MOCK_OR + "/api/v1/chat/completions", CQR_FREE_COMPACT_BLOCK_MS: "400" }, envExtra);
+  const env = Object.assign({}, process.env, { CQR_UPSTREAM_HOST: "127.0.0.1", CQR_UPSTREAM_PORT: String(MOCK_ANTH), CQR_UPSTREAM_HTTP: "1", CQR_NO_POPUP: "1", CQR_FREE_COMPACT_URL: "http://127.0.0.1:" + MOCK_OR + "/api/v1/chat/completions", CQR_FREE_COMPACT_BLOCK_MS: "400", CQR_FREE_COMPACT_RETRY_MS: "30" }, envExtra);
   if (withKey) env.OPENROUTER_API_KEY = FAKE_OR_KEY; else delete env.OPENROUTER_API_KEY; // jamais la vraie cle de la machine
   const child = cp.spawn(process.execPath, [p.join(dir, "proxy.js")], { env, stdio: "ignore", windowsHide: true });
   let up = false; for (let i = 0; i < 40; i++) { if (await health(port)) { up = true; break; } await sleep(150); }
@@ -347,7 +350,7 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
     for (const s of [TOKEN_ANT, TOKEN_OR, PASSWORD]) assert.ok(!resume.includes(s) && !r1.raw.includes(s), "masquage : un jeton masque ne revient pas");
     assert.ok(resume.includes("Secret : [SECRET-MASQUE]"), "masquage : le repere de secret reste tel quel");
     const logA = logOf(DIR_A);
-    assert.ok(/COMPACT-GRATUIT ok motif=auto variante=court entree=[1-9]\d* sortie=[1-9]\d* duree=\d+s repli=non caracteres=\d+/.test(logA), "journal : ligne ok");
+    assert.ok(/COMPACT-GRATUIT ok motif=auto variante=court entree=[1-9]\d* sortie=[1-9]\d* duree=\d+s essais=1 repli=non caracteres=\d+/.test(logA), "journal : ligne ok");
     assert.ok(!logA.includes(FAKE_OR_KEY), "journal : la cle n'y est jamais");
     const lignesFree = logA.split("\n").filter((l) => /COMPACT-GRATUIT/.test(l)).join("\n");
     for (const s of ["Rapport de session", TOKEN_ANT, PASSWORD, ...PERSONAL]) assert.ok(!lignesFree.includes(s), "journal : aucun contenu dans les lignes COMPACT-GRATUIT");
@@ -385,7 +388,7 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
       writeConf(DIR_A, PORT_A, CONF(FREE(free))); orMode = mode;
       const b = snap(), closedBefore = orClosed, t0 = Date.now();
       const r = await ask(PORT_A, compactBody(), AUTO);
-      assert.deepStrictEqual(snap(), { anth: b.anth + 1, or: b.or + 1 }, "repli " + mode + " : Nemotron 1 essai, Claude exactement 1 appel");
+      assert.deepStrictEqual(snap(), { anth: b.anth + 1, or: b.or + (mode === "empty" ? 6 : 1) }, "repli " + mode + " : Nemotron 1 essai (6 si contenu vide : reessais DR-127), Claude exactement 1 appel");
       claudeServed(r, "repli " + mode);
       assert.ok(!r.raw.includes("REPONSE-NEMOTRON-REJETEE") && !r.raw.includes("Rapport de session"), "repli " + mode + " : rien de la reponse rejetee n'est emis");
       assert.ok(new RegExp("COMPACT-GRATUIT repli raison=" + raison).test(logOf(DIR_A)), "repli " + mode + " : raison journalisee (" + raison + ")");
@@ -432,13 +435,13 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
     // --- variantes (DR-106, DR-108) : repli "journal", journal sans appel amont, court plafonne ---
     const isJournal = (r, why) => assert.ok(r.status === 200 && r.raw.includes("<summary>") && r.raw.includes("variante journal") && !r.raw.includes("CLAUDE-REPONSE"), why + " : le resume journal est rendu, pas la reponse de Claude (status " + r.status + ")");
     writeConf(DIR_A, PORT_A, CONF(FREE({ fallback: undefined })));
-    for (const [mode, raison] of [["529", "http-529"], ["empty", "texte-vide"], ["nosummary", "sans-summary"]]) {
+    for (const [mode, raison] of [["529", "surcharge"], ["empty", "texte-vide"], ["nosummary", "sans-summary"]]) {
       await after(500); // le blocage du cas precedent est passe
       setVariante("hybride"); orMode = mode;
       const b = snap(), r = await ask(PORT_A, compactBody(), AUTO);
-      assert.deepStrictEqual(snap(), { anth: b.anth, or: b.or + 1 }, "repli journal " + mode + " : Nemotron 1 essai, Claude AUCUN appel");
+      assert.deepStrictEqual(snap(), { anth: b.anth, or: b.or + (mode === "nosummary" ? 1 : 6) }, "repli journal " + mode + " : Nemotron 1 essai (6 sur surcharge ou contenu vide : DR-127), Claude AUCUN appel");
       isJournal(r, "repli journal " + mode);
-      assert.ok(new RegExp("COMPACT-GRATUIT ok motif=auto variante=journal entree=[1-9]\\d* sortie=[1-9]\\d* duree=\\d+s repli=" + raison).test(logOf(DIR_A)), "repli journal " + mode + " : ligne COMPACT-GRATUIT avec la raison " + raison);
+      assert.ok(new RegExp("COMPACT-GRATUIT ok motif=auto variante=journal entree=[1-9]\\d* sortie=[1-9]\\d* duree=\\d+s essais=" + (mode === "nosummary" ? 1 : 6) + " repli=" + raison).test(logOf(DIR_A)), "repli journal " + mode + " : ligne COMPACT-GRATUIT avec la raison " + raison);
     }
     // blocage : un appel dans la fenetre n'atteint ni Nemotron ni Claude, il rend le journal
     await after(500); orMode = "500"; await ask(PORT_A, compactBody(), AUTO); orMode = "ok"; // l'echec qui pose le blocage
@@ -517,7 +520,7 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
     console.log("PASS — adresse imposee : surcharge vers un autre hote ignoree, appel vers openrouter.ai, une ligne de journal sans l'adresse");
 
     // --- en process : duree du blocage, adresse, reponse piegee, dossier personnel (le faux OpenRouter local, la cle factice) ---
-    const envSave = [["OPENROUTER_API_KEY", process.env.OPENROUTER_API_KEY], ["CQR_FREE_COMPACT_URL", process.env.CQR_FREE_COMPACT_URL], ["CQR_FREE_COMPACT_BLOCK_MS", process.env.CQR_FREE_COMPACT_BLOCK_MS], ["CQR_FREE_COMPACT_HOLD_MS", process.env.CQR_FREE_COMPACT_HOLD_MS]];
+    const envSave = [["OPENROUTER_API_KEY", process.env.OPENROUTER_API_KEY], ["CQR_FREE_COMPACT_URL", process.env.CQR_FREE_COMPACT_URL], ["CQR_FREE_COMPACT_BLOCK_MS", process.env.CQR_FREE_COMPACT_BLOCK_MS], ["CQR_FREE_COMPACT_HOLD_MS", process.env.CQR_FREE_COMPACT_HOLD_MS], ["CQR_FREE_COMPACT_RETRY_MS", process.env.CQR_FREE_COMPACT_RETRY_MS]];
     const MOCK_URL = "http://127.0.0.1:" + MOCK_OR + "/api/v1/chat/completions", DFLT = "https://openrouter.ai/api/v1/chat/completions";
     const fresh = () => { delete require.cache[require.resolve("../src/free-compact.js")]; return require("../src/free-compact.js"); }; // un module neuf : blocage remis a zero
     const confIn = (free) => ({ compaction: { enabled: true, free: Object.assign({ enabled: true, timeoutMs: 3000, minSummaryChars: 10, fallback: "claude" }, free) }, tokens: [{ name: "x", token: CFG_TOKEN }] });
@@ -553,6 +556,28 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
         Buffer.prototype.toString = function () { const t = orig.apply(this, arguments); if (t === "PIEGE-TOSTRING") throw new RangeError("toString piege"); return t; };
         try { r = await F.run(decideIn(F), {}, {}); } finally { Buffer.prototype.toString = orig; }
         assert.deepStrictEqual([r.ok, r.raison], [false, "erreur-RangeError"], "reponse piegee : la promesse se regle, repli : " + JSON.stringify(r)); }
+
+      // reessais sur surcharge (DR-127) : jusqu'a 5, dans le delai total, jamais sur un echec definitif ; le corps envoye est le meme a chaque essai
+      process.env.CQR_FREE_COMPACT_RETRY_MS = "20";
+      { const jr = (F) => { const pl = decideIn(F); pl.cfg = Object.assign({}, pl.cfg, { fallback: "journal" }); return pl; };
+        let F = fresh(), b = orBodies.length; orQueue.push("surcharge", "surcharge"); orMode = "ok";
+        let r = await F.run(jr(F), {}, {});
+        assert.ok(r.ok && r.variante !== "journal" && r.repli === null && r.essais === 3 && r.text.includes("<summary>"), "reessais : 2 surcharges puis un succes -> vrai resume, essais=3, pas de repli : " + JSON.stringify(r).slice(0, 200));
+        assert.strictEqual(orBodies.length - b, 3, "reessais : 3 appels a Nemotron");
+        assert.ok(orBodies.slice(b).every((x) => JSON.stringify(x) === JSON.stringify(orBodies[b])), "reessais : le corps (donc le masquage) est identique a chaque essai");
+        assert.strictEqual((decideIn(F) || {}).go, true, "reessais : un succes final ne pose aucun blocage");
+        F = fresh(); b = orHits; orQueue.push("surcharge", "surcharge", "surcharge", "surcharge", "surcharge", "surcharge");
+        r = await F.run(jr(F), { messages: [{ role: "user", content: "TEXTE-UTILISATEUR-VU" }] }, {});
+        assert.ok(r.ok && r.variante === "journal" && r.repli === "surcharge" && r.essais === 6 && r.text.includes("<summary>") && r.text.includes("TEXTE-UTILISATEUR-VU"), "reessais epuises : repli=surcharge, essais=6, journal valide : " + JSON.stringify(r).slice(0, 200));
+        assert.strictEqual(orHits - b, 6, "reessais epuises : 6 appels, pas un de plus");
+        F = fresh(); b = orHits; orQueue.length = 0; orQueue.push("400", "ok");
+        r = await F.run(jr(F), {}, {});
+        assert.ok(r.variante === "journal" && r.repli === "http-400" && r.essais === 1 && orHits - b === 1, "400 : aucun reessai : " + JSON.stringify(r).slice(0, 200));
+        orQueue.length = 0; F = fresh(); b = orHits; orMode = "surcharge";
+        const pl = jr(F); pl.cfg.timeoutMs = 300; process.env.CQR_FREE_COMPACT_RETRY_MS = "120"; const t0 = Date.now();
+        r = await F.run(pl, {}, {});
+        assert.ok(r.variante === "journal" && r.repli === "delai" && r.essais >= 2 && r.essais < 6 && orHits - b === r.essais && Date.now() - t0 < 1000, "delai total atteint pendant les reessais : arret et repli : " + JSON.stringify(r).slice(0, 200));
+        orMode = "ok"; process.env.CQR_FREE_COMPACT_RETRY_MS = "20"; }
 
       // coupe de la queue : limite de message, jamais un tool_use separe de son tool_result
       { const big = "y".repeat(400);
