@@ -17,6 +17,7 @@ const https = require("https");
 const os = require("os");
 const crypto = require("crypto");
 const path = require("path");
+const fs = require("fs");
 
 const INVITE = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."; // debut de l'invite native de Claude Code
 const KINDS_OK = ["auto", "manual"]; // DR-071 : "reactive" (debordement d'urgence) reste chez Claude, meme si la config le demande
@@ -203,7 +204,78 @@ function resolveConfig(f) {
     timeoutMs: pos(f.timeoutMs, 240000),
     minSummaryChars: pos(f.minSummaryChars, 1500),
     names: Array.isArray(f.names) ? f.names.map((n) => String(n).trim()).filter(Boolean) : [],
+    fallback: String(f.fallback || "").toLowerCase() === "claude" ? "claude" : "journal", // DR-106/108 : un echec rend le resume "journal", Claude ne sert plus que sur demande explicite
   };
+}
+
+// ----- variantes du compactage (DR-106, DR-108) : etabli/compactage.json, relu a chaque requete -----
+// hybride : seule la queue (queue_jetons) part chez Nemotron ; journal : aucun appel, recopie des derniers echanges ;
+// court : toute la conversation, resume plafonne a court_max_jetons ; tete-queue (DR-118) : comme hybride, plus les tete_jetons premiers jetons.
+// Fichier absent : hybride, sans rien dire. Illisible, trop gros ou variante inconnue : journal (DR-116), avec invalide:true.
+const VARIANTES = ["hybride", "journal", "court", "tete-queue"];
+const CHARS_PAR_JETON = 3.2;
+const JOURNAL_CHARS = 6000;
+const MAX_FICHIER = 64 * 1024; // octets : un fichier de variante plus gros est refuse
+// Fichier absent : defauts, sans rien dire. Illisible, trop gros ou variante inconnue : variante journal, avec invalide:true (le relais le journalise).
+function readVariante() {
+  const file = process.env.CQR_COMPACTAGE_FILE || path.join(os.homedir(), ".etabli", "compactage.json");
+  let j = {}, invalide = false;
+  try {
+    if (fs.statSync(file).size > MAX_FICHIER) throw new Error("trop-gros");
+    j = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (!j || typeof j !== "object" || Array.isArray(j)) throw new Error("pas-un-objet");
+  } catch (e) { j = {}; invalide = e.code !== "ENOENT"; }
+  const pos = (v, d, max) => (typeof v === "number" && isFinite(v) && v > 0 ? Math.min(Math.floor(v), max) : d);
+  if (j.variante !== undefined && !VARIANTES.includes(j.variante)) invalide = true; // exactement dans la liste : ni String() ni minuscules (DR-116)
+  const out = { variante: invalide ? "journal" : j.variante === undefined ? "hybride" : j.variante, queueJetons: pos(j.queue_jetons, 25000, 200000), courtMax: pos(j.court_max_jetons, 1500, 8000), teteJetons: pos(j.tete_jetons, 8000, 50000) };
+  if (invalide) out.invalide = true;
+  return out;
+}
+const hasToolResult = (m) => !!m && Array.isArray(m.content) && m.content.some((b) => b && b.type === "tool_result");
+// Garde les derniers messages dans la limite de maxChars (rendu texte), coupe sur une limite de message ; ne commence jamais par
+// un tool_result dont le tool_use est parti. Le dernier message (l'invite) reste toujours.
+function tailMessages(msgs, maxChars) {
+  let start = msgs.length - 1, used = renderConversation({ messages: [msgs[start]] }).length;
+  while (start > 0) {
+    const n = renderConversation({ messages: [msgs[start - 1]] }).length;
+    if (used + n > maxChars) break;
+    used += n; start--;
+  }
+  while (start < msgs.length - 1 && hasToolResult(msgs[start])) start++;
+  return msgs.slice(start);
+}
+// Nombre de premiers messages qui tiennent dans maxChars (rendu texte), sans jamais depasser l'index `avant` (le debut de la queue).
+function headMessages(msgs, maxChars, avant) {
+  let end = 0, used = 0;
+  while (end < avant) {
+    const n = renderConversation({ messages: [msgs[end]] }).length;
+    if (used + n > maxChars) break;
+    used += n; end++;
+  }
+  return end;
+}
+// Texte utilisateur et assistant seulement : ni resultats d'outils, ni appels, ni raisonnement.
+// sansInvite : le bloc dont le texte commence par l'invite native est retire, ou qu'il soit dans le message.
+function plainText(m, sansInvite) {
+  if (!m) return "";
+  const garde = (t) => !(sansInvite && t.trimStart().startsWith(INVITE));
+  if (typeof m.content === "string") return garde(m.content) ? m.content : "";
+  return Array.isArray(m.content) ? m.content.filter((b) => b && b.type === "text" && typeof b.text === "string" && garde(b.text)).map((b) => b.text).join("\n") : "";
+}
+const JOURNAL_SECOURS = "<summary>\nCompactage sans resume (variante journal, texte indisponible). Le journal de session est reinjecte apres ce compactage : il porte la tache en cours, les decisions et les fichiers touches.\n</summary>";
+function journalSummary(body) {
+  const parts = []; let used = 0;
+  const msgs = ((body && body.messages) || []).filter((m) => m && (m.role === "user" || m.role === "assistant"));
+  for (let i = msgs.length - 1; i >= 0 && used < JOURNAL_CHARS; i--) {
+    let t = plainText(msgs[i], true).trim();
+    if (!t) continue;
+    t = t.replace(/<(\/?)summary>/gi, "[$1summary]"); // Claude Code s'arrete a la premiere balise fermante : le texte recopie ne doit pas en porter
+    const keep = Math.max(200, JOURNAL_CHARS - used);
+    if (used + t.length > JOURNAL_CHARS && t.length > keep) t = "[...] " + t.slice(t.length - keep);
+    parts.unshift("=== " + String(msgs[i].role).toUpperCase() + " ===\n" + t); used += t.length;
+  }
+  return "<summary>\nCompactage sans resume ecrit par un modele (variante journal). Le journal de session est reinjecte apres ce compactage : "
+    + "il porte la tache en cours, les decisions et les fichiers touches. Derniers echanges, recopies tels quels :\n\n" + (parts.join("\n\n") || "(aucun texte)") + "\n</summary>";
 }
 
 // ----- decision avant tout octet -----
@@ -233,14 +305,47 @@ function decide(req, getConf) { // getConf : la config ne se lit que pour un vra
   const no = (raison, quiet) => ({ go: false, kind: rec.kind, raison, quiet: !!quiet });
   if (!cfg.enabled) return no("reglage-coupe", true);
   if (!cc.enabled) return no("compaction-coupee"); // DR-066 : cqr compact off coupe tout ; absent = coupe, comme pour le proxy
-  if (!hasKey()) return no("cle-absente");
   if (!cfg.kinds.includes(rec.kind)) return no("type-non-liste");
-  if (Date.now() < blockedUntil) return no("blocage");
-  const text = renderConversation(req.body);
-  if (Math.ceil(text.length / 3.5) > MAX_TOKENS_EST) return no("trop-gros"); // meme estimation que compaction.js, legerement pessimiste
+  const V = readVariante();
+  const journal = (repli) => ({ go: true, kind: rec.kind, cfg, variante: "journal", repli, text: "", secrets: [], invalide: V.invalide });
+  const repli = (raison) => cfg.fallback === "journal" ? journal(raison) : no(raison); // un repli rend le journal, sauf demande explicite de Claude
+  if (V.variante === "journal") return journal(null); // aucun appel : ni cle ni service requis
+  if (!hasKey()) return repli("cle-absente");
+  if (Date.now() < blockedUntil) return repli("blocage");
   const secrets = [process.env.OPENROUTER_API_KEY, ...(Array.isArray(conf && conf.tokens) ? conf.tokens.map((t) => t && t.token) : [])]
     .map((v) => String(v == null ? "" : v).trim()).filter((v) => v.length >= 8).sort((a, b) => b.length - a.length); // le plus long d'abord
-  return Object.assign({ go: true, kind: rec.kind, cfg, text, secrets }, endpoint());
+  let text, note;
+  if (V.variante === "court") {
+    text = renderConversation(req.body);
+    note = "Ecris le <summary> en " + V.courtMax + " jetons au plus (resume bref, sans recopier les resultats d'outils).";
+  } else if (V.variante === "tete-queue") {
+    const msgs = (req.body && Array.isArray(req.body.messages)) ? req.body.messages : [];
+    const tail = tailMessages(msgs, Math.floor(V.queueJetons * CHARS_PAR_JETON)), start = msgs.length - tail.length;
+    const headMax = Math.floor(V.teteJetons * CHARS_PAR_JETON), end = headMessages(msgs, headMax, start);
+    if (end >= start) { // tete et queue se touchent ou se recouvrent : la conversation entiere, une seule fois
+      text = renderConversation({ messages: msgs });
+      note = "La conversation t'est montree en entier. Garde les faits etablis au debut (contexte, decisions, contraintes) et l'etat courant a la fin : but, avancement, prochaine etape.";
+    } else {
+      let head;
+      if (end) head = renderConversation({ messages: msgs.slice(0, end) });
+      else { // un premier message plus gros que la tete : masque d'abord (un secret coupe ne serait plus reconnu), puis coupe, reculee au dernier blanc pour ne pas trancher un repere
+        const m1 = maskSecrets(renderConversation({ messages: msgs.slice(0, 1) }), secrets);
+        head = m1.slice(0, headMax);
+        if (m1.length > headMax && !/\s/.test(m1[headMax])) head = head.replace(/\S+$/, "");
+        head += "\n";
+      }
+      const omis = start - end;
+      text = head + "\n[... PARTIE OMISE : " + omis + " message" + (omis > 1 ? "s" : "") + " du milieu de la conversation ne sont pas montres ...]\n\n" + renderConversation({ messages: tail });
+      note = "Seuls le debut et la fin de la conversation t'ont ete montres ; le milieu est absent (une marque entre crochets le signale). Garde les faits etablis au debut (contexte, decisions, contraintes) et l'etat courant a la fin : but, avancement, prochaine etape.";
+    }
+  } else {
+    const msgs = (req.body && Array.isArray(req.body.messages)) ? req.body.messages : [];
+    text = renderConversation({ messages: tailMessages(msgs, Math.floor(V.queueJetons * CHARS_PAR_JETON)) });
+    note = "Seule la fin de la conversation (les derniers echanges) t'est montree ; le debut est omis. Resume la tache en cours : but, etat d'avancement, prochaine etape.";
+  }
+  text = "[Consigne : " + note + "]\n\n" + text;
+  if (Math.ceil(text.length / 3.5) > MAX_TOKENS_EST) return repli("trop-gros"); // meme estimation que compaction.js, legerement pessimiste
+  return Object.assign({ go: true, kind: rec.kind, cfg, text, secrets, variante: V.variante, invalide: V.invalide, maxTokens: V.variante === "court" ? Math.max(3000, V.courtMax + 200) : 8000 }, endpoint()); // court (DR-115) : 3000 fixe (la place du bloc <analysis> avant le <summary>), sauf si court_max_jetons le depasse : il + 200
 }
 
 // ----- appel -----
@@ -288,19 +393,22 @@ function validate(status, bodyText, cfg) {
 async function run(plan, body, io) {
   const t0 = Date.now();
   io = io || {};
+  const viaJournal = (repli) => { let text; try { text = journalSummary(body); } catch (e) { text = JOURNAL_SECOURS; } return { ok: true, text, ms: Date.now() - t0, variante: "journal", repli, entree: plan.text ? plan.text.length : 0, sortie: text.length }; };
+  if (plan.variante === "journal") return viaJournal(plan.repli || null);
   try {
     const masker = makeMasker(personalStrings(plan.cfg.names));
     const sent = masker.mask(maskSecrets(plan.text, plan.secrets)); // les secrets d'abord : un secret ne doit jamais entrer dans la table des reperes
-    const reqBody = JSON.stringify({ model: plan.cfg.model, messages: [{ role: "user", content: sent }], max_tokens: 32768, reasoning: { effort: "low" }, stream: false });
+    const reqBody = JSON.stringify({ model: plan.cfg.model, messages: [{ role: "user", content: sent }], max_tokens: plan.maxTokens || 8000, reasoning: { effort: "low" }, stream: false });
     const r = await post(plan.url, { "content-type": "application/json", "authorization": "Bearer " + String(process.env.OPENROUTER_API_KEY).trim() }, reqBody, plan.cfg.timeoutMs, io.onReq);
     const v = validate(r.status, r.body, plan.cfg);
     if (v.raison) throw Object.assign(new Error(v.raison), { raison: v.raison });
-    return { ok: true, text: masker.unmask(v.text), ms: Date.now() - t0 };
+    const out = masker.unmask(v.text);
+    return { ok: true, text: out, ms: Date.now() - t0, variante: plan.variante, repli: null, entree: plan.text.length, sortie: out.length };
   } catch (e) {
     if (io.gone && io.gone()) return { ok: false, raison: "client-parti" };
     const raison = e.raison || (e.code === "DELAI" ? "delai" : e.code ? "reseau-" + e.code : "erreur-" + e.name);
     if (!REFUS_QUALITE.test(raison)) blockedUntil = Date.now() + blockMs();
-    return { ok: false, raison };
+    return plan.cfg.fallback === "journal" ? viaJournal(raison) : { ok: false, raison };
   }
 }
 
@@ -324,4 +432,4 @@ function sendSummary(res, body, text, stream) {
     ev("message_stop", { type: "message_stop" }));
 }
 
-module.exports = { INVITE, MOTIFS_SOURCE, MAQUETTE, REEL, MOT_DE_PASSE, holdMs, maskSecrets, makeMasker, renderConversation, recognize, resolveConfig, decide, validate, run, sendSummary };
+module.exports = { INVITE, MOTIFS_SOURCE, MAQUETTE, REEL, MOT_DE_PASSE, holdMs, readVariante, tailMessages, journalSummary, maskSecrets, makeMasker, renderConversation, recognize, resolveConfig, decide, validate, run, sendSummary };

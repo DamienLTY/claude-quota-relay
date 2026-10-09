@@ -200,6 +200,10 @@ La clé n'est lue que dans la variable d'environnement `OPENROUTER_API_KEY` du r
 
 `proxy.log` note chaque cas sur une ligne, jamais le contenu : `COMPACT-GRATUIT ok motif=auto duree=… caracteres=…`, `COMPACT-GRATUIT repli raison=…`, `COMPACT-GRATUIT abandon raison=client-parti`.
 
+**Les variantes** (fichier `~/.etabli/compactage.json`, clé `variante`) : `hybride` (défaut ; la queue de la conversation, `queue_jetons`, 25 000 par défaut), `tete-queue` (comme `hybride`, plus les `tete_jetons` premiers jetons : défaut 8000, plafond 50000), `court` (toute la conversation, résumé borné par `court_max_jetons`) et `journal` (aucun appel au modèle). Fichier illisible, trop gros ou variante inconnue : `journal`. La réponse du modèle est plafonnée à `max_tokens` 8000 en `hybride` et `tete-queue` (DR-122).
+
+**Mesure et délai, différents de ceux d'openrouter-relay** : la tête et la queue sont mesurées en caractères du rendu texte ici, et par `sizeOf` (texte plus appels d'outils) dans openrouter-relay, donc les coupes diffèrent légèrement d'un relais à l'autre. Délai d'attente : 240 s ici (DR-123), 200 s dans openrouter-relay (DR-120).
+
 Réglages avancés, dans `compaction.free` de `tokens.json` : `model` (défaut `nvidia/nemotron-3-ultra-550b-a55b:free`), `kinds` (`["auto","manual"]`), `timeoutMs` (240000), `minSummaryChars` (1500), `names`.
 
 ### La statusline (barre d'état)

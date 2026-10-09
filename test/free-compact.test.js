@@ -8,6 +8,10 @@ const fs = require("fs"), os = require("os"), p = require("path"), http = requir
 const FC = require("../src/free-compact.js");
 
 const SRC = p.join(__dirname, "..", "src");
+const VARIANTE_FILE = p.join(os.tmpdir(), "cqr-compactage-" + process.pid + ".json"); // jamais le vrai ~/.etabli/compactage.json
+process.env.CQR_COMPACTAGE_FILE = VARIANTE_FILE;
+const setVariante = (v, extra) => fs.writeFileSync(VARIANTE_FILE, JSON.stringify(Object.assign({ variante: v }, extra)));
+setVariante("court"); // les scenarios d'origine portent sur la conversation entiere ; les variantes ont leurs scenarios
 const PORT_A = 8820, MOCK_ANTH = 8821, MOCK_OR = 8822, PORT_B = 8823, PORT_C = 8824, PORT_D = 8825, PORT_E = 8826;
 const FAKE = "sk-ant-oat01-FAKE-TEST-TOKEN-not-real-000000";
 const FAKE_OR_KEY = "FAKE-OR-KEY-pour-le-test-9f8e7d";
@@ -180,7 +184,7 @@ const AUTO = { "x-claude-code-compaction": "auto", "x-claude-code-request-class"
 }
 {
   const c = FC.resolveConfig(undefined);
-  assert.deepStrictEqual(c, { enabled: false, model: "nvidia/nemotron-3-ultra-550b-a55b:free", kinds: ["auto", "manual"], timeoutMs: 240000, minSummaryChars: 1500, names: [] }, "config : valeurs par defaut, coupe");
+  assert.deepStrictEqual(c, { enabled: false, model: "nvidia/nemotron-3-ultra-550b-a55b:free", kinds: ["auto", "manual"], timeoutMs: 240000, minSummaryChars: 1500, names: [], fallback: "journal" }, "config : valeurs par defaut, coupe");
   assert.strictEqual(FC.resolveConfig({ enabled: "true" }).enabled, false, "config : seul `true` active");
   assert.deepStrictEqual(FC.resolveConfig({ kinds: ["auto", "reactive", "manual"] }).kinds, ["auto", "manual"], "config : reactive n'est jamais detourne, meme demande");
 }
@@ -240,6 +244,7 @@ function startOpenRouter() {
       const json = (code, o) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(o)); };
       const reply = (finish, content) => json(200, { id: "gen-1", model: body.model, choices: [{ index: 0, finish_reason: finish, message: { role: "assistant", content } }], usage: { prompt_tokens: 1, completion_tokens: 1 } });
       if (orMode === "429") return json(429, { error: { message: "rate limited" } });
+      if (orMode === "529") return json(529, { error: { message: "overloaded" } });
       if (orMode === "500") return json(500, { error: { message: "boom" } });
       if (orMode === "hang") return; // accepte et ne repond jamais
       if (orMode === "garbage") return req.socket.destroy();
@@ -296,7 +301,7 @@ function ask(port, body, headers, o) {
 const events = (raw) => raw.split("\n\n").map((b) => { const e = /^event: (.*)$/m.exec(b), d = /^data: (.*)$/m.exec(b); return e && d ? { event: e[1], data: JSON.parse(d[1]) } : null; }).filter(Boolean);
 const snap = () => ({ anth: anthHits, or: orHits });
 const logOf = (dir) => { try { return fs.readFileSync(p.join(dir, "proxy.log"), "utf8"); } catch (e) { return ""; } };
-const FREE = (extra) => Object.assign({ enabled: true, timeoutMs: 3000, names: [EXTRA] }, extra);
+const FREE = (extra) => Object.assign({ enabled: true, timeoutMs: 3000, names: [EXTRA], fallback: "claude" }, extra); // les anciens scenarios verifient le retour a Claude (reglage explicite) ; le repli "journal" a ses scenarios plus bas
 const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode: "native", keepToolUses: 10, thresholds: {}, free }, extra);
 
 (async () => {
@@ -328,7 +333,7 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
     // --- masquage : ce que Nemotron a recu, puis ce que le client recoit ---
     const sent = orBodies[orBodies.length - 1], seen = sent.messages[0].content;
     assert.strictEqual(orAuth[orAuth.length - 1], "Bearer " + FAKE_OR_KEY, "appel : la cle part en Bearer");
-    assert.deepStrictEqual([sent.model, sent.max_tokens, sent.reasoning, sent.stream], ["nvidia/nemotron-3-ultra-550b-a55b:free", 32768, { effort: "low" }, false], "appel : modele, plafond, effort, sans flux");
+    assert.deepStrictEqual([sent.model, sent.max_tokens, sent.reasoning, sent.stream], ["nvidia/nemotron-3-ultra-550b-a55b:free", 3000, { effort: "low" }, false], "appel : modele, plafond court (2 x 1500), effort, sans flux");
     for (const s of PERSONAL) assert.ok(!seen.toLowerCase().includes(s.toLowerCase()), "masquage : Nemotron ne voit pas " + (s === EXTRA || s === USER ? s : "le dossier personnel"));
     for (const s of [TOKEN_ANT, TOKEN_OR, PASSWORD]) assert.ok(!seen.includes(s), "masquage : Nemotron ne voit pas un jeton ou un mot de passe");
     for (const s of ["PENSEE-NE-PART-PAS", "SYSTEME-NE-PART-PAS", "OUTIL-NE-PART-PAS"]) assert.ok(!seen.includes(s) && !JSON.stringify(sent).includes(s), "masquage : " + s);
@@ -342,7 +347,7 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
     for (const s of [TOKEN_ANT, TOKEN_OR, PASSWORD]) assert.ok(!resume.includes(s) && !r1.raw.includes(s), "masquage : un jeton masque ne revient pas");
     assert.ok(resume.includes("Secret : [SECRET-MASQUE]"), "masquage : le repere de secret reste tel quel");
     const logA = logOf(DIR_A);
-    assert.ok(/COMPACT-GRATUIT ok motif=auto duree=\d+s caracteres=\d+/.test(logA), "journal : ligne ok");
+    assert.ok(/COMPACT-GRATUIT ok motif=auto variante=court entree=[1-9]\d* sortie=[1-9]\d* duree=\d+s repli=non caracteres=\d+/.test(logA), "journal : ligne ok");
     assert.ok(!logA.includes(FAKE_OR_KEY), "journal : la cle n'y est jamais");
     const lignesFree = logA.split("\n").filter((l) => /COMPACT-GRATUIT/.test(l)).join("\n");
     for (const s of ["Rapport de session", TOKEN_ANT, PASSWORD, ...PERSONAL]) assert.ok(!lignesFree.includes(s), "journal : aucun contenu dans les lignes COMPACT-GRATUIT");
@@ -424,6 +429,45 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
     { const b = snap(), r = await ask(PORT_A, compactBody(), AUTO); assert.deepStrictEqual(snap(), { anth: b.anth, or: b.or + 1 }, "apres le blocage : on detourne de nouveau"); assert.ok(r.raw.includes("<summary>"), "apres le blocage : resume de Nemotron"); }
     console.log("PASS — repli : 11 echecs (429, 500, delai, coupure, trop gros, vide, length, sans summary, trop court, repere inconnu, finish_reason hostile) dont 6 refus de qualite sans blocage + sans flux, 6 conditions avant tout octet, blocage puis reprise");
 
+    // --- variantes (DR-106, DR-108) : repli "journal", journal sans appel amont, court plafonne ---
+    const isJournal = (r, why) => assert.ok(r.status === 200 && r.raw.includes("<summary>") && r.raw.includes("variante journal") && !r.raw.includes("CLAUDE-REPONSE"), why + " : le resume journal est rendu, pas la reponse de Claude (status " + r.status + ")");
+    writeConf(DIR_A, PORT_A, CONF(FREE({ fallback: undefined })));
+    for (const [mode, raison] of [["529", "http-529"], ["empty", "texte-vide"], ["nosummary", "sans-summary"]]) {
+      await after(500); // le blocage du cas precedent est passe
+      setVariante("hybride"); orMode = mode;
+      const b = snap(), r = await ask(PORT_A, compactBody(), AUTO);
+      assert.deepStrictEqual(snap(), { anth: b.anth, or: b.or + 1 }, "repli journal " + mode + " : Nemotron 1 essai, Claude AUCUN appel");
+      isJournal(r, "repli journal " + mode);
+      assert.ok(new RegExp("COMPACT-GRATUIT ok motif=auto variante=journal entree=[1-9]\\d* sortie=[1-9]\\d* duree=\\d+s repli=" + raison).test(logOf(DIR_A)), "repli journal " + mode + " : ligne COMPACT-GRATUIT avec la raison " + raison);
+    }
+    // blocage : un appel dans la fenetre n'atteint ni Nemotron ni Claude, il rend le journal
+    await after(500); orMode = "500"; await ask(PORT_A, compactBody(), AUTO); orMode = "ok"; // l'echec qui pose le blocage
+    { const b = snap(), r = await ask(PORT_A, compactBody(), AUTO);
+      assert.deepStrictEqual(snap(), { anth: b.anth, or: b.or }, "blocage -> journal : ni Nemotron ni Claude");
+      isJournal(r, "blocage -> journal"); assert.ok(/repli=blocage/.test(logOf(DIR_A)), "blocage -> journal : repli=blocage au journal"); }
+    await after(500);
+    // variante journal : aucun appel de modele, meme en bonne sante
+    setVariante("journal"); orMode = "ok";
+    { const b = snap(), r = await ask(PORT_A, compactBody(), AUTO);
+      assert.deepStrictEqual(snap(), { anth: b.anth, or: b.or }, "journal : aucun appel amont (ni Nemotron ni Claude)");
+      isJournal(r, "journal");
+      assert.ok(r.raw.includes("Je lis le fichier.") && !r.raw.includes("KEYMATERIAL") && !r.raw.includes(TOKEN_ANT) && !r.raw.includes("PENSEE-NE-PART-PAS"), "journal : texte des echanges recopie, ni resultat d'outil ni raisonnement");
+      assert.ok(/variante=journal entree=0 sortie=[1-9]\d* duree=\d+s repli=non/.test(logOf(DIR_A)), "journal : ligne COMPACT-GRATUIT sans repli"); }
+    // court : toute la conversation, max_tokens plafonne
+    setVariante("court", { court_max_jetons: 700 });
+    { const n0 = orBodies.length; await ask(PORT_A, compactBody(), AUTO);
+      const sent = orBodies[orBodies.length - 1];
+      assert.ok(orBodies.length === n0 + 1 && sent.max_tokens === 3000, "court : max_tokens plafonne (" + sent.max_tokens + ")");
+      assert.ok(sent.messages[0].content.includes("700 jetons au plus"), "court : la consigne de longueur part"); }
+    setVariante("hybride", { queue_jetons: 25000 });
+    { const n0 = orBodies.length; await ask(PORT_A, compactBody(), AUTO);
+      assert.strictEqual(orBodies[orBodies.length - 1].max_tokens, 8000, "hybride : max_tokens 8000 (DR-122)"); }
+    // reglage explicite fallback "claude" : retour a Claude
+    writeConf(DIR_A, PORT_A, CONF(FREE({ fallback: "claude" }))); setVariante("hybride"); orMode = "500";
+    { const b = snap(), r = await ask(PORT_A, compactBody(), AUTO); assert.deepStrictEqual(snap(), { anth: b.anth + 1, or: b.or + 1 }, "fallback claude : Claude sert"); claudeServed(r, "fallback claude"); }
+    await after(500); setVariante("court");
+    console.log("PASS — variantes : repli journal (529, vide, sans summary, blocage) sans appel a Claude, journal sans appel amont, court plafonne, fallback claude explicite");
+
     // --- octet avant validation : un repli rapide garde le vrai statut de Claude (un 400 reste un 400, pas une erreur SSE) ---
     writeConf(DIR_A, PORT_A, CONF(FREE())); orMode = "429"; anthMode = "400";
     { const b = snap(), r = await ask(PORT_A, compactBody(), AUTO);
@@ -476,7 +520,7 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
     const envSave = [["OPENROUTER_API_KEY", process.env.OPENROUTER_API_KEY], ["CQR_FREE_COMPACT_URL", process.env.CQR_FREE_COMPACT_URL], ["CQR_FREE_COMPACT_BLOCK_MS", process.env.CQR_FREE_COMPACT_BLOCK_MS], ["CQR_FREE_COMPACT_HOLD_MS", process.env.CQR_FREE_COMPACT_HOLD_MS]];
     const MOCK_URL = "http://127.0.0.1:" + MOCK_OR + "/api/v1/chat/completions", DFLT = "https://openrouter.ai/api/v1/chat/completions";
     const fresh = () => { delete require.cache[require.resolve("../src/free-compact.js")]; return require("../src/free-compact.js"); }; // un module neuf : blocage remis a zero
-    const confIn = (free) => ({ compaction: { enabled: true, free: Object.assign({ enabled: true, timeoutMs: 3000, minSummaryChars: 10 }, free) }, tokens: [{ name: "x", token: CFG_TOKEN }] });
+    const confIn = (free) => ({ compaction: { enabled: true, free: Object.assign({ enabled: true, timeoutMs: 3000, minSummaryChars: 10, fallback: "claude" }, free) }, tokens: [{ name: "x", token: CFG_TOKEN }] });
     const decideIn = (F, text) => F.decide({ url: "/v1/messages", headers: AUTO, body: { messages: [{ role: "user", content: text || "bonjour" }, { role: "assistant", content: "ok" }, { role: "user", content: FC.INVITE + " fin" }] } }, () => confIn());
     try {
       process.env.OPENROUTER_API_KEY = FAKE_OR_KEY; process.env.CQR_FREE_COMPACT_URL = MOCK_URL; // jamais la vraie cle, jamais le vrai service
@@ -510,6 +554,142 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
         try { r = await F.run(decideIn(F), {}, {}); } finally { Buffer.prototype.toString = orig; }
         assert.deepStrictEqual([r.ok, r.raison], [false, "erreur-RangeError"], "reponse piegee : la promesse se regle, repli : " + JSON.stringify(r)); }
 
+      // coupe de la queue : limite de message, jamais un tool_use separe de son tool_result
+      { const big = "y".repeat(400);
+        const msgs = [];
+        for (let i = 0; i < 40; i++) {
+          msgs.push({ role: "user", content: "question " + i + " " + big });
+          msgs.push({ role: "assistant", content: [{ type: "text", text: "je regarde " + i }, { type: "tool_use", id: "toolu_" + String(i).padStart(8, "0"), name: "Bash", input: { command: "ls " + i } }] });
+          msgs.push({ role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_" + String(i).padStart(8, "0"), content: "sortie " + i + " " + big }] });
+        }
+        msgs.push({ role: "user", content: FC.INVITE + " fin" });
+        const ids = (m, t) => (Array.isArray(m.content) ? m.content : []).filter((b) => b.type === t).map((b) => b.tool_use_id || b.id);
+        const verifie = (tail, why) => {
+          const vus = new Set();
+          for (const m of tail) { for (const id of ids(m, "tool_result")) assert.ok(vus.has(id), why + " : tool_result orphelin " + id); for (const id of ids(m, "tool_use")) vus.add(id); }
+        };
+        let coupes = 0;
+        for (const maxChars of [900, 1000, 1200, 1500, 2000, 5000]) { // toutes les positions de coupe possibles
+          const tail = FC.tailMessages(msgs, maxChars);
+          assert.ok(tail.length < msgs.length && tail[tail.length - 1] === msgs[msgs.length - 1], "queue " + maxChars + " : coupee, l'invite reste en dernier");
+          assert.ok(FC.renderConversation({ messages: tail }).length <= maxChars + 1200, "queue " + maxChars + " : taille bornee");
+          verifie(tail, "queue " + maxChars); coupes++;
+        }
+        for (let k = 1; k < msgs.length - 1; k += 1) { // quelle que soit la limite exacte
+          const tail = FC.tailMessages(msgs, FC.renderConversation({ messages: msgs.slice(k) }).length);
+          verifie(tail, "queue depuis " + k);
+        }
+        assert.ok(coupes === 6, "queue : cas verifies");
+        assert.strictEqual(FC.tailMessages(msgs.slice(-2), 10).length, 1, "queue : sans place, l'invite seule reste, le tool_result orphelin saute");
+        // via decide : hybride coupe, court garde tout
+        const dec = (v) => { fs.writeFileSync(process.env.CQR_COMPACTAGE_FILE, JSON.stringify({ variante: v, queue_jetons: 500 })); const F = fresh(); return F.decide({ url: "/v1/messages", headers: AUTO, body: { messages: msgs } }, () => confIn()); };
+        const h = dec("hybride"), c = dec("court");
+        assert.ok(h.go && h.variante === "hybride" && h.text.length < c.text.length / 3 && !h.text.includes("question 0 "), "hybride : seule la queue part (" + h.text.length + " contre " + c.text.length + ")");
+        assert.ok(c.text.includes("question 0 ") && c.maxTokens === 3000, "court : toute la conversation, max_tokens 2 x 1500");
+        // sans fichier : hybride
+        fs.rmSync(process.env.CQR_COMPACTAGE_FILE, { force: true });
+        assert.deepStrictEqual(FC.readVariante(), { variante: "hybride", queueJetons: 25000, courtMax: 1500, teteJetons: 8000 }, "fichier absent : hybride, 25000, 1500, 8000, sans invalide");
+        fs.writeFileSync(process.env.CQR_COMPACTAGE_FILE, "{pas du json"); assert.strictEqual(FC.readVariante().variante, "journal", "fichier illisible : journal (DR-116)");
+        fs.writeFileSync(process.env.CQR_COMPACTAGE_FILE, JSON.stringify({ variante: "court", queue_jetons: -3, court_max_jetons: 800 }));
+        assert.deepStrictEqual(FC.readVariante(), { variante: "court", queueJetons: 25000, courtMax: 800, teteJetons: 8000 }, "fichier : valeurs lues, invalides ignorees");
+        fs.writeFileSync(process.env.CQR_COMPACTAGE_FILE, JSON.stringify({ variante: "court" }));
+        // repli en process : echec -> journal ; fallback claude -> echec
+        { const F = fresh(); orMode = "500"; const pl = F.decide({ url: "/v1/messages", headers: AUTO, body: { messages: [{ role: "user", content: "a" }, { role: "user", content: FC.INVITE + " fin" }] } }, () => confIn({ fallback: "journal" }));
+          const r = await F.run(pl, { messages: [{ role: "user", content: "TEXTE-UTILISATEUR-VU" }, { role: "assistant", content: "ok" }] }, {});
+          assert.ok(r.ok && r.variante === "journal" && r.repli === "http-500" && r.text.includes("TEXTE-UTILISATEUR-VU"), "repli en process : journal, raison http-500 : " + JSON.stringify(r).slice(0, 200));
+          const F2 = fresh(); orMode = "500"; const pl2 = F2.decide({ url: "/v1/messages", headers: AUTO, body: { messages: [{ role: "user", content: "a" }, { role: "user", content: FC.INVITE + " fin" }] } }, () => confIn({ fallback: "claude" }));
+          assert.deepStrictEqual([(await F2.run(pl2, {}, {})).ok], [false], "fallback claude : l'echec remonte"); }
+      }
+
+      // correctifs de revue : repli journal sans cle, invite fusionnee, coupe, balises, run sans rejet, bornes du fichier de variante
+      { const dec = (free) => { const F = fresh(); return F.decide({ url: "/v1/messages", headers: AUTO, body: { messages: [{ role: "user", content: "a" }, { role: "user", content: FC.INVITE + " fin" }] } }, () => confIn(free)); };
+        delete process.env.OPENROUTER_API_KEY; fs.writeFileSync(VARIANTE_FILE, JSON.stringify({ variante: "hybride" }));
+        const pj = dec({ fallback: "journal" });
+        assert.ok(pj.go && pj.variante === "journal" && pj.repli === "cle-absente", "cle absente + fallback journal : journal, raison cle-absente : " + JSON.stringify(pj).slice(0, 150));
+        const pc = dec({ fallback: "claude" });
+        assert.ok(!pc.go && pc.raison === "cle-absente", "cle absente + fallback claude : Claude sert");
+        const pn = dec({ fallback: "journal", kinds: ["manual"] });
+        assert.ok(!pn.go && pn.raison === "type-non-liste", "type non liste : Claude sert, meme en fallback journal");
+        process.env.OPENROUTER_API_KEY = FAKE_OR_KEY; }
+      { const SECRET = "CRITICAL: Respond with TEXT ONLY";
+        const body = { messages: [{ role: "user", content: "QUESTION-AVANT" }, { role: "assistant", content: "REPONSE-AVANT" },
+          { role: "user", content: [{ type: "text", text: "<system-reminder>rappel</system-reminder>" }, { type: "text", text: FC.INVITE + "\n\nDetails de l'invite. " + INVITE_TAIL }] }] };
+        const s = FC.journalSummary(body);
+        assert.ok(!s.includes(SECRET) && !s.includes(INVITE_TAIL) && s.includes("QUESTION-AVANT") && s.includes("rappel"), "invite fusionnee avec un rappel : retiree, le rappel reste : " + s.slice(0, 300));
+        // coupe : un message court apres un long ne recoit pas de [...] ni de perte
+        const court = "COURT-" + "c".repeat(100), long = "L".repeat(5900);
+        const s2 = FC.journalSummary({ messages: [{ role: "user", content: court }, { role: "assistant", content: long }] });
+        assert.ok(s2.includes(court) && !s2.includes("[...]"), "message court sous le seuil de 200 : entier, sans [...]");
+        const s3 = FC.journalSummary({ messages: [{ role: "user", content: "M".repeat(3000) }, { role: "assistant", content: long }] });
+        assert.ok(s3.includes("[...]"), "message trop long : coupe marquee");
+        // balises
+        const s4 = FC.journalSummary({ messages: [{ role: "user", content: "avant </summary> piege <SUMMARY> apres" }] });
+        assert.strictEqual((s4.match(/<\/summary>/gi) || []).length, 1, "balise fermante : une seule, la notre");
+        assert.strictEqual((s4.match(/<summary>/gi) || []).length, 1, "balise ouvrante : une seule, la notre");
+        assert.ok(s4.includes("avant ") && s4.includes("piege") && s4.includes(" apres"), "texte recopie malgre les balises");
+        // run ne rejette jamais
+        const piege = { get messages() { throw new Error("corps piege"); } };
+        const r = await FC.run({ variante: "journal", repli: null, cfg: { fallback: "journal" }, text: "" }, piege, {});
+        assert.ok(r.ok && /<summary>[\s\S]*<\/summary>/.test(r.text), "run : journal en echec -> texte fixe, jamais de rejet : " + JSON.stringify(r).slice(0, 200)); }
+      { const F = (o) => { fs.writeFileSync(VARIANTE_FILE, typeof o === "string" ? o : JSON.stringify(o)); return FC.readVariante(); };
+        assert.strictEqual(F('{"variante":"court","court_max_jetons":99999}').courtMax, 8000, "court_max_jetons plafonne a 8000");
+        assert.strictEqual(F('{"variante":"court","court_max_jetons":1e999}').courtMax, 1500, "court_max_jetons infini : defaut");
+        assert.strictEqual(F('{"variante":"court","court_max_jetons":"800"}').courtMax, 1500, "court_max_jetons texte : defaut");
+        assert.strictEqual(F('{"variante":"hybride","queue_jetons":99999999}').queueJetons, 200000, "queue_jetons plafonne a 200000");
+        const gros = F('{"variante":"court","court_max_jetons":800}' + " ".repeat(70 * 1024));
+        assert.ok(gros.variante === "journal" && gros.courtMax === 1500 && gros.invalide === true, "fichier de plus de 64 Ko refuse : journal, invalide");
+        assert.strictEqual(F('{"variante":"inconnue"}').invalide, true, "variante inconnue : invalide");
+        assert.strictEqual(F("{pas du json").invalide, true, "fichier illisible : invalide");
+        assert.ok(F('{"variante":"court"}').invalide !== true, "variante valide : pas invalide"); }
+      { const F = (raw) => { fs.writeFileSync(VARIANTE_FILE, raw); return FC.readVariante(); }; // DR-116, meme regle que openrouter-relay
+        for (const raw of ["[]", "5", '"x"', "true", "null", '{"variante":null}', '{"variante":""}', '{"variante":0}', '{"variante":["court"]}', '{"variante":"Journal"}']) {
+          const v = F(raw); assert.ok(v.variante === "journal" && v.invalide === true, "reglage invalide -> journal + invalide : " + raw + " -> " + JSON.stringify(v)); }
+        assert.ok(F("{}").variante === "hybride" && F("{}").invalide !== true, "objet sans variante : hybride"); }
+      { fs.writeFileSync(VARIANTE_FILE, '{"variante":"inconnue"}'); const F = fresh(); orMode = "ok";
+        const pl = F.decide({ url: "/v1/messages", headers: AUTO, body: { messages: [{ role: "user", content: "a" }, { role: "user", content: FC.INVITE + " fin" }] } }, () => confIn());
+        assert.ok(pl.go && pl.variante === "journal" && pl.invalide === true, "variante inconnue : journal (DR-116), le plan porte invalide"); }
+      // DR-118 : tete-queue ; DR-115 : court = 3000 fixe
+      { const mk = (n) => { const m = []; for (let i = 0; i < n; i++) { m.push({ role: "user", content: "TETE-Q" + i + " " + "x".repeat(300) }); m.push({ role: "assistant", content: "TETE-R" + i + " " + "y".repeat(300) }); } m.push({ role: "user", content: FC.INVITE + " fin" }); return m; };
+        const plan = (msgs, extra, free) => { fs.writeFileSync(VARIANTE_FILE, JSON.stringify(Object.assign({ variante: "tete-queue" }, extra))); const F = fresh(); return { F, pl: F.decide({ url: "/v1/messages", headers: AUTO, body: { messages: msgs } }, () => confIn(free)) }; };
+        const msgs = mk(60);
+        { const { pl } = plan(msgs, { tete_jetons: 400, queue_jetons: 400 });
+          assert.ok(pl.go && pl.variante === "tete-queue" && !pl.invalide && pl.maxTokens === 8000, "tete-queue : plan, plafond de sortie 8000 comme hybride (DR-122)");
+          assert.ok(pl.text.includes("TETE-Q0 ") && pl.text.includes("TETE-R59 ") && !pl.text.includes("TETE-Q30 ") && pl.text.includes("PARTIE OMISE") && /debut/i.test(pl.text), "tete-queue : le debut et la fin partent, pas le milieu, une marque d'omission : " + pl.text.length);
+          assert.ok(pl.text.indexOf("TETE-Q0 ") < pl.text.indexOf("PARTIE OMISE") && pl.text.indexOf("PARTIE OMISE") < pl.text.indexOf("TETE-R59 "), "tete-queue : la marque est entre la tete et la queue"); }
+        { const { pl } = plan(mk(3), { tete_jetons: 800, queue_jetons: 800 }); // tete + queue couvrent tout
+          const count = (t, s) => t.split(s).length - 1;
+          assert.ok(pl.go && ["TETE-Q0 ", "TETE-R0 ", "TETE-Q1 ", "TETE-R1 ", "TETE-Q2 ", "TETE-R2 "].every((k) => count(pl.text, k) === 1), "tete-queue : recouvrement, chaque echange une seule fois");
+          assert.ok(!pl.text.includes("PARTIE OMISE"), "tete-queue : recouvrement, aucune marque d'omission"); }
+        { const sec = mk(60); sec[0] = { role: "user", content: "debut avec " + TOKEN_ANT + " et password=" + PASSWORD + " fin" };
+          const { F, pl } = plan(sec, { tete_jetons: 400, queue_jetons: 400 }); orMode = "ok"; const n0 = orBodies.length; const r = await F.run(pl, {}, {});
+          const vu = orBodies[orBodies.length - 1].messages[0].content;
+          assert.ok(orBodies.length === n0 + 1 && vu.includes("debut avec") && !vu.includes(TOKEN_ANT) && !vu.includes(PASSWORD) && vu.includes("[SECRET-MASQUE]"), "tete-queue : secrets masques dans la tete : " + vu.slice(0, 160));
+          assert.ok(r.ok && r.variante === "tete-queue", "tete-queue : resume rendu"); }
+        { const { F, pl } = plan(msgs, { tete_jetons: 400, queue_jetons: 400 }, { fallback: "journal" }); orMode = "500";
+          const r = await F.run(pl, { messages: [{ role: "user", content: "TEXTE-UTILISATEUR-VU" }] }, {});
+          assert.ok(r.ok && r.variante === "journal" && r.repli === "http-500" && r.text.includes("TEXTE-UTILISATEUR-VU"), "tete-queue : echec -> journal : " + JSON.stringify(r).slice(0, 160)); orMode = "ok"; }
+        // revue : le premier message est masque AVANT la coupe de la tete (un secret coupe sous son seuil n'est plus reconnu)
+        { const GHP = "ghp_" + "Ab3dEf6hIj9lMn2pQr5tUv8xYz1BcDeFgHiJ", ANT = "sk-ant-oat01-" + "FAKE-A1b2C3d4E5f6G7h8I9j0KlMnOp", OR = FAKE_OR_KEY;
+          for (const [nom, sec] of [["ghp", GHP], ["sk-ant", ANT], ["cle OpenRouter", OR]]) {
+            for (let off = 1180; off <= 1290; off += 9) {
+              const sec0 = mk(60); sec0[0] = { role: "user", content: ("ab ".repeat(Math.ceil(off / 3))).slice(0, off) + " " + sec + " " + "cd ".repeat(2000) };
+              const { F, pl } = plan(sec0, { tete_jetons: 400, queue_jetons: 400 });
+              assert.ok(pl.go && pl.variante === "tete-queue" && pl.text.includes("PARTIE OMISE"), "premier message enorme : tete coupee");
+              for (let k = 6; k <= sec.length; k++) assert.ok(!pl.text.includes(sec.slice(0, k)), nom + " (decalage " + off + ") : prefixe de " + k + " caracteres dans le texte du plan");
+              if (off === 1180 + 9 * 6) { orMode = "ok"; const n0 = orBodies.length; await F.run(pl, {}, {}); const vu = orBodies[orBodies.length - 1].messages[0].content;
+                assert.ok(orBodies.length === n0 + 1 && !vu.includes(sec.slice(0, 6)), nom + " : rien du secret dans le corps envoye"); }
+            } } }
+        assert.strictEqual((fs.writeFileSync(VARIANTE_FILE, '{"variante":"tete-queue","tete_jetons":99999999}'), FC.readVariante().teteJetons), 50000, "tete_jetons plafonne a 50000");
+        assert.strictEqual((fs.writeFileSync(VARIANTE_FILE, '{"variante":"tete-queue","tete_jetons":"9"}'), FC.readVariante().teteJetons), 8000, "tete_jetons texte : defaut 8000");
+        // fichier absent : hybride, sans invalide ; inconnue : journal + invalide
+        fs.rmSync(VARIANTE_FILE, { force: true }); { const F = fresh(); const pl = F.decide({ url: "/v1/messages", headers: AUTO, body: { messages: msgs } }, () => confIn());
+          assert.ok(pl.go && pl.variante === "hybride" && !pl.invalide, "fichier absent : hybride, sans marque"); }
+        fs.writeFileSync(VARIANTE_FILE, '{"variante":"nimporte"}'); { const F = fresh(); const pl = F.decide({ url: "/v1/messages", headers: AUTO, body: { messages: msgs } }, () => confIn());
+          assert.ok(pl.go && pl.variante === "journal" && pl.invalide === true, "variante inconnue : journal + invalide"); }
+        // court : 3000 fixe, ou court_max_jetons + 200 au-dela
+        for (const [cm, att] of [[500, 3000], [1500, 3000], [2800, 3000], [3500, 3700], [8000, 8200]]) { fs.writeFileSync(VARIANTE_FILE, JSON.stringify({ variante: "court", court_max_jetons: cm })); const F = fresh();
+          assert.strictEqual(F.decide({ url: "/v1/messages", headers: AUTO, body: { messages: msgs } }, () => confIn()).maxTokens, att, "court : max_tokens pour court_max_jetons " + cm); }
+        setVariante("court"); }
       // dossier personnel : son nom seul (basename), different du nom d'utilisateur, est masque puis remis en clair
       { const F = fresh(), oh = os.homedir, ou = os.userInfo, n0 = orBodies.length; orMode = "ok"; let r;
         os.homedir = () => "C:\\Users\\Zebulon-Dossier"; os.userInfo = () => ({ username: "autre-nom-utilisateur" });
@@ -593,6 +773,7 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
     console.log("PASS — commande : on/off/status/noms (3 caracteres minimum), compactage coupe ou absent, config et jetons intacts, jamais le fichier ni une cle");
   } catch (e) { failed = e; }
   finally {
+    try { fs.rmSync(VARIANTE_FILE, { force: true }); } catch (e) {}
     for (const c of [relayA, relayB, relayC, relayD, relayE]) try { c && c.kill(); } catch (e) {}
     try { mockAnth.close(); mockOr.close(); } catch (e) {}
     await sleep(200);
