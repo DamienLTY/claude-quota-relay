@@ -287,15 +287,34 @@ function plainText(m, sansInvite) {
   return Array.isArray(m.content) ? m.content.filter((b) => b && b.type === "text" && typeof b.text === "string" && garde(b.text)).map((b) => b.text).join("\n") : "";
 }
 const JOURNAL_SECOURS = "<summary>\nCompactage sans resume (variante journal, texte indisponible). Le journal de session est reinjecte apres ce compactage : il porte la tache en cours, les decisions et les fichiers touches.\n</summary>";
+// DR-184 : texte d'un message pour le journal de secours et pour la mesure de la conversation (DR-183) : sans rappels automatiques ni
+// lignes de compteurs, un message user coupe a "# Environment" (le bloc d'environnement de Claude Code suit la demande)
+function texteUtile(m) {
+  let t = plainText(m, true).replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").replace(/<total_tokens>[\s\S]*?<\/total_tokens>/g, "");
+  if (m.role === "user") { const e = t.search(/(^|\n)# Environment\nYou have been invoked/); if (e >= 0) t = t.slice(0, e); }
+  return t.trim();
+}
+// garde le DEBUT de t (max caracteres), coupe sur un blanc : un repere de masquage n'est jamais tranche
+function coupeDebut(t, max) {
+  let w = /\s/.test(t[max]) ? max : t.slice(0, max).search(/\s\S*$/);
+  if (w < 0) { w = t.slice(max).search(/\s/); w = w < 0 ? t.length : max + w; }
+  return t.slice(0, w).trimEnd() + " [...]";
+}
+// DR-183 : si la conversation elle-meme est courte (texte utile sous ~10 000 caracteres), un resume court est accepte ; les vraies sessions gardent minSummaryChars
+const SEUIL_CONVERSATION_COURTE = 10000, MIN_RESUME_COURT = 200;
+// la mesure compte aussi les appels d'outils et leurs resultats (une session de lectures et d'editions est longue meme avec peu de texte) ; le journal les exclut toujours
+const tailleOutils = (m) => (Array.isArray(m.content) ? m.content : []).reduce((n, b) => n + (b && b.type === "tool_use" ? JSON.stringify(b.input || {}).length : b && b.type === "tool_result" ? JSON.stringify(b.content == null ? "" : b.content).length : 0), 0);
+const longueurConversation = (body) => ((body && body.messages) || []).filter((m) => m && (m.role === "user" || m.role === "assistant")).reduce((n, m) => n + texteUtile(m).length + tailleOutils(m), 0);
+const seuilResume = (cfg, body) => (body && longueurConversation(body) < SEUIL_CONVERSATION_COURTE ? Math.min(cfg.minSummaryChars, MIN_RESUME_COURT) : cfg.minSummaryChars);
 function journalSummary(body) {
   const parts = []; let used = 0;
   const msgs = ((body && body.messages) || []).filter((m) => m && (m.role === "user" || m.role === "assistant"));
   for (let i = msgs.length - 1; i >= 0 && used < JOURNAL_CHARS; i--) {
-    let t = plainText(msgs[i], true).trim();
+    let t = texteUtile(msgs[i]);
     if (!t) continue;
     t = t.replace(/<(\/?)summary>/gi, "[$1summary]"); // Claude Code s'arrete a la premiere balise fermante : le texte recopie ne doit pas en porter
     const keep = Math.max(200, JOURNAL_CHARS - used);
-    if (used + t.length > JOURNAL_CHARS && t.length > keep) t = "[...] " + t.slice(t.length - keep);
+    if (used + t.length > JOURNAL_CHARS && t.length > keep) t = coupeDebut(t, keep); // DR-184 : le debut de la demande, pas la fin
     parts.unshift("=== " + String(msgs[i].role).toUpperCase() + " ===\n" + t); used += t.length;
   }
   return "<summary>\nCompactage sans resume ecrit par un modele (variante journal). Le journal de session est reinjecte apres ce compactage : "
@@ -400,7 +419,7 @@ function post(url, headers, bodyStr, timeoutMs, onReq) {
 
 // Valide ce que Nemotron a rendu : { text } ou { raison } (brute : le relais la passe par tag() avant le journal). Le texte est le brut,
 // balises comprises : Claude Code en extrait <summary> lui-meme.
-function validate(status, bodyText, cfg) {
+function validate(status, bodyText, cfg, body) {
   if (status !== 200) return { raison: "http-" + status };
   let j; try { j = JSON.parse(bodyText); } catch (e) { return { raison: "json-invalide" }; }
   const ch = j && j.choices && j.choices[0];
@@ -408,9 +427,10 @@ function validate(status, bodyText, cfg) {
   if (ch.finish_reason !== "stop") return { raison: "finish-" + ch.finish_reason };
   const text = ch.message && ch.message.content;
   if (typeof text !== "string" || !text.trim()) return { raison: "texte-vide" };
-  const m = /<summary>([\s\S]*?)<\/summary>/.exec(text); // la meme extraction que Claude Code : la premiere balise fermee
+  const sans = text.replace(/<analysis>[\s\S]*?<\/analysis>/, ""); // DR-182 : la meme extraction que Claude Code : le bloc <analysis> retire, puis la premiere balise <summary> fermee
+  const m = /<summary>([\s\S]*?)<\/summary>/.exec(sans);
   if (!m) return { raison: "sans-summary" };
-  if (m[1].trim().length < cfg.minSummaryChars) return { raison: "trop-court" };
+  if (m[1].trim().length < seuilResume(cfg, body)) return { raison: "trop-court" };
   return { text };
 }
 
@@ -492,9 +512,9 @@ async function run(plan, body, io) {
     const cnt = { n: 0 };
     let r;
     try { r = await appeler(reqBody, deadline, cnt, io.onReq); } finally { essais = cnt.n; }
-    const v = validate(r.status, r.body, plan.cfg);
+    const v = validate(r.status, r.body, plan.cfg, body);
     if (v.raison) throw Object.assign(new Error(v.raison), { raison: v.raison });
-    const j = await joindreAncre(masker.unmask(v.text));
+    const j = await joindreAncre(masker.unmask(v.text.replace(/<analysis>[\s\S]*?<\/analysis>/, ""))); // l'analyse retiree d'abord (comme Claude Code) : l'ancre se place dans le <summary> qu'il lira, pas dans un <summary> cite par l'analyse
     if (io.gone && io.gone()) return { ok: false, raison: "client-parti" };
     return { ok: true, text: j.text, ancre: j.ancre, ms: Date.now() - t0, variante: plan.variante, repli: null, essais, entree: plan.text.length, sortie: j.text.length };
   } catch (e) {
@@ -525,4 +545,4 @@ function sendSummary(res, body, text, stream) {
     ev("message_stop", { type: "message_stop" }));
 }
 
-module.exports = { INVITE, RAPPEL, manque, MOTIFS_SOURCE, MAQUETTE, REEL, MOT_DE_PASSE, holdMs, readVariante, tailMessages, journalSummary, maskSecrets, makeMasker, renderConversation, recognize, resolveConfig, decide, validate, run, sendSummary };
+module.exports = { INVITE, RAPPEL, manque, MOTIFS_SOURCE, MAQUETTE, REEL, MOT_DE_PASSE, holdMs, readVariante, tailMessages, journalSummary, texteUtile, longueurConversation, seuilResume, MIN_RESUME_COURT, SEUIL_CONVERSATION_COURTE, maskSecrets, makeMasker, renderConversation, recognize, resolveConfig, decide, validate, run, sendSummary };

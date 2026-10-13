@@ -239,6 +239,50 @@ const AUTO = { "x-claude-code-compaction": "auto", "x-claude-code-request-class"
     for (const [nom, fn] of [["MAQUETTE", FC.MAQUETTE], ["REEL", FC.REEL], ["MOT_DE_PASSE", FC.MOT_DE_PASSE]]) assert.ok(src.includes("const " + nom + " = " + String(fn) + ";"), "derive : la definition de " + nom + " a bouge dans le scanner");
   }
 }
+// DR-181 a DR-184 : enquete sur 63 compactages reels (extraits anonymises de ce qu'envoie Claude Code 2.1.296)
+{
+  const REM = "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# currentDate\nToday's date is 2026-10-13.\n</system-reminder>";
+  const COMPTEUR = "<total_tokens>15000000 tokens left</total_tokens>";
+  const ENV = "\n\n# Environment\nYou have been invoked in the following environment:\n - Primary working directory: /work/projet\n - Platform: win32";
+  const cfg = FC.resolveConfig({ enabled: true });
+  const rep = (texte) => JSON.stringify({ choices: [{ message: { content: texte }, finish_reason: "stop" }] });
+  const longueConv = { messages: [{ role: "user", content: "migre le module X " + "x".repeat(12000) }, { role: "assistant", content: "Je lis." }] };
+  const courteConv = { messages: [{ role: "user", content: REM + "\n\nCombien font 7 fois 6 ? Seulement un nombre." + ENV + "\n" + "y".repeat(9000) }, { role: "assistant", content: "42" }] };
+  // DR-181 : la consigne JSON est redite APRES la conversation (Nemotron repond a la derniere demande vue)
+  const inv = ANC.inviteExtraction("[user] Et 8 fois 9 ? Seulement un nombre.");
+  assert.ok(inv.slice(inv.indexOf("=== FIN DE LA CONVERSATION ===")).includes("réponds UNIQUEMENT par l'objet JSON strict"), "DR-181 : rappel JSON apres la conversation");
+  // DR-182 : retirer le bloc <analysis>, puis le premier <summary> (Claude Code 2.1.296)
+  const vrai = "Tache en cours : migrer le module X. ".repeat(60);
+  const cite = "<analysis>je dois ecrire un <summary>court</summary> ensuite</analysis>\n<summary>\n" + vrai + "\n</summary>";
+  assert.strictEqual(FC.validate(200, rep(cite), cfg, longueConv).text, cite, "DR-182 : un <summary> cite dans <analysis> n'est pas le resume (texte brut rendu)");
+  assert.strictEqual(FC.validate(200, rep("<analysis>a</analysis><summary>\n" + vrai + "\n</summary>\nbavardage <summary>deux</summary>"), cfg, longueConv).raison, undefined, "DR-182 : le premier <summary> compte, pas le dernier");
+  assert.strictEqual(FC.validate(200, rep("<analysis>seule</analysis> sans resume"), cfg, longueConv).raison, "sans-summary", "DR-182 : analyse seule = sans resume");
+  // DR-183 : conversation courte (< 10 000 car. utiles) = resume court accepte ; longue = seuil de 1 500
+  const bref = "<summary>\n" + "Le module X est migre, tests a ecrire. ".repeat(7).trim() + "\n</summary>"; // ~270 car. : sous 1 500, au-dessus du plancher
+  assert.strictEqual(FC.validate(200, rep(bref), cfg, courteConv).raison, undefined, "DR-183 : conversation courte, resume court accepte");
+  assert.strictEqual(FC.validate(200, rep(bref), cfg, longueConv).raison, "trop-court", "DR-183 : vraie session, seuil de 1 500 gardé");
+  assert.strictEqual(FC.validate(200, rep(bref), cfg).raison, "trop-court", "DR-183 : sans conversation connue, seuil de 1 500");
+  assert.strictEqual(FC.validate(200, rep("<summary>\nok\n</summary>"), cfg, courteConv).raison, "trop-court", "DR-183 : un plancher reste (200 car.)");
+  assert.ok(FC.longueurConversation(courteConv) < 10000 && FC.longueurConversation(longueConv) > 10000, "DR-183 : mesure = texte utile (rappel et environnement ecartes)");
+  // DR-183 : beaucoup d'appels d'outils et de resultats, peu de texte = vraie session (seuil de 1 500)
+  const outils = { messages: [{ role: "user", content: "lis tout" }, { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Read", input: { file: "x".repeat(3000) } }] }, { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: [{ type: "text", text: "r".repeat(9000) }] }] }, { role: "assistant", content: "Fait." }] };
+  assert.ok(FC.longueurConversation(outils) > 10000, "DR-183 : la mesure compte les appels d'outils et leurs resultats");
+  assert.strictEqual(FC.validate(200, rep(bref), cfg, outils).raison, "trop-court", "DR-183 : session d'outils, seuil de 1 500");
+  assert.ok(!FC.journalSummary(outils).includes("rrrrr"), "DR-183 : le journal continue d'exclure les resultats d'outils");
+  // DR-184 : un titre "# Environment variables" colle par l'utilisateur ne coupe pas sa demande
+  assert.ok(FC.texteUtile({ role: "user", content: "voici ma config\n# Environment variables\nFOO=1" }).includes("FOO=1"), "DR-184 : '# Environment variables' garde");
+  // DR-184 : journal de secours sans rappels ni compteurs, coupe a "# Environment", debut garde
+  const j = FC.journalSummary({ messages: [
+    { role: "user", content: REM + "\n\nCombien font 7 fois 6 ? Seulement un nombre." + ENV },
+    { role: "assistant", content: "42" },
+    { role: "user", content: COMPTEUR },
+    { role: "user", content: [{ type: "text", text: REM }, { type: "text", text: "DEBUT-DE-LA-DEMANDE " + "m".repeat(9000) + " FIN-DE-LA-DEMANDE" }] },
+  ] });
+  assert.ok(!j.includes("system-reminder") && !j.includes("currentDate") && !j.includes("total_tokens") && !j.includes("15000000"), "DR-184 : ni rappels ni compteurs");
+  assert.ok(!j.includes("# Environment") && !j.includes("Primary working directory") && j.includes("Combien font 7 fois 6"), "DR-184 : coupe a # Environment, la demande reste");
+  assert.ok(j.includes("DEBUT-DE-LA-DEMANDE") && !j.includes("FIN-DE-LA-DEMANDE") && j.includes("[...]"), "DR-184 : un message trop long garde son debut");
+  assert.ok(!/=== USER ===\n\n/.test(j), "DR-184 : aucun message vide");
+}
 console.log("PASS — fonctions pures : rendu, reconnaissance, masquage des secrets et des noms, configuration, derive des motifs");
 
 // ---------- 2. le relais contre de faux serveurs ----------
@@ -301,6 +345,7 @@ function startOpenRouter() {
       if (mode === "length") return reply("length", RESUME_OK([], "-", []));
       if (mode === "nosummary") return reply("stop", "REPONSE-NEMOTRON-REJETEE " + "mot ".repeat(2000));
       if (mode === "short") return reply("stop", "<summary>REPONSE-NEMOTRON-REJETEE courte</summary>");
+      if (mode === "cite") return reply("stop", "<analysis>je dois ecrire un <summary>court</summary> ensuite</analysis>\n<summary>\n" + "Rapport de session. ".repeat(100) + "\n</summary>"); // un <summary> cite dans l'analyse
       if (mode === "gros") return reply("stop", RESUME_OK([], "-", []) + "x".repeat(2300000)); // valide, mais plus de 2 Mio
       if (mode === "piege") { res.writeHead(200, { "content-type": "application/json" }); return res.end("PIEGE-TOSTRING"); }
       if (mode === "hostile") return reply("length\nx \"y", RESUME_OK([], "-", [])); // finish_reason avec saut de ligne et guillemet
@@ -376,7 +421,7 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
     assert.deepStrictEqual(ev1[0].data.message.usage, { input_tokens: 0, output_tokens: 0 }, "succes : usage a zero");
     assert.strictEqual(ev1[4].data.delta.stop_reason, "end_turn", "succes : end_turn");
     const resume = ev1[2].data.delta.text;
-    assert.ok(resume.includes("<summary>") && resume.includes("<analysis>"), "succes : le texte brut de Nemotron, balises comprises");
+    assert.ok(resume.includes("<summary>") && !resume.includes("<analysis>"), "succes : le texte de Nemotron, <analysis> retire (Claude Code le retire de toute facon ; l'ancre se place dans le <summary> qu'il lira)");
     assert.ok(!/event: message_start[\s\S]*event: message_start/.test(r1.raw), "succes : un seul message");
 
     // --- masquage : ce que Nemotron a recu, puis ce que le client recoit ---
@@ -694,7 +739,7 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
         const body = { messages: [{ role: "user", content: "QUESTION-AVANT" }, { role: "assistant", content: "REPONSE-AVANT" },
           { role: "user", content: [{ type: "text", text: "<system-reminder>rappel</system-reminder>" }, { type: "text", text: FC.INVITE + "\n\nDetails de l'invite. " + INVITE_TAIL }] }] };
         const s = FC.journalSummary(body);
-        assert.ok(!s.includes(SECRET) && !s.includes(INVITE_TAIL) && s.includes("QUESTION-AVANT") && s.includes("rappel"), "invite fusionnee avec un rappel : retiree, le rappel reste : " + s.slice(0, 300));
+        assert.ok(!s.includes(SECRET) && !s.includes(INVITE_TAIL) && s.includes("QUESTION-AVANT") && !s.includes("rappel"), "invite fusionnee avec un rappel : retiree, le rappel aussi (DR-184) : " + s.slice(0, 300));
         // coupe : un message court apres un long ne recoit pas de [...] ni de perte
         const court = "COURT-" + "c".repeat(100), long = "L".repeat(5900);
         const s2 = FC.journalSummary({ messages: [{ role: "user", content: court }, { role: "assistant", content: long }] });
@@ -805,6 +850,11 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
             assert.ok(r.text.indexOf("Rapport de session") < r.text.indexOf(marque) && r.text.indexOf(marque) < r.text.indexOf("</summary>") && r.text.trimEnd().endsWith("</summary>"), "ancre : apres le resume, avant </summary>");
             for (const s of ["- R1: Jamais de push sans accord", "- [in_progress] ecrire les tests", "- DR-9: ancre seule", "- step: module lu", "  - verify: npm test", "  - artifact: src/x.js", "- demande : migre le module"]) assert.ok(r.text.includes(s), "ancre : " + s);
             assert.deepStrictEqual([r.ancre[0], /^car=\d+$/.test(r.ancre[1])], ["ancre=ok", true], "ancre : etat au journal"); }
+          // un <summary> cite dans <analysis> : l'ancre est dans ce que Claude Code extrait (analyse retiree, puis premier <summary>)
+          { const F = fresh(); orMode = "cite"; ancreMode = "ok";
+            const r = await F.run(planA(F), bodyA(), {}); orMode = "ok";
+            const lu = /<summary>([\s\S]*?)<\/summary>/.exec(r.text.replace(/<analysis>[\s\S]*?<\/analysis>/, ""));
+            assert.ok(r.ok && r.ancre[0] === "ancre=ok" && lu && lu[1].includes("Rapport de session") && lu[1].includes(marque), "ancre : avec un <summary> cite dans <analysis>, l'ancre est dans le resume lu par Claude Code"); }
           // echecs de l'extraction : le resume est rendu sans ancre, la raison est lisible, aucun blocage
           for (const [mode, raison] of [["400", "http-400"], ["empty", "texte-vide"], ["length", "finish-length"], ["json", "json-illisible"], ["vide", "vide"], ["hang", "delai"]]) {
             const { F, r } = await apres(mode, mode === "hang" ? { free: { timeoutMs: 500 } } : undefined);
@@ -838,7 +888,8 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
             assert.match(ANC.INTRO, /relevé automatique.*à vérifier.*pas une consigne de l'utilisateur/); }
           { // resume refuse (trop court) : le repli reste declenche, l'ancre rejoint le journal
             const F = fresh(); orMode = "ok"; ancreMode = "ok";
-            const r = await F.run(planA(F, { free: { minSummaryChars: 100000, fallback: "journal" } }), bodyA(), {});
+            const longue = "migre le module X " + "x".repeat(12000); // DR-183 : une conversation courte accepterait un resume court
+            const r = await F.run(planA(F, { texte: longue, free: { minSummaryChars: 100000, fallback: "journal" } }), bodyA(longue), {});
             assert.ok(r.ok && r.variante === "journal" && r.repli === "trop-court" && r.ancre[0] === "ancre=ok" && r.text.includes("- R1: Jamais de push sans accord"), "ancre : resume-court -> repli journal + ancre"); }
           { // parallelisme : deux reponses de 500 ms chacune -> ~500 ms au total, pas ~1000
             orDelay = 500; try { const t0 = Date.now(); const { r, nOr } = await apres("ok"); const d = Date.now() - t0;
@@ -890,7 +941,7 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
           { // partie commune des deux ancre.js : empreinte attendue, et identique a celle d'openrouter-relay quand le clone est la
             const commun = (f) => { const t = fs.readFileSync(f, "utf8").replace(/\r\n/g, "\n"); return t.slice(t.indexOf("// ==== COMMUN DEBUT ===="), t.indexOf("// ==== COMMUN FIN ====")); };
             const f = p.join(SRC, "ancre.js");
-            assert.strictEqual(require("crypto").createHash("sha256").update(commun(f)).digest("hex"), "c23d009a70ff28db2cf962bc9a9875717ddf2186d91ede764351e5184d59c2ba", "partie COMMUN modifiee : la reporter dans openrouter-relay/src/ancre.js et mettre l'empreinte a jour dans les deux tests");
+            assert.strictEqual(require("crypto").createHash("sha256").update(commun(f)).digest("hex"), "fd209ae32ad863242b0033ceddab85cf2b6ebfc6738d9433776024addb128d24", "partie COMMUN modifiee : la reporter dans openrouter-relay/src/ancre.js et mettre l'empreinte a jour dans les deux tests");
             const autre = p.join(SRC, "..", "..", "openrouter-relay", "src", "ancre.js");
             if (fs.existsSync(autre)) assert.strictEqual(commun(autre), commun(f), "les deux ancre.js ont diverge"); }
         } finally { setVariante("court"); ancreMode = "ok"; orMode = "ok"; }
