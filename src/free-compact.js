@@ -18,6 +18,7 @@ const os = require("os");
 const crypto = require("crypto");
 const path = require("path");
 const fs = require("fs");
+const AN = require("./ancre.js");
 
 const INVITE = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."; // debut de l'invite native de Claude Code
 const KINDS_OK = ["auto", "manual"]; // DR-071 : "reactive" (debordement d'urgence) reste chez Claude, meme si la config le demande
@@ -62,6 +63,7 @@ const MOTIFS_PLUS = [
   ["JWT", /(eyJ[\w-]{4,}\.[\w-]{4,}\.[\w-]*)/],
   ["en-tête Authorization", /authorization["'\\]*\s*[:=]\s*[\\"']*(?:bearer|basic)\s+([^\s"'\\]+)/i],
   ["mot de passe d'une adresse", /\b[a-z][a-z0-9+.-]{0,31}:\/\/[^\s:/@]+:([^\s/]+)@/i], // schema borne : sans borne, une ligne a.b-a.b-... est quadratique (320 Ko = 111 s, relais fige)
+  ["Bearer nu", /\bBearer\s+((?=[A-Za-z0-9._~+/=-]*\d)[A-Za-z0-9._~+/=-]{16,})/i], // DR-170 : un jeton cite apres Bearer hors d'un en-tete Authorization
   ["cookie", /\b(?:set-)?cookie["'\\]*\s*[:=]\s*[\\"']*([^\r\n]+)/i],
   ["affectation entre guillemets", new RegExp(AFFECTATION + "\\\\*([\"'])((?:(?!\\1)[^\\\\\\r\\n])+)", "i"), PAS_UN_NOMBRE],
   ["affectation", new RegExp(AFFECTATION + "([^\\s\"'\\\\,;<>${}()[\\]]+)", "i"), PAS_UN_NOMBRE],
@@ -228,7 +230,7 @@ function readVariante() {
   } catch (e) { j = {}; invalide = e.code !== "ENOENT"; }
   const pos = (v, d, max) => (typeof v === "number" && isFinite(v) && v > 0 ? Math.min(Math.floor(v), max) : d);
   if (j.variante !== undefined && !VARIANTES.includes(j.variante)) invalide = true; // exactement dans la liste : ni String() ni minuscules (DR-116)
-  const out = { variante: invalide ? "journal" : j.variante === undefined ? "hybride" : j.variante, queueJetons: pos(j.queue_jetons, 25000, 200000), courtMax: pos(j.court_max_jetons, 1500, 8000), teteJetons: pos(j.tete_jetons, 8000, 50000) };
+  const out = { variante: invalide ? "journal" : j.variante === undefined ? "hybride" : j.variante, queueJetons: pos(j.queue_jetons, 25000, 200000), courtMax: pos(j.court_max_jetons, 1500, 8000), teteJetons: pos(j.tete_jetons, 8000, 50000), ancre: j.ancre !== false }; // DR-170 : l'ancre Nemotron est active, sauf "ancre": false
   if (invalide) out.invalide = true;
   return out;
 }
@@ -285,6 +287,8 @@ let blockedUntil = 0; // apres une panne du service, Claude sert jusque-la (en m
 const envMs = (nom, defaut) => { const n = Number(process.env[nom]); return process.env[nom] != null && isFinite(n) && n > 0 ? Math.min(n, MAX_DELAY) : defaut; };
 const blockMs = () => envMs("CQR_FREE_COMPACT_BLOCK_MS", DEFAULT_BLOCK_MS);
 const retryMs = () => envMs("CQR_FREE_COMPACT_RETRY_MS", 2000); // attente entre deux essais ; reglable pour les tests
+const ancreGraceRepliMs = () => envMs("CQR_FREE_COMPACT_ANCRE_GRACE_REPLI_MS", 10000); // le resume a echoue : l'ancre n'a que ce delai avant le repli journal
+const ancreGraceMs = () => envMs("CQR_FREE_COMPACT_ANCRE_GRACE_MS", 60000); // une fois le resume pret, l'ancre n'a plus que ce delai (puis sa requete est coupee, le resume part seul)
 const holdMs = () => envMs("CQR_FREE_COMPACT_HOLD_MS", DEFAULT_HOLD_MS);
 const hasKey = () => !!String(process.env.OPENROUTER_API_KEY || "").trim();
 // CQR_FREE_COMPACT_URL n'est honoree que vers la machine elle-meme : sur un autre hote, la variable partirait avec la conversation
@@ -347,7 +351,7 @@ function decide(req, getConf) { // getConf : la config ne se lit que pour un vra
   }
   text = "[Consigne : " + note + "]\n\n" + text;
   if (Math.ceil(text.length / 3.5) > MAX_TOKENS_EST) return repli("trop-gros"); // meme estimation que compaction.js, legerement pessimiste
-  return Object.assign({ go: true, kind: rec.kind, cfg, text, secrets, variante: V.variante, invalide: V.invalide, maxTokens: V.variante === "court" ? Math.max(3000, V.courtMax + 200) : 8000 }, endpoint()); // court (DR-115) : 3000 fixe (la place du bloc <analysis> avant le <summary>), sauf si court_max_jetons le depasse : il + 200
+  return Object.assign({ go: true, kind: rec.kind, cfg, text, secrets, variante: V.variante, ancre: V.ancre, invalide: V.invalide, maxTokens: V.variante === "court" ? Math.max(3000, V.courtMax + 200) : 8000 }, endpoint()); // court (DR-115) : 3000 fixe (la place du bloc <analysis> avant le <summary>), sauf si court_max_jetons le depasse : il + 200
 }
 
 // ----- appel -----
@@ -413,30 +417,65 @@ const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 async function run(plan, body, io) {
   const t0 = Date.now();
   io = io || {};
-  let essais = 0; // appels faits a Nemotron
-  const viaJournal = (repli) => { let text; try { text = journalSummary(body); } catch (e) { text = JOURNAL_SECOURS; } return { ok: true, text, ms: Date.now() - t0, variante: "journal", repli, essais, entree: plan.text ? plan.text.length : 0, sortie: text.length }; };
+  let essais = 0; // appels faits a Nemotron pour le resume
+  let masker = null, ancreP = null, ancreReq = null, ancreStop = false;
+  // Ancre (DR-170) : ajoutee a la fin du <summary>, remise en clair comme le resume ; jamais une cause d'echec
+  const joindreAncre = async (text, repli) => {
+    if (!ancreP) return { text, ancre: ["ancre=absente", "raison=" + (plan.ancre ? "aucun-appel" : "coupee")] };
+    let fin; // grace : le resume est pret, l'ancre n'a plus que ancreGraceMs ; sa requete est alors detruite
+    const a = await Promise.race([ancreP, new Promise((ok) => { fin = setTimeout(() => { ancreStop = true; if (ancreReq) ancreReq.destroy(); ok({ raison: "grace" }); }, repli ? Math.min(ancreGraceMs(), ancreGraceRepliMs()) : ancreGraceMs()); })]);
+    clearTimeout(fin);
+    if (!a.texte) return { text, ancre: ["ancre=absente", "raison=" + a.raison] };
+    let t; try { t = masker.unmask(a.texte); } catch (e) { return { text, ancre: ["ancre=absente", "raison=" + (e.raison || "demasquage")] }; }
+    const out = AN.ajouterAncre(text, t, false);
+    return out === text ? { text, ancre: ["ancre=absente", "raison=sans-balise"] } : { text: out, ancre: ["ancre=ok", "car=" + t.length] };
+  };
+  const viaJournal = async (repli) => {
+    let text; try { text = journalSummary(body); } catch (e) { text = JOURNAL_SECOURS; }
+    const j = await joindreAncre(text, true);
+    return { ok: true, text: j.text, ancre: j.ancre, ms: Date.now() - t0, variante: "journal", repli, essais, entree: plan.text ? plan.text.length : 0, sortie: j.text.length };
+  };
   if (plan.variante === "journal") return viaJournal(plan.repli || null);
-  try {
-    const masker = makeMasker(personalStrings(plan.cfg.names));
-    const sent = masker.mask(maskSecrets(plan.text, plan.secrets)); // les secrets d'abord : un secret ne doit jamais entrer dans la table des reperes
-    const reqBody = JSON.stringify({ model: plan.cfg.model, messages: [{ role: "user", content: sent }], max_tokens: plan.maxTokens || 8000, reasoning: { effort: "low" }, stream: false });
-    // Reessais (DR-127) : le meme corps (donc le meme masquage) a chaque essai, le tout dans le delai total timeoutMs.
-    const deadline = t0 + plan.cfg.timeoutMs, wait = retryMs();
+  // un appel au modele avec reessais (DR-127) : le meme corps (donc le meme masquage) a chaque essai, le tout dans le delai total timeoutMs.
+  // cnt.n : appels faits ; onReq : la requete sortante en cours (a couper si le client part).
+  const appeler = async (reqBody, deadline, cnt, onReq, stop) => {
+    const wait = retryMs();
     let r;
     for (;;) {
-      essais++;
-      r = await post(plan.url, { "content-type": "application/json", "authorization": "Bearer " + String(process.env.OPENROUTER_API_KEY).trim() }, reqBody, Math.max(1, deadline - Date.now()), io.onReq);
+      if (stop && stop()) throw Object.assign(new Error("grace"), { raison: "grace" }); // l'ancre a depasse sa grace : plus aucun appel
+      cnt.n++;
+      r = await post(plan.url, { "content-type": "application/json", "authorization": "Bearer " + String(process.env.OPENROUTER_API_KEY).trim() }, reqBody, Math.max(1, deadline - Date.now()), onReq);
       const t = transitoire(r.status, r.body);
-      if (!t) break;
-      if (essais >= ESSAIS_MAX) throw Object.assign(new Error(t), { raison: t });
+      if (!t) return r;
+      if (cnt.n >= ESSAIS_MAX) throw Object.assign(new Error(t), { raison: t });
       if (deadline - Date.now() <= wait) throw Object.assign(new Error("delai"), { code: "DELAI" }); // plus de place pour un autre essai
       await pause(wait);
       if (io.gone && io.gone()) throw new Error("client-parti");
     }
+  };
+  try {
+    masker = makeMasker(personalStrings(plan.cfg.names));
+    const sent = masker.mask(maskSecrets(plan.text, plan.secrets)); // les secrets d'abord : un secret ne doit jamais entrer dans la table des reperes
+    const reqBody = JSON.stringify({ model: plan.cfg.model, messages: [{ role: "user", content: sent }], max_tokens: plan.maxTokens || 8000, reasoning: { effort: "low" }, stream: false });
+    const deadline = t0 + plan.cfg.timeoutMs;
+    if (plan.ancre) { // en parallele du resume : le compactage n'en est pas allonge ; le meme masquage (et les memes reperes) que le resume
+      ancreP = (async () => {
+        try {
+          const vue = masker.mask(maskSecrets(AN.vueConversation((body && body.messages) || []), plan.secrets));
+          const eb = JSON.stringify({ model: plan.cfg.model, messages: [{ role: "user", content: AN.inviteExtraction(vue) }], temperature: 0, stream: false });
+          const rr = await appeler(eb, deadline, { n: 0 }, (q) => { ancreReq = q; if (io.onReqAncre) io.onReqAncre(q); }, () => ancreStop);
+          return AN.ancreDepuisReponse(rr.status, rr.body);
+        } catch (e) { return { raison: e.raison || (e.code === "DELAI" ? "delai" : e.code ? "reseau-" + e.code : "erreur-" + e.name) }; }
+      })();
+    }
+    const cnt = { n: 0 };
+    let r;
+    try { r = await appeler(reqBody, deadline, cnt, io.onReq); } finally { essais = cnt.n; }
     const v = validate(r.status, r.body, plan.cfg);
     if (v.raison) throw Object.assign(new Error(v.raison), { raison: v.raison });
-    const out = masker.unmask(v.text);
-    return { ok: true, text: out, ms: Date.now() - t0, variante: plan.variante, repli: null, essais, entree: plan.text.length, sortie: out.length };
+    const j = await joindreAncre(masker.unmask(v.text));
+    if (io.gone && io.gone()) return { ok: false, raison: "client-parti" };
+    return { ok: true, text: j.text, ancre: j.ancre, ms: Date.now() - t0, variante: plan.variante, repli: null, essais, entree: plan.text.length, sortie: j.text.length };
   } catch (e) {
     if (io.gone && io.gone()) return { ok: false, raison: "client-parti" };
     const raison = e.raison || (e.code === "DELAI" ? "delai" : e.code ? "reseau-" + e.code : "erreur-" + e.name);

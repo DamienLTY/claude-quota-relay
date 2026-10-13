@@ -488,8 +488,8 @@ function serve(creq, cres) {
   let clientGone = false;
   // requete amont en cours pour ce client : detruite des qu'il part (DR-012), sinon elle continue de
   // tirer (et de facturer) une reponse que personne ne lira, jusqu'a la fin du flux ou 90 s de silence.
-  let upstreamReq = null;
-  const abandon = () => { clientGone = true; if (upstreamReq) { try { upstreamReq.destroy(); } catch (e) {} } };
+  let upstreamReq = null, ancreReq = null; // ancreReq : l'extraction de l'ancre (DR-170), en parallele du resume
+  const abandon = () => { clientGone = true; for (const q of [upstreamReq, ancreReq]) if (q) { try { q.destroy(); } catch (e) {} } };
   const reqStart = now();
   creq.on("data", (c) => chunks.push(c));
   creq.on("error", (e) => { abandon(); log("CLIENT error", e.message, "elapsedMs=" + (now() - reqStart)); });
@@ -576,14 +576,14 @@ function serve(creq, cres) {
       // Le flux ne s'ouvre qu'apres FC.holdMs() (60 s, sous la fenetre de premier octet du client, 120 s) : un repli rapide garde le
       // vrai statut de Claude (un 400 reste un 400) ; au-dela, des battements partent et un repli tardif ne peut rendre qu'une erreur SSE.
       const hold = after(() => holdOpen("compactage gratuit en cours"), FC.holdMs());
-      FC.run(plan, bodyObj, { onReq: (r) => { upstreamReq = r; }, gone: () => clientGone }).then(guard((r) => {
+      FC.run(plan, bodyObj, { onReq: (r) => { upstreamReq = r; }, onReqAncre: (r) => { ancreReq = r; }, gone: () => clientGone }).then(guard((r) => {
         clearTimeout(hold);
-        upstreamReq = null;
+        upstreamReq = null; ancreReq = null;
         if (clientGone) { stopKeepalive(); log("COMPACT-GRATUIT", "abandon", "raison=client-parti"); return; }
         if (!r.ok) { log("COMPACT-GRATUIT", "repli", "raison=" + tag(r.raison, 40), ...(r.essais ? ["essais=" + r.essais] : [])); return attempt(); }
         stopKeepalive(); ctx.sent = true;
         FC.sendSummary(cres, bodyObj, r.text, isStream);
-        log("COMPACT-GRATUIT", "ok", "motif=" + tag(plan.kind, 20), "variante=" + tag(r.variante, 10), ...(plan.invalide ? ["variante=invalide"] : []), "entree=" + r.entree, "sortie=" + r.sortie, "duree=" + Math.round(r.ms / 1000) + "s", ...(r.essais ? ["essais=" + r.essais] : []), "repli=" + (r.repli ? tag(r.repli, 40) : "non"), "caracteres=" + r.text.length);
+        log("COMPACT-GRATUIT", "ok", "motif=" + tag(plan.kind, 20), "variante=" + tag(r.variante, 10), ...(plan.invalide ? ["variante=invalide"] : []), "entree=" + r.entree, "sortie=" + r.sortie, "duree=" + Math.round(r.ms / 1000) + "s", ...(r.essais ? ["essais=" + r.essais] : []), "repli=" + (r.repli ? tag(r.repli, 40) : "non"), "caracteres=" + r.text.length, ...(r.ancre || []).map((x) => x.replace(/[^A-Za-z0-9_=-]/g, "").slice(0, 60)));
       }));
       return true;
     }

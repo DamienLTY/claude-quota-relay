@@ -6,7 +6,8 @@ const assert = require("assert");
 const fs = require("fs"), os = require("os"), p = require("path"), http = require("http"), cp = require("child_process");
 
 const SRC = p.join(__dirname, "..", "src");
-const PROXY_PORT = 8792, MOCK_PORT = 8793;
+let PROXY_PORT, MOCK_PORT; // ports libres choisis au lancement (jamais de port fixe : 8792 sert a un autre processus de la machine)
+const freePort = () => new Promise((ok, ko) => { const s = require("net").createServer(); s.on("error", ko); s.listen(0, "127.0.0.1", () => { const n = s.address().port; s.close(() => ok(n)); }); });
 const FAKE = "sk-ant-oat01-FAKE-TEST-TOKEN-not-real-000000";
 const FAKE1 = "sk-ant-oat01-FAKE-ACCOUNT-ONE-not-real-0000000";
 
@@ -98,6 +99,7 @@ function writeConf(dir, compaction, opts) {
 }
 
 (async () => {
+  PROXY_PORT = await freePort(); MOCK_PORT = await freePort();
   const DIR = fs.mkdtempSync(p.join(os.tmpdir(), "cqr-e2e-"));
   for (const f of ["proxy.js", "compaction.js", "lib.js"]) fs.copyFileSync(p.join(SRC, f), p.join(DIR, f));
   writeConf(DIR, { enabled: true, dryRun: false, mode: "native", keepToolUses: 10, thresholds: {} });

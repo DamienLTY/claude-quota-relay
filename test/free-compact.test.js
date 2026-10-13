@@ -6,11 +6,12 @@
 const assert = require("assert");
 const fs = require("fs"), os = require("os"), p = require("path"), http = require("http"), cp = require("child_process");
 const FC = require("../src/free-compact.js");
+const ANC = require("../src/ancre.js");
 
 const SRC = p.join(__dirname, "..", "src");
 const VARIANTE_FILE = p.join(os.tmpdir(), "cqr-compactage-" + process.pid + ".json"); // jamais le vrai ~/.etabli/compactage.json
 process.env.CQR_COMPACTAGE_FILE = VARIANTE_FILE;
-const setVariante = (v, extra) => fs.writeFileSync(VARIANTE_FILE, JSON.stringify(Object.assign({ variante: v }, extra)));
+const setVariante = (v, extra) => fs.writeFileSync(VARIANTE_FILE, JSON.stringify(Object.assign({ variante: v, ancre: false }, extra)));
 setVariante("court"); // les scenarios d'origine portent sur la conversation entiere ; les variantes ont leurs scenarios
 const PORT_A = 8820, MOCK_ANTH = 8821, MOCK_OR = 8822, PORT_B = 8823, PORT_C = 8824, PORT_D = 8825, PORT_E = 8826;
 const FAKE = "sk-ant-oat01-FAKE-TEST-TOKEN-not-real-000000";
@@ -213,6 +214,8 @@ console.log("PASS — fonctions pures : rendu, reconnaissance, masquage des secr
 
 // ---------- 2. le relais contre de faux serveurs ----------
 let anthHits = 0, orHits = 0, orClosed = 0, orMode = "ok", anthMode = "ok"; const orBodies = [], orAuth = [], orQueue = [];
+let orDelay = 0, ancreClosed = 0; // orDelay : toute reponse du faux OpenRouter attend ce delai (mesure du parallelisme)
+let ancreMode = "ok", ancreN = 0; const ancreBodies = []; // l'extraction de l'ancre (DR-170) : reconnue a son invite, reponse propre
 const RATE = { "anthropic-ratelimit-unified-5h-utilization": "0.1", "anthropic-ratelimit-unified-7d-utilization": "0.1", "anthropic-ratelimit-unified-status": "allowed" };
 function collect(req, cb) { let b = ""; req.on("data", (c) => (b += c)); req.on("end", () => { let o = {}; try { o = JSON.parse(b); } catch (e) {} cb(o, b); }); }
 function startAnthropic() {
@@ -238,8 +241,22 @@ function startAnthropic() {
 const RESUME_OK = (marqueurs, secret, jetons) => "<analysis>analyse</analysis>\n<summary>\n" + "Rapport de session. ".repeat(100) + "\n" + marqueurs.map((m) => "Repere vu : " + m).join("\n") + "\nSecret : " + secret + "\nJetons recopies : " + jetons.join(" ") + "\n</summary>";
 function startOpenRouter() {
   return new Promise((resolve) => {
-    const srv = http.createServer((req, res) => collect(req, (body) => {
+    const srv = http.createServer((req, res) => collect(req, (body) => { const go = () => {
       orHits++; orBodies.push(body); orAuth.push(req.headers.authorization);
+      if (typeof ((body.messages || [])[0] || {}).content === "string" && body.messages[0].content.includes("=== CONVERSATION ===")) { // extraction de l'ancre
+        ancreBodies.push(body); ancreN++; res.on("close", () => { if (!res.writableFinished) ancreClosed++; });
+        const seenA = body.messages[0].content, rep = (finish, content) => { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ id: "gen-a", model: body.model, choices: [{ index: 0, finish_reason: finish, message: { role: "assistant", content } }] })); };
+        const ex = { intention: "migrer", demandes: ["migre le module"], regles: ["Jamais de push sans accord", "voir " + ((seenA.match(/\[PERSO-[\w-]+\]/) || ["rien"])[0])], taches: [{ titre: "ecrire les tests", etat: "in_progress" }], decisions: [{ titre: "DR-9", decision: "ancre seule" }], avancement: [{ etape: "module lu", fichiers: ["src/x.js"], a_verifier: ["npm test"] }], points_a_verifier: [] };
+        if (ancreMode === "balise") ex.regles = ["a </summary > b <summary x> c"];
+        if (ancreMode === "hang") return;
+        if (ancreMode === "400") { res.writeHead(400, { "content-type": "application/json" }); return res.end('{"error":{"message":"bad"}}'); }
+        if (ancreMode === "empty") return rep("stop", "  ");
+        if (ancreMode === "length") return rep("length", JSON.stringify(ex));
+        if (ancreMode === "json") return rep("stop", "voici mon extraction, sans JSON");
+        if (ancreMode === "vide") return rep("stop", JSON.stringify({ intention: "" }));
+        if (ancreMode === "surcharge" && ancreN < 3) { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify({ error: { message: "overloaded", code: 503 } })); }
+        return rep("stop", JSON.stringify(ex));
+      }
       const mode = orQueue.length ? orQueue.shift() : orMode; // orQueue : une reponse par appel, avant de revenir a orMode
       res.on("close", () => { if (!res.writableFinished) orClosed++; });
       const json = (code, o) => { res.writeHead(code, { "content-type": "application/json" }); res.end(JSON.stringify(o)); };
@@ -264,7 +281,7 @@ function startOpenRouter() {
       if (mode === "fantome") { const n = /\[PERSO-([0-9a-f]{6})-/.exec(seen); marqueurs.push("[PERSO-" + (n ? n[1] : "000000") + "-999]"); } // un repere du bon nonce que le relais n'a jamais pose
       const jetons = [...new Set(seen.match(/sk-ant-oat01-[\w-]+|sk-or-v1-[\w-]+|Zq9xK2mLp7vB/g) || [])];
       reply("stop", RESUME_OK(marqueurs, seen.includes("[SECRET-MASQUE]") ? "[SECRET-MASQUE]" : "aucun", jetons));
-    }));
+    }; if (orDelay) setTimeout(go, orDelay); else go(); }));
     srv.listen(MOCK_OR, "127.0.0.1", () => resolve(srv));
   });
 }
@@ -276,7 +293,7 @@ function writeConf(dir, port, compaction) {
   fs.writeFileSync(p.join(dir, "state.json"), JSON.stringify({ activeIndex: 0, pct: { account1: { h5: 10, d7: 10 } }, exhausted: {}, reset5h: {}, reset7d: {} }));
 }
 async function startRelay(dir, port, withKey, withoutModule, envExtra) {
-  for (const f of ["proxy.js", "compaction.js", "lib.js", ...(withoutModule ? [] : ["free-compact.js"])]) fs.copyFileSync(p.join(SRC, f), p.join(dir, f));
+  for (const f of ["proxy.js", "compaction.js", "lib.js", ...(withoutModule ? [] : ["free-compact.js", "ancre.js"])]) fs.copyFileSync(p.join(SRC, f), p.join(dir, f));
   const env = Object.assign({}, process.env, { CQR_UPSTREAM_HOST: "127.0.0.1", CQR_UPSTREAM_PORT: String(MOCK_ANTH), CQR_UPSTREAM_HTTP: "1", CQR_NO_POPUP: "1", CQR_FREE_COMPACT_URL: "http://127.0.0.1:" + MOCK_OR + "/api/v1/chat/completions", CQR_FREE_COMPACT_BLOCK_MS: "400", CQR_FREE_COMPACT_RETRY_MS: "30" }, envExtra);
   if (withKey) env.OPENROUTER_API_KEY = FAKE_OR_KEY; else delete env.OPENROUTER_API_KEY; // jamais la vraie cle de la machine
   const child = cp.spawn(process.execPath, [p.join(dir, "proxy.js")], { env, stdio: "ignore", windowsHide: true });
@@ -613,10 +630,10 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
         assert.ok(c.text.includes("question 0 ") && c.maxTokens === 3000, "court : toute la conversation, max_tokens 2 x 1500");
         // sans fichier : hybride
         fs.rmSync(process.env.CQR_COMPACTAGE_FILE, { force: true });
-        assert.deepStrictEqual(FC.readVariante(), { variante: "hybride", queueJetons: 25000, courtMax: 1500, teteJetons: 8000 }, "fichier absent : hybride, 25000, 1500, 8000, sans invalide");
+        assert.deepStrictEqual(FC.readVariante(), { variante: "hybride", queueJetons: 25000, courtMax: 1500, teteJetons: 8000, ancre: true }, "fichier absent : hybride, 25000, 1500, 8000, sans invalide");
         fs.writeFileSync(process.env.CQR_COMPACTAGE_FILE, "{pas du json"); assert.strictEqual(FC.readVariante().variante, "journal", "fichier illisible : journal (DR-116)");
         fs.writeFileSync(process.env.CQR_COMPACTAGE_FILE, JSON.stringify({ variante: "court", queue_jetons: -3, court_max_jetons: 800 }));
-        assert.deepStrictEqual(FC.readVariante(), { variante: "court", queueJetons: 25000, courtMax: 800, teteJetons: 8000 }, "fichier : valeurs lues, invalides ignorees");
+        assert.deepStrictEqual(FC.readVariante(), { variante: "court", queueJetons: 25000, courtMax: 800, teteJetons: 8000, ancre: true }, "fichier : valeurs lues, invalides ignorees");
         fs.writeFileSync(process.env.CQR_COMPACTAGE_FILE, JSON.stringify({ variante: "court" }));
         // repli en process : echec -> journal ; fallback claude -> echec
         { const F = fresh(); orMode = "500"; const pl = F.decide({ url: "/v1/messages", headers: AUTO, body: { messages: [{ role: "user", content: "a" }, { role: "user", content: FC.INVITE + " fin" }] } }, () => confIn({ fallback: "journal" }));
@@ -628,7 +645,7 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
 
       // correctifs de revue : repli journal sans cle, invite fusionnee, coupe, balises, run sans rejet, bornes du fichier de variante
       { const dec = (free) => { const F = fresh(); return F.decide({ url: "/v1/messages", headers: AUTO, body: { messages: [{ role: "user", content: "a" }, { role: "user", content: FC.INVITE + " fin" }] } }, () => confIn(free)); };
-        delete process.env.OPENROUTER_API_KEY; fs.writeFileSync(VARIANTE_FILE, JSON.stringify({ variante: "hybride" }));
+        delete process.env.OPENROUTER_API_KEY; fs.writeFileSync(VARIANTE_FILE, JSON.stringify({ variante: "hybride", ancre: false }));
         const pj = dec({ fallback: "journal" });
         assert.ok(pj.go && pj.variante === "journal" && pj.repli === "cle-absente", "cle absente + fallback journal : journal, raison cle-absente : " + JSON.stringify(pj).slice(0, 150));
         const pc = dec({ fallback: "claude" });
@@ -675,7 +692,7 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
         assert.ok(pl.go && pl.variante === "journal" && pl.invalide === true, "variante inconnue : journal (DR-116), le plan porte invalide"); }
       // DR-118 : tete-queue ; DR-115 : court = 3000 fixe
       { const mk = (n) => { const m = []; for (let i = 0; i < n; i++) { m.push({ role: "user", content: "TETE-Q" + i + " " + "x".repeat(300) }); m.push({ role: "assistant", content: "TETE-R" + i + " " + "y".repeat(300) }); } m.push({ role: "user", content: FC.INVITE + " fin" }); return m; };
-        const plan = (msgs, extra, free) => { fs.writeFileSync(VARIANTE_FILE, JSON.stringify(Object.assign({ variante: "tete-queue" }, extra))); const F = fresh(); return { F, pl: F.decide({ url: "/v1/messages", headers: AUTO, body: { messages: msgs } }, () => confIn(free)) }; };
+        const plan = (msgs, extra, free) => { fs.writeFileSync(VARIANTE_FILE, JSON.stringify(Object.assign({ variante: "tete-queue", ancre: false }, extra))); const F = fresh(); return { F, pl: F.decide({ url: "/v1/messages", headers: AUTO, body: { messages: msgs } }, () => confIn(free)) }; };
         const msgs = mk(60);
         { const { pl } = plan(msgs, { tete_jetons: 400, queue_jetons: 400 });
           assert.ok(pl.go && pl.variante === "tete-queue" && !pl.invalide && pl.maxTokens === 8000, "tete-queue : plan, plafond de sortie 8000 comme hybride (DR-122)");
@@ -712,7 +729,7 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
         fs.writeFileSync(VARIANTE_FILE, '{"variante":"nimporte"}'); { const F = fresh(); const pl = F.decide({ url: "/v1/messages", headers: AUTO, body: { messages: msgs } }, () => confIn());
           assert.ok(pl.go && pl.variante === "journal" && pl.invalide === true, "variante inconnue : journal + invalide"); }
         // court : 3000 fixe, ou court_max_jetons + 200 au-dela
-        for (const [cm, att] of [[500, 3000], [1500, 3000], [2800, 3000], [3500, 3700], [8000, 8200]]) { fs.writeFileSync(VARIANTE_FILE, JSON.stringify({ variante: "court", court_max_jetons: cm })); const F = fresh();
+        for (const [cm, att] of [[500, 3000], [1500, 3000], [2800, 3000], [3500, 3700], [8000, 8200]]) { fs.writeFileSync(VARIANTE_FILE, JSON.stringify({ variante: "court", court_max_jetons: cm, ancre: false })); const F = fresh();
           assert.strictEqual(F.decide({ url: "/v1/messages", headers: AUTO, body: { messages: msgs } }, () => confIn()).maxTokens, att, "court : max_tokens pour court_max_jetons " + cm); }
         setVariante("court"); }
       // dossier personnel : son nom seul (basename), different du nom d'utilisateur, est masque puis remis en clair
@@ -729,8 +746,146 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
         const vu = orBodies[orBodies.length - 1].messages[0].content;
         assert.ok(orBodies.length === n0 + 1 && vu.includes("table abattue") && !vu.includes("C:\\Users\\ab") && /\[PERSO-[0-9a-f]{6}-\d+\]/.test(vu), "nom court : les mots ordinaires restent, le chemin est masque : " + vu.slice(0, 200));
         assert.ok(r.ok && r.text.includes("C:\\Users\\ab") && !/\[PERSO-[0-9a-f]{6}-/.test(r.text), "nom court : le chemin est remis en clair dans le resume"); }
+      // --- ancre Nemotron (DR-170) : extraction separee, en parallele du resume, ajoutee a la fin du <summary> ---
+      {
+        const bodyA = (texte) => ({ messages: [{ role: "user", content: texte || "migre le module X" }, { role: "assistant", content: [{ type: "text", text: "Je lis." }, { type: "tool_use", id: "toolu_01AAAAAA", name: "Read", input: { file: "x.js" } }] }, { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_01AAAAAA", content: "RESULTAT-OUTIL" }] }, { role: "user", content: FC.INVITE + " fin" }] });
+        const planA = (F, o) => F.decide({ url: "/v1/messages", headers: AUTO, body: bodyA(o && o.texte) }, () => confIn(o && o.free));
+        const marque = "[Mémoire d'ancrage";
+        const apres = async (mode, o) => { // un compactage avec l'extraction dans `mode` ; rend { r, nOr, nAncre }
+          const F = fresh(); orMode = "ok"; ancreMode = mode; const o0 = orHits, a0 = ancreN;
+          const r = await F.run(planA(F, o), bodyA(o && o.texte), {});
+          return { F, r, nOr: orHits - o0, nAncre: ancreN - a0 };
+        };
+        try {
+          setVariante("hybride", { ancre: true });
+          // succes : deux appels (resume et extraction), ancre APRES le resume et DANS le <summary>, forme memory-anchor
+          { const { r, nOr, nAncre } = await apres("ok");
+            assert.ok(r.ok && nOr === 2 && nAncre === 1, "ancre : un appel de resume, un d'extraction");
+            const eb = ancreBodies[ancreBodies.length - 1];
+            assert.deepStrictEqual([eb.model, eb.temperature, eb.stream, eb.messages.length], ["nvidia/nemotron-3-ultra-550b-a55b:free", 0, false, 1], "ancre : modele, temperature 0, sans flux");
+            assert.ok(eb.messages[0].content.includes("[user] migre le module X") && eb.messages[0].content.includes("[appel Read] {\"file\":\"x.js\"}") && eb.messages[0].content.includes("[résultat] RESULTAT-OUTIL"), "ancre : la vue de la conversation");
+            assert.ok(!eb.messages[0].content.includes(FC.INVITE), "ancre : l'invite de compactage ne part pas");
+            assert.ok(r.text.indexOf("Rapport de session") < r.text.indexOf(marque) && r.text.indexOf(marque) < r.text.indexOf("</summary>") && r.text.trimEnd().endsWith("</summary>"), "ancre : apres le resume, avant </summary>");
+            for (const s of ["- R1: Jamais de push sans accord", "- [in_progress] ecrire les tests", "- DR-9: ancre seule", "- step: module lu", "  - verify: npm test", "  - artifact: src/x.js", "- demande : migre le module"]) assert.ok(r.text.includes(s), "ancre : " + s);
+            assert.deepStrictEqual([r.ancre[0], /^car=\d+$/.test(r.ancre[1])], ["ancre=ok", true], "ancre : etat au journal"); }
+          // echecs de l'extraction : le resume est rendu sans ancre, la raison est lisible, aucun blocage
+          for (const [mode, raison] of [["400", "http-400"], ["empty", "texte-vide"], ["length", "finish-length"], ["json", "json-illisible"], ["vide", "vide"], ["hang", "delai"]]) {
+            const { F, r } = await apres(mode, mode === "hang" ? { free: { timeoutMs: 500 } } : undefined);
+            assert.ok(r.ok && !r.repli && r.variante === "hybride" && r.text.includes("Rapport de session") && !r.text.includes(marque), "ancre " + mode + " : le resume est rendu sans ancre");
+            assert.deepStrictEqual(r.ancre, ["ancre=absente", "raison=" + raison], "ancre " + mode + " : raison au journal");
+            assert.strictEqual(planA(F).go, true, "ancre " + mode + " : un echec de l'ancre ne pose pas de blocage");
+          }
+          // surcharge puis succes : reessais comme le resume (DR-127)
+          { ancreN = 0; const { r } = await apres("surcharge"); assert.ok(r.ok && r.ancre[0] === "ancre=ok" && ancreN === 3, "ancre : 2 surcharges puis un succes, reessais du resume"); }
+          // le resume en echec (repli journal) garde l'ancre
+          { const F = fresh(); orMode = "400"; ancreMode = "ok"; const r = await F.run(planA(F, { free: { fallback: "journal" } }), bodyA(), {}); orMode = "ok";
+            assert.ok(r.ok && r.variante === "journal" && r.repli === "http-400" && r.text.includes("migre le module X") && r.text.includes("- R1: Jamais de push sans accord") && r.ancre[0] === "ancre=ok", "ancre : repli journal + ancre"); }
+          // secrets : jamais dans le corps de l'extraction ; les reperes de noms, remis en clair dans l'ancre comme dans le resume
+          { const { r } = await apres("ok", { texte: "mon jeton " + TOKEN_ANT + " mot de passe password=" + PASSWORD + " et " + EXTRA + " et " + TOKEN_OR, free: { names: [EXTRA] } });
+            const vu = ancreBodies[ancreBodies.length - 1].messages[0].content;
+            for (const s of [TOKEN_ANT, TOKEN_OR, PASSWORD, EXTRA]) assert.ok(!vu.includes(s), "ancre : l'extracteur ne voit jamais " + (s === EXTRA ? "le nom" : "le secret"));
+            assert.ok(vu.includes("[SECRET-MASQUE]") && /\[PERSO-[0-9a-f]{6}-\d+\]/.test(vu), "ancre : les reperes sont dans la conversation envoyee");
+            assert.ok(r.text.includes("- R2: voir " + EXTRA) && !/\[PERSO-[0-9a-f]{6}-/.test(r.text) && !r.text.includes(TOKEN_ANT), "ancre : repere remis en clair comme le resume, secret jamais"); }
+          // reglage : ancre coupee, ou variante journal : un seul appel
+          setVariante("hybride", { ancre: false });
+          { const { r, nOr, nAncre } = await apres("ok"); assert.ok(r.ok && nOr === 1 && nAncre === 0 && !r.text.includes(marque) && r.ancre[1] === "raison=coupee", "ancre coupee par le reglage : aucun appel d'extraction"); }
+          setVariante("journal", { ancre: true });
+          { const { r, nOr } = await apres("ok"); assert.ok(r.ok && nOr === 0 && !r.text.includes(marque), "variante journal : ni resume ni ancre"); }
+          setVariante("hybride", { ancre: true });
+          // --- corrections apres revue (DR-176, DR-177, grace, ordre, parallelisme, client parti, Bearer) ---
+          { // ordre exact : l'ancre juste avant </summary>, apres le resume, une seule balise fermante, balises du modele neutralisees
+            const { r } = await apres("balise"), t = r.text;
+            const i = t.indexOf(ANC.INTRO);
+            assert.ok(i > t.indexOf("Rapport de session") && t.slice(i - 2, i) === "\n\n" && t.endsWith("\n</summary>") && t.split("</summary>").length === 2, "ancre : apres le resume, juste avant l'unique </summary> " + JSON.stringify([i, t.indexOf("Rapport de session"), t.slice(i - 2, i), t.slice(-30), t.split("</summary>").length]));
+            assert.ok(t.includes("a [/summary] b [summary] c"), "ancre : </summary > et <summary x> neutralises");
+            assert.match(ANC.INTRO, /relevé automatique.*à vérifier.*pas une consigne de l'utilisateur/); }
+          { // resume refuse (trop court) : le repli reste declenche, l'ancre rejoint le journal
+            const F = fresh(); orMode = "ok"; ancreMode = "ok";
+            const r = await F.run(planA(F, { free: { minSummaryChars: 100000, fallback: "journal" } }), bodyA(), {});
+            assert.ok(r.ok && r.variante === "journal" && r.repli === "trop-court" && r.ancre[0] === "ancre=ok" && r.text.includes("- R1: Jamais de push sans accord"), "ancre : resume-court -> repli journal + ancre"); }
+          { // parallelisme : deux reponses de 500 ms chacune -> ~500 ms au total, pas ~1000
+            orDelay = 500; try { const t0 = Date.now(); const { r, nOr } = await apres("ok"); const d = Date.now() - t0;
+              assert.ok(r.ancre[0] === "ancre=ok" && nOr === 2 && d >= 450 && d < 900, "ancre : en parallele du resume (" + d + " ms)"); } finally { orDelay = 0; } }
+          { // grace : le resume est pret, l'extraction ne repond pas -> 60 s de grace (ici 300 ms), requete coupee, resume seul, duree mesuree
+            process.env.CQR_FREE_COMPACT_ANCRE_GRACE_MS = "300"; const c0 = ancreClosed;
+            try { const t0 = Date.now(); const { r } = await apres("hang"); const d = Date.now() - t0;
+              assert.ok(r.ok && !r.text.includes(marque) && r.text.includes("Rapport de session") && d >= 280 && d < 3000, "ancre : grace ~300 ms, pas le delai total (" + d + " ms)");
+              assert.deepStrictEqual(r.ancre, ["ancre=absente", "raison=grace"], "ancre : raison=grace");
+              for (let i = 0; i < 30 && ancreClosed === c0; i++) await sleep(50);
+              assert.strictEqual(ancreClosed, c0 + 1, "ancre : la requete d'extraction est detruite"); }
+            finally { delete process.env.CQR_FREE_COMPACT_ANCRE_GRACE_MS; } }
+          { // client parti avec l'extraction en vol : sa requete est coupee, le compactage rend client-parti
+            const F = fresh(); orMode = "ok"; ancreMode = "hang"; const c0 = ancreClosed, a0 = ancreN; let gone = false, rq = null;
+            const run = F.run(planA(F), bodyA(), { gone: () => gone, onReqAncre: (q) => { rq = q; } });
+            for (let i = 0; i < 40 && (ancreN === a0 || !rq); i++) await sleep(25);
+            gone = true; rq.destroy(); // ce que fait proxy.js (abandon)
+            const r = await run;
+            assert.deepStrictEqual([r.ok, r.raison], [false, "client-parti"], "ancre : client parti");
+            for (let i = 0; i < 30 && ancreClosed === c0; i++) await sleep(50);
+            assert.strictEqual(ancreClosed, c0 + 1, "ancre : la requete d'extraction est coupee"); ancreMode = "ok"; }
+          { // N1/N2 : plafonnerVue ne coupe jamais un repere ni un substitut, et ne rogne pas tout le debut
+            for (let k = 0; k < 60; k++) { const v = ("x".repeat(k) + " [PERSO-abc123-12] et [SECRET-MASQUE] ").repeat(400), r = ANC.plafonnerVue(v, 1000), d = r.slice(0, r.indexOf("\n\n[… ")), f = r.slice(r.indexOf("…]\n\n") + 4);
+              assert.ok(!/\[[A-Z-]*[A-Za-z0-9-]*$/.test(d) || /\]$/.test(d), "N1 debut sans repere coupe (k=" + k + ")"); assert.ok(!/^[A-Za-z0-9-]*\]/.test(f) || /^\[/.test(f), "N1 fin sans repere coupe (k=" + k + ")"); }
+            for (let k = 0; k < 4; k++) { const r = ANC.plafonnerVue("a".repeat(k) + "😀".repeat(3000), 1000), d = r.slice(0, r.indexOf("\n\n[… ")), f = r.slice(r.indexOf("…]\n\n") + 4);
+              assert.ok(!/[\uD800-\uDBFF]$/.test(d) && !/^[\uDC00-\uDFFF]/.test(f), "N1 pas de substitut orphelin (k=" + k + ")"); }
+            const r2 = ANC.plafonnerVue("[user] petit\n\n" + "y".repeat(40000) + "\n\n[user] fin", 1000);
+            assert.ok(r2.indexOf("\n\n[… ") > 1500, "N2 coupe brute : le debut garde la moitie de son budget"); }
+          { // N3 : la prose apres Bearer n'est pas masquee, un vrai jeton l'est
+            for (const prose of ["Bearer authentication-scheme", "Bearer tokens-are-validated-server-side"]) assert.strictEqual(FC.maskSecrets(prose, []), prose, "N3 prose gardee : " + prose);
+            assert.strictEqual(FC.maskSecrets("Bearer aB3dEfGhIjKlMnOp", []), "Bearer [SECRET-MASQUE]", "N3 jeton masque"); }
+          { // N4 : resume en echec -> l'ancre n'est attendue que la grace de repli (10 s en vrai, 300 ms ici)
+            process.env.CQR_FREE_COMPACT_ANCRE_GRACE_REPLI_MS = "300"; process.env.CQR_FREE_COMPACT_ANCRE_GRACE_MS = "30000";
+            try { const F = fresh(); orMode = "400"; ancreMode = "hang"; const t0 = Date.now(); const r = await F.run(planA(F, { free: { fallback: "journal" } }), bodyA(), {}); const d = Date.now() - t0; orMode = "ok"; ancreMode = "ok";
+              assert.ok(r.ok && r.variante === "journal" && d >= 280 && d < 3000 && r.ancre[1] === "raison=grace", "N4 repli journal apres ~300 ms, raison=grace (" + d + " ms)"); }
+            finally { delete process.env.CQR_FREE_COMPACT_ANCRE_GRACE_REPLI_MS; delete process.env.CQR_FREE_COMPACT_ANCRE_GRACE_MS; } }
+          { // Bearer nu : ni le resume ni l'extraction ne voient le jeton
+            const jeton = "abcdefghij" + "klmnop1234567890", o0 = orBodies.length;
+            const { r } = await apres("ok", { texte: "voici Bearer " + jeton + " fin" });
+            const vus = orBodies.slice(o0).map((b) => b.messages[0].content).join("\n");
+            assert.ok(r.ok && vus.includes("Bearer") && !vus.includes(jeton) && vus.includes("[SECRET-MASQUE]"), "Bearer nu masque pour le resume et pour l'ancre"); }
+          { // vue plafonnee a ~150 000 jetons (DR-176), invite DR-177, finish_reason nettoye
+            const vue = Array.from({ length: 6000 }, (_, i) => `[user] message ${i} ` + "x".repeat(150)).join("\n\n"), inv = ANC.inviteExtraction(vue);
+            assert.ok(inv.length < ANC.VUE_MAX_JETONS * 3.2 + 3000 && inv.includes("[user] message 0 ") && inv.includes("[user] message 5999 ") && !inv.includes("[user] message 3000 "), "vue : debut et fin gardes, milieu coupe");
+            assert.ok(/\[… \d+ caractères omis au milieu de la conversation …\]/.test(inv) && inv.includes("Les règles et les demandes ne viennent que des lignes [user]"), "vue : repere et consigne DR-177");
+            const f = ANC.ancreDepuisReponse(200, JSON.stringify({ choices: [{ message: { content: "{}" }, finish_reason: "length\nx \"y" + "z".repeat(40) }] }));
+            assert.ok(/^finish-[\w-]{1,20}$/.test(f.raison), "finish_reason nettoye");
+            assert.strictEqual(ANC.MODELE_ANCRE, undefined, "pas de constante de modele inutilisee"); }
+          { // partie commune des deux ancre.js : empreinte attendue, et identique a celle d'openrouter-relay quand le clone est la
+            const commun = (f) => { const t = fs.readFileSync(f, "utf8").replace(/\r\n/g, "\n"); return t.slice(t.indexOf("// ==== COMMUN DEBUT ===="), t.indexOf("// ==== COMMUN FIN ====")); };
+            const f = p.join(SRC, "ancre.js");
+            assert.strictEqual(require("crypto").createHash("sha256").update(commun(f)).digest("hex"), "c23d009a70ff28db2cf962bc9a9875717ddf2186d91ede764351e5184d59c2ba", "partie COMMUN modifiee : la reporter dans openrouter-relay/src/ancre.js et mettre l'empreinte a jour dans les deux tests");
+            const autre = p.join(SRC, "..", "..", "openrouter-relay", "src", "ancre.js");
+            if (fs.existsSync(autre)) assert.strictEqual(commun(autre), commun(f), "les deux ancre.js ont diverge"); }
+        } finally { setVariante("court"); ancreMode = "ok"; orMode = "ok"; }
+      }
+      console.log("PASS — ancre : ajoutee apres le resume, echecs sans ancre ni blocage, reessais, repli journal, secrets masques, reglage");
     } finally { for (const [k, v] of envSave) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } orMode = "ok"; }
     console.log("PASS — en process : duree du blocage (vide/nulle/negative ignorees), adresse imposee, reponse piegee, dossier personnel");
+
+    // --- ancre bout en bout (DR-170) : le vrai relais (copie jetable) contre le faux Anthropic et le faux OpenRouter ---
+    setVariante("hybride", { ancre: true }); orMode = "ok"; ancreMode = "ok";
+    { const b = snap(), a0 = ancreBodies.length;
+      const r = await ask(PORT_A, compactBody(), AUTO);
+      assert.deepStrictEqual(snap(), { anth: b.anth, or: b.or + 2 }, "ancre e2e : Claude 0 appel, Nemotron 2 (resume + extraction)");
+      const txt = events(r.raw)[2].data.delta.text;
+      assert.ok(txt.indexOf("Rapport de session") < txt.indexOf("[Mémoire d'ancrage") && txt.indexOf("- R1: Jamais de push sans accord") < txt.indexOf("</summary>"), "ancre e2e : le client recoit resume + ancre dans le <summary>");
+      const vu = ancreBodies[a0].messages[0].content;
+      for (const x of [TOKEN_ANT, TOKEN_OR, PASSWORD, FAKE_OR_KEY, CFG_TOKEN, ...PERSONAL]) assert.ok(!vu.toLowerCase().includes(x.toLowerCase()), "ancre e2e : l'extracteur ne voit pas un secret ou un nom");
+      assert.ok(!r.raw.includes(TOKEN_ANT) && !/\[PERSO-[0-9a-f]{6}-/.test(r.raw), "ancre e2e : ni secret ni repere dans la reponse");
+      for (let i = 0; i < 20 && !/COMPACT-GRATUIT ok .*ancre=ok car=\d+/.test(logOf(DIR_A)); i++) await sleep(50);
+      assert.ok(/COMPACT-GRATUIT ok .*caracteres=\d+ ancre=ok car=\d+/.test(logOf(DIR_A)), "ancre e2e : ligne de journal avec ancre=ok car=");
+      ancreMode = "400"; const r2 = await ask(PORT_A, compactBody(), AUTO); ancreMode = "ok";
+      assert.ok(events(r2.raw)[2].data.delta.text.includes("Rapport de session") && !r2.raw.includes("ancrage"), "ancre e2e : extraction en 400, le resume est rendu seul");
+      for (let i = 0; i < 20 && !/ancre=absente raison=http-400/.test(logOf(DIR_A)); i++) await sleep(50);
+      assert.ok(/COMPACT-GRATUIT ok .*ancre=absente raison=http-400/.test(logOf(DIR_A)), "ancre e2e : ligne de journal ancre=absente raison=http-400"); }
+    { // client parti, extraction en vol : le relais coupe la requete d'extraction
+      writeConf(DIR_A, PORT_A, CONF(FREE({ timeoutMs: 30000 }))); // delai long : seule la coupure par le depart du client peut fermer l'extraction
+      ancreMode = "hang"; const c0 = ancreClosed;
+      await ask(PORT_A, compactBody(), AUTO, { abortAfterMs: 700 });
+      for (let i = 0; i < 40 && ancreClosed === c0; i++) await sleep(50);
+      assert.ok(ancreClosed > c0, "ancre e2e : client parti, la requete d'extraction est coupee"); ancreMode = "ok"; writeConf(DIR_A, PORT_A, CONF(FREE())); await after(); }
+    setVariante("court");
+    console.log("PASS — ancre bout en bout : resume + ancre dans le <summary>, secrets masques, ligne de journal, echec ouvert");
 
     // --- client parti : l'appel a Nemotron est coupe, Claude n'est pas appele, pas de blocage ---
     writeConf(DIR_A, PORT_A, CONF(FREE({ timeoutMs: 30000 }))); orMode = "hang";
@@ -750,7 +905,7 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
     // --- commande cqr compact gratuit (copie jetable, jamais le vrai tokens.json) ---
     const DIR_C = fs.mkdtempSync(p.join(os.tmpdir(), "cqr-free-c-"));
     try {
-      for (const f of ["cli.js", "lib.js", "compaction.js", "free-compact.js"]) fs.copyFileSync(p.join(SRC, f), p.join(DIR_C, f));
+      for (const f of ["cli.js", "lib.js", "compaction.js", "free-compact.js", "ancre.js"]) fs.copyFileSync(p.join(SRC, f), p.join(DIR_C, f));
       fs.writeFileSync(p.join(DIR_C, "tokens.json"), JSON.stringify({ port: 8787, compaction: { enabled: true, dryRun: false, keepToolUses: 7 }, tokens: [{ name: "1", token: FAKE, enabled: true }] }));
       const cli = (...a) => cp.spawnSync(process.execPath, [p.join(DIR_C, "cli.js"), ...a], { encoding: "utf8", windowsHide: true, env: Object.assign({}, process.env, { OPENROUTER_API_KEY: FAKE_OR_KEY }) });
       const conf = () => JSON.parse(fs.readFileSync(p.join(DIR_C, "tokens.json"), "utf8"));
