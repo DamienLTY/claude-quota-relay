@@ -21,6 +21,7 @@ const fs = require("fs");
 const AN = require("./ancre.js");
 
 const INVITE = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."; // debut de l'invite native de Claude Code
+const RAPPEL = "REMINDER: Do NOT call any tools"; // fin de l'invite native
 const KINDS_OK = ["auto", "manual"]; // DR-071 : "reactive" (debordement d'urgence) reste chez Claude, meme si la config le demande
 const DEFAULT_URL = "https://openrouter.ai/api/v1/chat/completions";
 const DEFAULT_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free";
@@ -175,13 +176,33 @@ function renderConversation(body) {
 
 // ----- reconnaissance d'une demande de compactage -----
 const hv = (v) => String(Array.isArray(v) ? v[0] : v == null ? "" : v).trim().toLowerCase();
+// Message user fait seulement de <system-reminder> (rappel d'un hook, injecte apres l'invite) : il n'est pas la demande
+function reminderOnly(m) {
+  if (!m || m.role !== "user") return false;
+  const t = typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.filter((b) => b && b.type === "text" && typeof b.text === "string").map((b) => b.text).join("\n") : "";
+  return !!t.trim() && !t.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
+}
 function lastTextOfLastUser(body) {
   const msgs = body && Array.isArray(body.messages) ? body.messages : [];
-  const m = msgs.filter((x) => x && x.role !== "system").pop(); // Claude Code 2.1.289 termine la requete par un message "system" vide : l'invite est dans le dernier message non "system"
+  const reste = msgs.filter((x) => x && x.role !== "system"); // Claude Code 2.1.289 termine la requete par un message "system" vide : l'invite est dans le dernier message non "system"
+  while (reste.length && reminderOnly(reste[reste.length - 1])) reste.pop(); // ... ou par un message user de rappels seuls
+  const m = reste.pop();
   if (!m || m.role !== "user") return "";
   if (typeof m.content === "string") return m.content;
   const texts = Array.isArray(m.content) ? m.content.filter((b) => b && b.type === "text" && typeof b.text === "string") : [];
   return texts.length ? texts[texts.length - 1].text : ""; // l'invite est le dernier bloc, meme fusionnee avec un tool_result precedent
+}
+// Compactage annonce par l'en-tete (type, classe, chemin) dont le rappel de l'invite figure dans le corps, mais dont l'invite n'est pas reconnue :
+// Claude sert sans que le relais l'ait remarque. Vrai seulement dans ce cas ; rien de la requete n'est lu au-dela de la presence du rappel.
+function manque(url, headers, body) {
+  if (String(url || "").split("?")[0] !== "/v1/messages") return false;
+  const h = headers || {};
+  if (!hv(h["x-claude-code-compaction"])) return false;
+  const cls = hv(h["x-claude-code-request-class"]);
+  if (cls && cls !== "compaction") return false;
+  if (recognize(url, headers, body)) return false;
+  const msgs = body && Array.isArray(body.messages) ? body.messages : [];
+  return msgs.some((m) => m && m.role === "user" && (typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.map((b) => (b && typeof b.text === "string" ? b.text : "")).join("\n") : "").includes(RAPPEL));
 }
 // { kind } si /v1/messages + en-tete de type + invite native en dernier ; null sinon. Un type absent = ce n'est pas un
 // compactage connu : Claude sert (la classe, quand elle est annoncee, doit etre "compaction").
@@ -504,4 +525,4 @@ function sendSummary(res, body, text, stream) {
     ev("message_stop", { type: "message_stop" }));
 }
 
-module.exports = { INVITE, MOTIFS_SOURCE, MAQUETTE, REEL, MOT_DE_PASSE, holdMs, readVariante, tailMessages, journalSummary, maskSecrets, makeMasker, renderConversation, recognize, resolveConfig, decide, validate, run, sendSummary };
+module.exports = { INVITE, RAPPEL, manque, MOTIFS_SOURCE, MAQUETTE, REEL, MOT_DE_PASSE, holdMs, readVariante, tailMessages, journalSummary, maskSecrets, makeMasker, renderConversation, recognize, resolveConfig, decide, validate, run, sendSummary };

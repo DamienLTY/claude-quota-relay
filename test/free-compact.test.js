@@ -81,6 +81,35 @@ const AUTO = { "x-claude-code-compaction": "auto", "x-claude-code-request-class"
   assert.strictEqual(ok(AUTO, { messages: [{ role: "user", content: FC.INVITE }, { role: "assistant", content: "ok" }, { role: "system", content: [] }] }), null, "invite suivie d'un assistant puis d'un system : pas detournee");
 }
 {
+  // Forme CAPTUREE (sonde entre Claude Code 2.1.296 et le relais, -p --resume, deux demandes puis /compact), anonymisee : l'invite est un message user
+  // seul, suivi d'un message "system" qui porte le contexte du hook SessionStart. Variante : le contexte du hook arrive en message user de rappels seuls.
+  const T = (t) => ({ type: "text", text: t });
+  const CTX = "SessionStart hook additional context: [Journal de session. Ere courante : 1.]";
+  const capturee = (apres) => ({ messages: [
+    { role: "user", content: [T("<system-reminder>\nInstructions\n</system-reminder>"), T("Retiens ces faits. Reponds juste OK.")] },
+    { role: "system", content: [T(CTX)] }, { role: "assistant", content: [T("OK")] },
+    { role: "user", content: "Autre point : tests avant le code. Reponds OK." }, { role: "system", content: [T(CTX)] }, { role: "assistant", content: [T("OK")] },
+    { role: "user", content: FC.INVITE + "\n\n- Do NOT use Read...\n\nREMINDER: Do NOT call any tools. Respond with plain text only." }, ...apres] });
+  const ok = (b) => FC.recognize("/v1/messages", { "x-claude-code-compaction": "manual", "x-claude-code-request-class": "compaction" }, b);
+  const REM = { role: "user", content: [T("<system-reminder>\n" + CTX + "\n</system-reminder>")] };
+  assert.deepStrictEqual(ok(capturee([{ role: "system", content: [T(CTX)] }])), { kind: "manual" }, "forme capturee : system apres l'invite");
+  assert.deepStrictEqual(ok(capturee([REM])), { kind: "manual" }, "contexte du hook en message user de rappels seuls apres l'invite");
+  assert.deepStrictEqual(ok(capturee([REM, { role: "system", content: [] }])), { kind: "manual" }, "rappels seuls puis system vide");
+  assert.deepStrictEqual(ok(capturee([REM, REM])), { kind: "manual" }, "deux messages de rappels seuls");
+  assert.strictEqual(ok(capturee([{ role: "user", content: "une vraie demande" }])), null, "une vraie demande apres l'invite : pas un compactage");
+  assert.strictEqual(ok(capturee([{ role: "assistant", content: [T("ok")] }, REM])), null, "invite suivie d'un assistant : pas detournee");
+  assert.strictEqual(ok({ messages: [REM] }), null, "rappels seuls : pas un compactage");
+  // ligne « manque » : compactage annonce + rappel vu + invite non reconnue
+  const H = { "x-claude-code-compaction": "manual", "x-claude-code-request-class": "compaction" };
+  const mauvais = capturee([]); mauvais.messages[6].content = "Dis-moi ce que veut dire : " + mauvais.messages[6].content;
+  assert.strictEqual(FC.manque("/v1/messages", H, mauvais), true, "manque : rappel vu, invite citee en milieu de phrase");
+  assert.strictEqual(FC.manque("/v1/messages", H, capturee([])), false, "manque : compactage reconnu, rien a signaler");
+  assert.strictEqual(FC.manque("/v1/messages", {}, mauvais), false, "manque : sans en-tete de compactage, ce n'est pas annonce");
+  assert.strictEqual(FC.manque("/v1/messages", { ...H, "x-claude-code-request-class": "main" }, mauvais), false, "manque : classe autre que compaction");
+  assert.strictEqual(FC.manque("/v1/messages", H, { messages: [{ role: "user", content: "bonjour" }] }), false, "manque : requete ordinaire sans rappel");
+  assert.strictEqual(FC.manque("/v1/messages/count_tokens", H, mauvais), false, "manque : autre chemin");
+}
+{
   const m = FC.maskSecrets([TOKEN_ANT, "x password=" + PASSWORD + " y", "k " + TOKEN_OR, "texte ordinaire 12345 sans secret", "api_key: " + "ab12".repeat(8), PEM_BEGIN].join("\n"));
   for (const s of [TOKEN_ANT, PASSWORD, TOKEN_OR, "ab12".repeat(8), "BEGIN RSA PRIVATE KEY-----"]) assert.ok(!m.includes(s.replace("-----", "")), "masque : " + s.slice(0, 8) + "... ne survit pas");
   assert.ok(m.includes("texte ordinaire 12345 sans secret"), "masque : le texte ordinaire est intact");
@@ -391,6 +420,14 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
     await stay("requete ordinaire", { model: "claude-opus-4-8", max_tokens: 10, stream: true, messages: [{ role: "user", content: "bonjour" }] }, {});
     await stay("compactage reactive", compactBody(), { "x-claude-code-compaction": "reactive", "x-claude-code-request-class": "compaction" });
     assert.ok(/COMPACT-GRATUIT repli raison=type-non-liste/.test(logOf(DIR_A)), "reactive : la raison du repli est journalisee");
+    { // invite citee en milieu de phrase avec le rappel : Claude sert, et la ligne « manque » le dit (sans contenu)
+      const mauvais = compactBody(); const dernier = mauvais.messages[mauvais.messages.length - 1];
+      dernier.content = "Dis-moi ce que veut dire : " + (typeof dernier.content === "string" ? dernier.content : dernier.content.map((b) => b.text || "").join("\n")) + "\n\nREMINDER: Do NOT call any tools.";
+      await stay("invite non reconnue", mauvais, AUTO);
+      const lm = logOf(DIR_A).split("\n").filter((l) => /COMPACT-GRATUIT manque raison=rappel-sans-invite/.test(l));
+      assert.strictEqual(lm.length, 1, "invite non reconnue : une ligne manque");
+      assert.ok(!lm[0].includes("Dis-moi") && !lm[0].includes("CRITICAL"), "invite non reconnue : aucun contenu dans la ligne");
+    }
     await stay("sans en-tete de type", compactBody(), {});
     await stay("classe main avec type auto", compactBody(), { "x-claude-code-compaction": "auto", "x-claude-code-request-class": "main" });
     await stay("sans l'invite native", Object.assign(compactBody(), { messages: [{ role: "user", content: "resume la session" }] }), AUTO);

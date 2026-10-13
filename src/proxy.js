@@ -570,7 +570,7 @@ function serve(creq, cres) {
     function tryFreeCompact() {
       let FC, plan;
       try { FC = freeModule(); plan = FC && FC.decide({ url: creq.url, headers: creq.headers, body: bodyObj }, readConf); } catch (e) { return false; }
-      if (!plan) return false;
+      if (!plan) { try { if (FC && FC.manque(creq.url, creq.headers, bodyObj)) log("COMPACT-GRATUIT", "manque", "raison=rappel-sans-invite"); } catch (e) {} return false; } // compactage annonce, rappel de l'invite vu, invite non reconnue : Claude sert, et cela se voit
       if (!plan.go) { if (!plan.quiet) log("COMPACT-GRATUIT", "repli", "raison=" + plan.raison); return false; }
       if (plan.urlIgnoree) log("COMPACT-GRATUIT", "surcharge-ignoree", "raison=hote-non-local"); // jamais l'adresse
       // Le flux ne s'ouvre qu'apres FC.holdMs() (60 s, sous la fenetre de premier octet du client, 120 s) : un repli rapide garde le
