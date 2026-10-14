@@ -23,7 +23,7 @@ try { stdin = fs.readFileSync(0, "utf8"); } catch (e) {}
 let hook = {}; try { hook = JSON.parse(stdin); } catch (e) {}
 const tool = hook.tool_name || hook.toolName || "";
 
-const conf = readJson(p.join(DIR, "tokens.json"), {});
+const conf = readJson(lib.confPath(DIR), {}) /* repli DR-226, permanent */;
 const g = conf.workflowGuard || {};
 // only the Workflow tool, only when enabled
 if (!g.enabled || g.mode === "off" || !/workflow/i.test(tool)) process.exit(0);

@@ -25,7 +25,7 @@ const comp = require("./compaction.js");
 // Repertoire d'installation = dossier de ce script (proxy.js, tokens.json, state.json sont a cote).
 const DIR = __dirname;
 const SETTINGS = p.join(p.dirname(DIR), "settings.json"); // install dir = <config>/claude-quota-relay
-const CONF = p.join(DIR, "tokens.json");
+const CONF = lib.confPath(DIR); // ~/.etabli/cles/cqr-tokens.json s'il existe, sinon tokens.json ici (DR-220, repli DR-226 permanent)
 const STATE = p.join(DIR, "state.json");
 const PROXY = p.join(DIR, "proxy.js");
 const PIDFILE = p.join(DIR, "proxy.pid");

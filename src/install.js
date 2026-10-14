@@ -233,7 +233,7 @@ async function main() {
   // package.json (a la racine du depot, pas dans src/) : le relais y lit sa version pour sa ligne de demarrage (DR-012)
   fs.copyFileSync(p.join(REPO_ROOT, "package.json"), p.join(INSTALL_DIR, "package.json"));
 
-  const tokensPath = p.join(INSTALL_DIR, "tokens.json");
+  const tokensPath = lib.confPath(INSTALL_DIR); // ~/.etabli/cles/cqr-tokens.json s'il existe, sinon tokens.json (DR-220, repli DR-226 permanent)
   let conf, tokensLine;
   if (fs.existsSync(tokensPath)) {
     conf = JSON.parse(fs.readFileSync(tokensPath, "utf8"));

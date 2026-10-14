@@ -7,7 +7,20 @@ const fs = require("fs"), p = require("path"), http = require("http"), cp = requ
 const DIR = __dirname;
 const PROXY = p.join(DIR, "proxy.js");
 let PORT = 8787;
-try { PORT = JSON.parse(fs.readFileSync(p.join(DIR, "tokens.json"), "utf8")).port || 8787; } catch (e) {}
+// tokens.json : ~/.etabli/cles/cqr-tokens.json s'il existe, sinon ici (DR-220 ; repli DR-226, permanent). Meme regle que lib.confPath,
+// recopiee : ce hook doit marcher seul dans son dossier (les tests le copient sans lib.js). Un test garde les copies identiques.
+function confPath(dir) {
+  const ancien = p.join(dir, "tokens.json");
+  try {
+    const os = require("os");
+    const norm = (x) => (process.platform === "win32" ? p.resolve(x).toLowerCase() : p.resolve(x));
+    const cfg = process.env.CLAUDE_CONFIG_DIR || p.join(os.homedir(), ".claude");
+    if (norm(dir) !== norm(p.join(cfg, "claude-quota-relay"))) return ancien;
+    const cles = p.join(os.homedir(), ".etabli", "cles", "cqr-tokens.json");
+    return fs.existsSync(cles) ? cles : ancien;
+  } catch (e) { return ancien; }
+}
+try { PORT = JSON.parse(fs.readFileSync(confPath(DIR), "utf8")).port || 8787; } catch (e) {}
 
 function ping() {
   return new Promise((res) => {

@@ -57,7 +57,7 @@ const pct4 = (v) => String(v == null ? "?" : v + "%").padStart(4);
 let stdin = "";
 try { stdin = fs.readFileSync(0, "utf8"); } catch (e) {}
 
-const conf = readJson(p.join(DIR, "tokens.json"), {});
+const conf = readJson(lib.confPath(DIR), {}) /* repli DR-226, permanent */;
 const state = readJson(p.join(DIR, "state.json"), {});
 const sl = readJson(p.join(DIR, "statusline.json"), { original: null });
 

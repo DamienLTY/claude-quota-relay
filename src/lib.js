@@ -15,6 +15,19 @@ function mask(tok) { return isPlaceholder({ token: tok }) ? "(vide)" : tok.slice
 function configDir() { return process.env.CLAUDE_CONFIG_DIR || p.join(os.homedir(), ".claude"); }
 function settingsPath() { return p.join(configDir(), "settings.json"); }
 
+// Emplacement de tokens.json (DR-220) : ~/.etabli/cles/cqr-tokens.json s'il existe, sinon l'ancien, a cote des scripts.
+// Repli permanent (DR-226, permanent) : cqr marche seul, sans etabli (cas d'un ami qui l'utilise seul). Seul le dossier
+// d'installation standard (<config Claude>/claude-quota-relay) est redirige : une copie ailleurs (tests) garde son tokens.json.
+function confPath(dir) {
+  const ancien = p.join(dir, "tokens.json");
+  try {
+    const norm = (x) => (process.platform === "win32" ? p.resolve(x).toLowerCase() : p.resolve(x));
+    if (norm(dir) !== norm(p.join(configDir(), "claude-quota-relay"))) return ancien;
+    const cles = p.join(os.homedir(), ".etabli", "cles", "cqr-tokens.json");
+    return fs.existsSync(cles) ? cles : ancien;
+  } catch (e) { return ancien; }
+}
+
 function readConf(confPath) { return JSON.parse(fs.readFileSync(confPath, "utf8")); }
 function writeConf(confPath, c) { fs.writeFileSync(confPath, JSON.stringify(c, null, 2)); }
 
@@ -258,4 +271,4 @@ function notifyWindows(title, msg, spawnFn, onError) {
   } catch (e) { return false; }
 }
 
-module.exports = { TOKEN_RE, isPlaceholder, mask, configDir, settingsPath, readConf, writeConf, ask, findClaude, captureSetupToken, pasteTokenManually, syncAuthToken, fmtDur, accounts, bestHeadroom, overageUsable, overageReasonFr, OVERAGE_REASONS, creditsBudget, creditsRemaining, fmtMoney, decodeBody, isTermsBlock, notifyWindows };
+module.exports = { confPath, TOKEN_RE, isPlaceholder, mask, configDir, settingsPath, readConf, writeConf, ask, findClaude, captureSetupToken, pasteTokenManually, syncAuthToken, fmtDur, accounts, bestHeadroom, overageUsable, overageReasonFr, OVERAGE_REASONS, creditsBudget, creditsRemaining, fmtMoney, decodeBody, isTermsBlock, notifyWindows };

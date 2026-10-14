@@ -173,6 +173,8 @@ Quand Claude Code compacte la conversation — tout seul vers 300 000 tokens, ou
 
 **C'est coupé par défaut, et ça se règle poste par poste** (le réglage vit dans le `tokens.json` de chaque PC). Ne l'activez pas sur un poste ou un projet confidentiel : c'est la seule fonction du programme qui envoie du texte de conversation à un tiers.
 
+Depuis etabli (DR-220, DR-226) : si `~/.etabli/cles/cqr-tokens.json` existe, c’est lui que lisent et écrivent le relais, la CLI, l’installeur et les hooks (installation standard seulement) ; sinon le `tokens.json` historique, à côté des scripts, comme avant. Ce repli est permanent : cqr marche aussi seul.
+
 ```bash
 export OPENROUTER_API_KEY=...        # votre clé OpenRouter, dans l'environnement du relais (puis : cqr restart)
 cqr compact gratuit on               # activer (effet immédiat)

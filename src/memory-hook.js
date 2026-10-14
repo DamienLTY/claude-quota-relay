@@ -28,6 +28,20 @@ const { execFileSync } = require("child_process");
 // Install dir (proxy tokens.json lives here). CQR_DIR override = test seam.
 const DIR = process.env.CQR_DIR || __dirname;
 
+// Emplacement de tokens.json : meme regle que lib.confPath (DR-220, repli DR-226 permanent), recopiee ici parce que ce hook ne doit pas
+// charger lib.js (le test memory-hook interdit ce require : lib.js sait lancer des processus). Un test garde les deux identiques.
+function confPath(dir) {
+  const ancien = p.join(dir, "tokens.json");
+  try {
+    const os = require("os");
+    const norm = (x) => (process.platform === "win32" ? p.resolve(x).toLowerCase() : p.resolve(x));
+    const cfg = process.env.CLAUDE_CONFIG_DIR || p.join(os.homedir(), ".claude");
+    if (norm(dir) !== norm(p.join(cfg, "claude-quota-relay"))) return ancien;
+    const cles = p.join(os.homedir(), ".etabli", "cles", "cqr-tokens.json");
+    return fs.existsSync(cles) ? cles : ancien;
+  } catch (e) { return ancien; }
+}
+
 const GIT_TIMEOUT_MS = 1500;      // par commande git : un depot geant ne doit pas retarder le demarrage de session
 const INJECT_MAX = 4096;          // caracteres injectes au plus : les faits d'abord, les notes dans ce qui reste
 const TITLE = "# État factuel bâti sans modèle ; les fichiers du projet font foi";
@@ -240,7 +254,7 @@ function emitInject(event, memFile, opts) {
   const cwd = hook.cwd || process.cwd();
   const sessionId = String(hook.session_id || hook.sessionId || "");
 
-  const conf = readJson(p.join(DIR, "tokens.json"), {});
+  const conf = readJson(confPath(DIR), {});
   const cc = conf.compaction || {};
   if (!(cc.enabled || cc.dryRun)) { process.exit(0); }
 

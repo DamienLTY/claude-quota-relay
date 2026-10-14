@@ -34,7 +34,7 @@ let _free;
 function freeModule() { if (_free === undefined) { try { _free = require("./free-compact.js"); } catch (e) { _free = null; log("COMPACT-GRATUIT module indisponible", e.code || e.name); } } return _free; }
 
 const DIR = __dirname;
-const CONF = path.join(DIR, "tokens.json");
+const CONF = lib.confPath(DIR); // ~/.etabli/cles/cqr-tokens.json s'il existe, sinon tokens.json ici (DR-220, repli DR-226 permanent)
 const STATE = path.join(DIR, "state.json");
 const LOG = path.join(DIR, "proxy.log");
 // Upstream cible : api.anthropic.com par defaut. Deux facons de le changer :
