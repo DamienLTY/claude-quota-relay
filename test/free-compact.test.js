@@ -220,7 +220,9 @@ const AUTO = { "x-claude-code-compaction": "auto", "x-claude-code-request-class"
 }
 // derive : les motifs de free-compact.js sont ceux du scanner d'etabli quand ce fichier est la
 {
-  const scanner = p.join(os.homedir(), "CLAUDE CODE", "etabli", "outils", "scan-secrets.mjs");
+  const dirOutils = p.join(os.homedir(), "CLAUDE CODE", "etabli", "outils");
+  const lib = p.join(dirOutils, "scan-secrets-lib.mjs");
+  const scanner = fs.existsSync(lib) ? lib : p.join(dirOutils, "scan-secrets.mjs"); // etabli plus ancien : tout dans scan-secrets.mjs
   if (!fs.existsSync(scanner)) console.log("SKIP derive des motifs : " + scanner + " absent");
   else {
     const src = fs.readFileSync(scanner, "utf8").replace(/\r/g, "");

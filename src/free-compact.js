@@ -36,7 +36,7 @@ const MASK = "[SECRET-MASQUE]";
 const MAX_DELAY = 2 ** 31 - 1; // setTimeout : au-dela, le delai retombe a 1 ms
 
 // ----- masquage definitif des secrets -----
-// Copie des motifs de etabli/outils/scan-secrets.mjs (MAQUETTE, REEL, MOT_DE_PASSE, MOTIFS), a l'identique :
+// Copie des motifs de etabli/outils/scan-secrets-lib.mjs (MAQUETTE, REEL, MOT_DE_PASSE, MOTIFS), a l'identique :
 // test/free-compact.test.js compare ce tableau au fichier source quand il existe. FACTICE n'est PAS repris : le scanner
 // laisse passer un jeton qui se dit faux, un masqueur doit au contraire masquer dans le doute.
 const MAQUETTE = /(^|[-_])(fake|test|dummy|mock|example|exemple|factice|placeholder|redacted|your|votre)([-_]|$)/i;
@@ -52,7 +52,7 @@ const MOTIFS_SOURCE = [
   ["jeton Stripe, npm, Hugging Face ou GitLab", /\b(sk_live_[A-Za-z0-9]{20,}|npm_[A-Za-z0-9]{36,}|hf_[A-Za-z0-9]{34,}|glpat-[\w-]{20,})/],
   ["clé privée", /(-----BEGIN [A-Z ]*PRIVATE KEY)/],
   ["affectation de secret", /(?:token|secret|api[_-]?key)\w{0,30}["'\\]*\s*[:=]\s*[\\"']*([\w+/=.~-]{20,})/i, REEL],
-  ["mot de passe", /(?:pass|pwd)\w{0,30}["'\\]*\s*[:=]\s*[\\"']*([^\s"'\\,;<>${}()[\]]{8,})/i, MOT_DE_PASSE],
+  ["mot de passe", /(?:pass|pwd)\w{0,34}["'\\]*\s*[:=]\s*[\\"']*([^\s"'\\,;<>${}()[\]]{8,})/i, MOT_DE_PASSE],
 ];
 // Formes que le scanner ne voit pas, a part : test/free-compact.test.js compare MOTIFS_SOURCE au scanner, pas cette liste.
 // Meme forme ; la valeur a masquer est le DERNIER groupe capturant. Ici, pas de seuil de longueur ni de chiffre : dans le doute, on masque.
