@@ -113,7 +113,7 @@ function personalStrings(extraNames) {
   return s.concat(extraNames || []);
 }
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-// Un repere par chaine d'origine, casse comprise : "Damie" et "damie" ont chacun le leur, et reviennent tels quels.
+// Un repere par chaine d'origine, casse comprise : "Alice" et "alice" ont chacun le leur, et reviennent tels quels.
 // Le repere porte un nonce tire a chaque appel : un "[PERSO-1]" deja dans le texte d'origine ne lui ressemble pas et n'est jamais
 // restitue. unmask leve (raison "repere-inconnu") si un repere de ce nonce reste apres restitution : le modele en a invente un.
 function makeMasker(strings) {
