@@ -8,7 +8,7 @@
   "scripts": {
     "install-relay": "node src/install.js",
     "uninstall-relay": "node src/uninstall.js",
-    "test": "node test/run.js && node test/lib.test.js && node test/paste-token.test.js && node test/upstream-override.test.js && node test/start-verify.test.js && node test/accounts.test.js && node test/cli-commands.test.js && node test/compaction-migrate.test.js && node test/compaction.test.js && node test/proxy-decide.test.js && node test/proxy-e2e.test.js && node test/stream-cut.test.js && node test/network-hold.test.js && node test/relais-vie.test.js && node test/journal-compactage.test.js && node test/free-compact.test.js && node test/memory-hook.test.js && node test/statusline.test.js && node test/terms-block.test.js && node test/guard.test.js && node test/setup-path.test.js && node test/upgrade.test.js && node test/uninstall.test.js && node test/cles-etabli.test.js"
+    "test": "node test/run.js && node test/lib.test.js && node test/paste-token.test.js && node test/upstream-override.test.js && node test/start-verify.test.js && node test/accounts.test.js && node test/cli-commands.test.js && node test/compaction-migrate.test.js && node test/compaction.test.js && node test/proxy-decide.test.js && node test/proxy-e2e.test.js && node test/stream-cut.test.js && node test/network-hold.test.js && node test/relais-vie.test.js && node test/journal-compactage.test.js && node test/free-compact.test.js && node test/memory-hook.test.js && node test/statusline.test.js && node test/terms-block.test.js && node test/guard.test.js && node test/setup-path.test.js && node test/upgrade.test.js && node test/uninstall.test.js && node test/cles-etabli.test.js && node test/sonde-usage.test.js"
   },
   "keywords": [
     "claude",

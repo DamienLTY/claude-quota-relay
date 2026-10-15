@@ -31,6 +31,35 @@ const lib = require("./lib.js"); // overageUsable : meme regle "credits utilisab
 // Compactage gratuit (DR-069) : charge a la premiere requete, pas au demarrage -- un fichier absent ou casse ne doit jamais
 // toucher le failover. null = indisponible, Claude sert.
 let _free;
+// J3-0 (DR-307) : sonde de tokens. Copie en LECTURE du flux de reponse, jamais dans son chemin : `pres.pipe(cres)`
+// reste intact, donc le client recoit les memes octets. Module jamais charge depuis un chemin du dossier
+// personnel (CHANGELOG 0.15.0) : le fichier est le voisin de proxy.js, copie avec lui. CQR_SONDE=0 la coupe.
+let _sonde, _journalUsage;
+function sondeModule() { if (_sonde === undefined) { try { _sonde = process.env.CQR_SONDE === "0" ? null : require("./sonde-sse.js"); } catch (e) { _sonde = null; } } return _sonde; }
+function ecrireUsage(m) {
+  try {
+    if (!_journalUsage) _journalUsage = sondeModule().creerJournal(process.env.CQR_USAGE_FILE || path.join(require("os").homedir(), ".delest", "usage.jsonl"));
+    _journalUsage(m);
+  } catch (e) {}
+}
+// Branche la sonde sur une reponse amont. Ne renvoie rien, n'ecrit rien au client, ne leve jamais.
+function brancherSonde(pres, compte, reqHeaders) {
+  try {
+    const mod = sondeModule();
+    if (!mod || pres.statusCode !== 200) return;
+    const h = reqHeaders || {};
+    const { flux } = mod.creerSonde({
+      entetes: pres.headers,
+      // seulement des identifiants reduits a [A-Za-z0-9_-] : ni message, ni jeton
+      contexte: { compte: tag(compte, 40), session: tag(h["x-claude-code-session-id"], 64), classe: tag(h["x-claude-code-request-class"], 20) },
+      surMesure: (m) => { if (m.analyse && m.modele) ecrireUsage(m); },
+    });
+    flux.resume(); // la sortie du Transform est jetee : seule la mesure compte
+    pres.on("data", (c) => { try { flux.write(c); } catch (e) {} });
+    pres.on("end", () => { try { flux.end(); } catch (e) {} });
+    pres.on("close", () => { if (!pres.complete) try { flux.destroy(); } catch (e) {} });
+  } catch (e) {}
+}
 function freeModule() { if (_free === undefined) { try { _free = require("./free-compact.js"); } catch (e) { _free = null; log("COMPACT-GRATUIT module indisponible", e.code || e.name); } } return _free; }
 
 const DIR = __dirname;
@@ -754,6 +783,7 @@ function serve(creq, cres) {
         // selon la version de Node, une reponse tronquee emet "error", "aborted" ou juste
         // "close" : `complete` est le seul temoin fiable qu'on a bien recu tout le corps.
         pres.on("close", () => { if (!pres.complete) onCut(new Error("reponse upstream incomplete")); });
+        brancherSonde(pres, tok.name, creq.headers);
         pres.pipe(cres);
       }
 
