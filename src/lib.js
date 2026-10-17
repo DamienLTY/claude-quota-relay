@@ -29,7 +29,8 @@ function confPath(dir) {
 }
 
 function readConf(confPath) { return JSON.parse(fs.readFileSync(confPath, "utf8")); }
-function writeConf(confPath, c) { fs.writeFileSync(confPath, JSON.stringify(c, null, 2)); }
+// Ecriture atomique (revue securite M3) : temporaire du meme dossier puis rename, une coupure laisse l'ancien fichier intact.
+function writeConf(confPath, c) { const tmp = confPath + ".tmp-" + process.pid; try { fs.writeFileSync(tmp, JSON.stringify(c, null, 2)); fs.renameSync(tmp, confPath); } catch (e) { try { fs.unlinkSync(tmp); } catch (e2) {} throw e; } }
 
 function ask(rl, q) { return new Promise((res) => rl.question(q, (a) => res(a.trim()))); }
 

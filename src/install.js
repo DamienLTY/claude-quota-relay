@@ -36,7 +36,7 @@ function warn(s) { console.log("  " + yellow("!") + " " + s); }
 const SRC_DIR = __dirname; // repo/src
 const REPO_ROOT = p.dirname(SRC_DIR);
 const EXAMPLE_TOKENS = p.join(REPO_ROOT, "config", "tokens.example.json");
-const COPY_FILES = ["proxy.js", "cli.js", "ensure-proxy.js", "lib.js", "compaction.js", "free-compact.js", "ancre.js", "sonde-sse.js", "memory-hook.js", "cqr-statusline.js", "cqr-workflow-guard.js"];
+const COPY_FILES = ["proxy.js", "cli.js", "ensure-proxy.js", "lib.js", "compaction.js", "free-compact.js", "entreprise.js", "ancre.js", "sonde-sse.js", "memory-hook.js", "cqr-statusline.js", "cqr-workflow-guard.js"];
 
 // Default workflow guard: warn (ask) before a Workflow when the freshest account is >=50% (5h),
 // because the Workflow tool's per-agent stall can't be extended by the relay.
@@ -256,14 +256,14 @@ async function main() {
         "\n  Le réactiver ? Il réduit les tokens à chaque changement de compte (natif Anthropic, 0 token). [O/n] ");
       if (wantsReactivate(ans)) { conf.compaction.enabled = true; conf.compaction.dryRun = false; }
     }
-    fs.writeFileSync(tokensPath, JSON.stringify(conf, null, 2));
+    lib.writeConf(tokensPath, conf);
     tokensLine = (conf.tokens || []).length + " compte(s), conservés";
   } else {
     conf = await collectTokens();
     conf.compaction = Object.assign({}, COMPACTION_DEFAULT, conf.compaction || {});
     conf.workflowGuard = Object.assign({}, WORKFLOW_GUARD_DEFAULT, conf.workflowGuard || {});
     conf.overage = Object.assign({}, OVERAGE_DEFAULT, conf.overage || {});
-    fs.writeFileSync(tokensPath, JSON.stringify(conf, null, 2));
+    lib.writeConf(tokensPath, conf);
     tokensLine = (conf.tokens || []).length + " compte(s), configurés";
   }
 
@@ -277,7 +277,7 @@ async function main() {
       "\n  " + yellow("Selon votre offre Anthropic, ces crédits peuvent être facturés.") + " Modifiable après : cqr credits on|off. [o/N] ");
     conf.overage.asked = true;
     if (wantsCredits(ans)) conf.overage.use = true;
-    fs.writeFileSync(tokensPath, JSON.stringify(conf, null, 2));
+    lib.writeConf(tokensPath, conf);
   }
 
   const res = patchSettings(conf);

@@ -38,7 +38,7 @@ let _sonde, _journalUsage;
 function sondeModule() { if (_sonde === undefined) { try { _sonde = process.env.CQR_SONDE === "0" ? null : require("./sonde-sse.js"); } catch (e) { _sonde = null; } } return _sonde; }
 function ecrireUsage(m) {
   try {
-    if (!_journalUsage) _journalUsage = sondeModule().creerJournal(process.env.CQR_USAGE_FILE || path.join(require("os").homedir(), ".delest", "usage.jsonl"));
+    if (!_journalUsage) _journalUsage = sondeModule().creerJournal(process.env.CQR_USAGE_FILE || undefined, { dossier: path.join(require("os").homedir(), ".delest") });
     _journalUsage(m);
   } catch (e) {}
 }
@@ -601,6 +601,7 @@ function serve(creq, cres) {
       try { FC = freeModule(); plan = FC && FC.decide({ url: creq.url, headers: creq.headers, body: bodyObj }, readConf); } catch (e) { return false; }
       if (!plan) { try { if (FC && FC.manque(creq.url, creq.headers, bodyObj)) log("COMPACT-GRATUIT", "manque", "raison=rappel-sans-invite"); } catch (e) {} return false; } // compactage annonce, rappel de l'invite vu, invite non reconnue : Claude sert, et cela se voit
       if (!plan.go) { if (!plan.quiet) log("COMPACT-GRATUIT", "repli", "raison=" + plan.raison); return false; }
+      for (const a of plan.masqueAlertes || []) log("COMPACT-GRATUIT", "masque-entreprise", "alerte=" + tag(a, 60)); // DR-297 : liste des noms/domaines de l'entreprise absente ou incomplete
       if (plan.urlIgnoree) log("COMPACT-GRATUIT", "surcharge-ignoree", "raison=hote-non-local"); // jamais l'adresse
       // Le flux ne s'ouvre qu'apres FC.holdMs() (60 s, sous la fenetre de premier octet du client, 120 s) : un repli rapide garde le
       // vrai statut de Claude (un 400 reste un 400) ; au-dela, des battements partent et un repli tardif ne peut rendre qu'une erreur SSE.
@@ -1064,6 +1065,10 @@ if (require.main === module) {
     conf0.tokens.forEach((t, i) => {
       if (t.enabled && !isPlaceholder(t)) setTimeout(() => probeToken(conf0, i), 500 + i * 2000);
     });
+    // DR-297 : lecture des noms et domaines de l'entreprise une fois, ici (PowerShell prend ~4 s), pas au milieu d'un compactage ; l'alerte se voit des le demarrage
+    if ((conf0.compaction && conf0.compaction.free && conf0.compaction.free.enabled === true) || String(process.env.OPENROUTER_API_KEY || "").trim()) { try { freeModule().entreprisePrechauffer(); } catch (e) {} setTimeout(() => { // active, ou cle posee (l'activation viendra par `cqr compact gratuit on`, sans redemarrage)
+      try { freeModule().entreprisePrechauffer(); setTimeout(() => { try { const r = freeModule().entreprise(); log("COMPACT-GRATUIT", "masque-entreprise", "noms=" + r.noms.length, "domaines=" + r.domaines.length, ...r.alertes.map((a) => "alerte=" + tag(a, 60))); } catch (e) { log("COMPACT-GRATUIT", "masque-entreprise", "alerte=lecture-impossible"); } }, 6000); } catch (e) { log("COMPACT-GRATUIT", "masque-entreprise", "alerte=lecture-impossible"); }
+    }, 1000); }
     // rafraichissement periodique pour TOUS les comptes -> statusline "live" (voir plus haut)
     const livePollTimer = startLivePolling(conf0);
     if (livePollTimer) log("LIVE POLL actif toutes les " + Math.round((conf0.livePollMs || LIVE_POLL_DEFAULT_MS) / 1000) + "s");

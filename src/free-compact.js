@@ -1,7 +1,7 @@
 /*
  * Compactage gratuit (DR-069 a DR-072, DR-042, DR-066)
  * ====================================================
- * Quand Claude Code compacte (auto ou /compact), le relais peut faire ecrire le resume par Nemotron 3 Ultra
+ * Quand Claude Code compacte (auto ou /compact), le relais peut faire ecrire le resume par Nemotron 3.5 Super VL
  * (gratuit, OpenRouter) au lieu de Claude, puis rendre ce resume a Claude Code comme si Claude l'avait ecrit.
  * Au moindre doute, ou au moindre echec, Claude sert : ce fichier ne decide jamais qu'un compactage est perdu.
  *
@@ -19,12 +19,13 @@ const crypto = require("crypto");
 const path = require("path");
 const fs = require("fs");
 const AN = require("./ancre.js");
+const ENT = require("./entreprise.js");
 
 const INVITE = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."; // debut de l'invite native de Claude Code
 const RAPPEL = "REMINDER: Do NOT call any tools"; // fin de l'invite native
 const KINDS_OK = ["auto", "manual"]; // DR-071 : "reactive" (debordement d'urgence) reste chez Claude, meme si la config le demande
 const DEFAULT_URL = "https://openrouter.ai/api/v1/chat/completions";
-const DEFAULT_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free";
+const DEFAULT_MODEL = "nvidia/nemotron-3.5-super-vl:free";
 const MAX_TOKENS_EST = 900000; // au-dela, Claude sert
 const DEFAULT_BLOCK_MS = 10 * 60 * 1000; // apres une panne du service, Claude sert pendant ce temps
 const DEFAULT_HOLD_MS = 60 * 1000; // delai avant d'ouvrir le flux du client : sous sa fenetre de premier octet (120 s)
@@ -51,6 +52,8 @@ const MOTIFS_SOURCE = [
   ["jeton Slack", /(xox[a-z]-[\w-]{10,}|xapp-[\w-]{10,}|hooks\.slack\.com\/services\/[\w/]{20,})/],
   ["jeton Stripe, npm, Hugging Face ou GitLab", /\b(sk_live_[A-Za-z0-9]{20,}|npm_[A-Za-z0-9]{36,}|hf_[A-Za-z0-9]{34,}|glpat-[\w-]{20,})/],
   ["clé privée", /(-----BEGIN [A-Z ]*PRIVATE KEY)/],
+  ["jeton web signé (jwt)", /\b(eyJ[\w-]{5,}\.eyJ[\w-]{5,}\.[\w-]*)/],
+  ["mot de passe dans une URL", /:\/\/[^\s:\/@]*:((?:[^\s@\/${}<>%]|%[0-9A-Fa-f]{2}|\$(?!\{)){3,})@(?!(?:[\w-]+\.)*(?:example\.(?:com|org|net)|exemple\.\w+|test|invalid|example)(?=[:\/?#"'\s]|$)|localhost(?=[:\/?#"'\s]|$))/, MOT_DE_PASSE],
   ["affectation de secret", /(?:token|secret|api[_-]?key)\w{0,30}["'\\]*\s*[:=]\s*[\\"']*([\w+/=.~-]{20,})/i, REEL],
   ["mot de passe", /(?:pass|pwd)\w{0,34}["'\\]*\s*[:=]\s*[\\"']*([^\s"'\\,;<>${}()[\]]{8,})/i, MOT_DE_PASSE],
 ];
@@ -62,6 +65,8 @@ const AFFECTATION = "(?:(?:password|passwd|pwd|secret|token|(?:private|access)[_
 const PAS_UN_NOMBRE = (v, m) => !(/^tokens?(?!\w*(?:secret|pass|pwd|key))/i.test(m[0]) && /^\d[\d_ ,.]*$/.test(v));
 const MOTIFS_PLUS = [
   ["JWT", /(eyJ[\w-]{4,}\.[\w-]{4,}\.[\w-]*)/],
+  ["jeton Groq, xAI ou Tavily", /\b((?:gsk_|xai-|tvly-)[A-Za-z0-9_-]{16,})/], // memes expressions que outils/deleguer.mjs (MOTIFS_EN_PLUS)
+  ["jeton Google OAuth", /\b(ya29\.[A-Za-z0-9_-]{16,})/],
   ["en-tête Authorization", /authorization["'\\]*\s*[:=]\s*[\\"']*(?:bearer|basic)\s+([^\s"'\\]+)/i],
   ["mot de passe d'une adresse", /\b[a-z][a-z0-9+.-]{0,31}:\/\/[^\s:/@]+:([^\s/]+)@/i], // schema borne : sans borne, une ligne a.b-a.b-... est quadratique (320 Ko = 111 s, relais fige)
   ["Bearer nu", /\bBearer\s+((?=[A-Za-z0-9._~+/=-]*\d)[A-Za-z0-9._~+/=-]{16,})/i], // DR-170 : un jeton cite apres Bearer hors d'un en-tete Authorization
@@ -118,7 +123,7 @@ const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 // restitue. unmask leve (raison "repere-inconnu") si un repere de ce nonce reste apres restitution : le modele en a invente un.
 function makeMasker(strings) {
   const list = [...new Set(strings.filter((s) => typeof s === "string" && s.trim()))].sort((a, b) => b.length - a.length); // le plus long d'abord
-  const re = list.length ? new RegExp(list.map(escapeRe).join("|"), "gi") : null;
+  const re = list.length ? new RegExp(list.map((x) => escapeRe(x).replace(/ +/g, "[\\s_-]*")).join("|"), "gi") : null;
   const nonce = crypto.randomBytes(3).toString("hex"), mine = new RegExp("\\[PERSO-" + nonce + "-\\d+\\]", "gi"); // "i" : un repere dont le modele a change la casse est inconnu, pas ignore
   const toMark = new Map(), toText = new Map();
   return {
@@ -358,6 +363,11 @@ function decide(req, getConf) { // getConf : la config ne se lit que pour un vra
   if (V.variante === "journal") return journal(null); // aucun appel : ni cle ni service requis
   if (!hasKey()) return repli("cle-absente");
   if (Date.now() < blockedUntil) return repli("blocage");
+  // DR-297, DR-393 : noms et domaines de l'entreprise, en plus des noms de la config. Liste illisible ou pas prete : rien ne part au modele
+  // gratuit (repli). Liste vide : on continue, avec l'alerte (plan.masqueAlertes).
+  const ent = ENT.charger();
+  if (ent.repli) return repli(ent.repli);
+  cfg.names = [...new Set([...cfg.names, ...ent.noms, ...ent.domaines])];
   const secrets = [process.env.OPENROUTER_API_KEY, ...(Array.isArray(conf && conf.tokens) ? conf.tokens.map((t) => t && t.token) : [])]
     .map((v) => String(v == null ? "" : v).trim()).filter((v) => v.length >= 8).sort((a, b) => b.length - a.length); // le plus long d'abord
   let text, note;
@@ -391,7 +401,7 @@ function decide(req, getConf) { // getConf : la config ne se lit que pour un vra
   }
   text = "[Consigne : " + note + "]\n\n" + text;
   if (Math.ceil(text.length / 3.5) > MAX_TOKENS_EST) return repli("trop-gros"); // meme estimation que compaction.js, legerement pessimiste
-  return Object.assign({ go: true, kind: rec.kind, cfg, text, secrets, variante: V.variante, ancre: V.ancre, invalide: V.invalide, maxTokens: V.variante === "court" ? Math.max(3000, V.courtMax + 200) : 8000 }, endpoint()); // court (DR-115) : 3000 fixe (la place du bloc <analysis> avant le <summary>), sauf si court_max_jetons le depasse : il + 200
+  return Object.assign({ go: true, kind: rec.kind, cfg, text, secrets, masqueAlertes: ent.alertes, variante: V.variante, ancre: V.ancre, invalide: V.invalide, maxTokens: V.variante === "court" ? Math.max(3000, V.courtMax + 200) : 8000 }, endpoint()); // court (DR-115) : 3000 fixe (la place du bloc <analysis> avant le <summary>), sauf si court_max_jetons le depasse : il + 200
 }
 
 // ----- appel -----
@@ -545,4 +555,4 @@ function sendSummary(res, body, text, stream) {
     ev("message_stop", { type: "message_stop" }));
 }
 
-module.exports = { INVITE, RAPPEL, manque, MOTIFS_SOURCE, MAQUETTE, REEL, MOT_DE_PASSE, holdMs, readVariante, tailMessages, journalSummary, texteUtile, longueurConversation, seuilResume, MIN_RESUME_COURT, SEUIL_CONVERSATION_COURTE, maskSecrets, makeMasker, renderConversation, recognize, resolveConfig, decide, validate, run, sendSummary };
+module.exports = { entreprise: ENT.charger, entreprisePrechauffer: ENT.prechauffer, INVITE, RAPPEL, manque, MOTIFS_SOURCE, MAQUETTE, REEL, MOT_DE_PASSE, holdMs, readVariante, tailMessages, journalSummary, texteUtile, longueurConversation, seuilResume, MIN_RESUME_COURT, SEUIL_CONVERSATION_COURTE, maskSecrets, makeMasker, renderConversation, recognize, resolveConfig, decide, validate, run, sendSummary };

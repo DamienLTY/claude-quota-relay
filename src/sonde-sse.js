@@ -314,25 +314,39 @@ function creerSonde(options = {}) {
 /**
  * Journal JSONL en append. Une ligne par reponse amont.
  *
+ * Rotation mensuelle (J3-3) : sans chemin explicite, la ligne va dans
+ * `<dossier>/usage-AAAA-MM.jsonl`, le mois etant celui (UTC) du `ts` ecrit dans
+ * la ligne ; le premier ecrit d'un nouveau mois ouvre donc un nouveau fichier.
+ * Rien n'est jamais supprime ni renomme : l'ancien `usage.jsonl` sans date reste
+ * tel quel. Avec un chemin explicite (CQR_USAGE_FILE, tests), un seul fichier,
+ * comme avant.
+ *
  * Ecriture synchrone volontaire : ces lignes font quelques centaines
  * d'octets, elles arrivent en fin de reponse (jamais dans le chemin
  * interactif), et une ecriture synchrone garantit qu'un arret brutal du
  * proxy ne perd pas la derniere mesure.
+ *
+ * @param {string} [cheminFichier]  fichier unique (pas de rotation)
+ * @param {object} [options]
+ * @param {string} [options.dossier]     dossier du journal tourne (defaut ~/.delest)
+ * @param {function} [options.maintenant] horloge injectee (tests) : () => Date
  */
-function creerJournal(cheminFichier) {
-  const cible = cheminFichier ||
-    path.join(process.env.USERPROFILE || process.env.HOME || ".", ".delest", "usage.jsonl");
-  let pret = false;
+function creerJournal(cheminFichier, options = {}) {
+  const dossier = options.dossier ||
+    path.join(process.env.USERPROFILE || process.env.HOME || ".", ".delest");
+  const maintenant = typeof options.maintenant === "function" ? options.maintenant : () => new Date();
+  const prets = new Set();
   return function ecrire(mesure) {
     try {
-      if (!pret) {
-        fs.mkdirSync(path.dirname(cible), { recursive: true });
-        pret = true;
+      const ts = maintenant().toISOString();
+      const cible = cheminFichier ||
+        path.join(dossier, "usage-" + ts.slice(0, 7) + ".jsonl");
+      const parent = path.dirname(cible);
+      if (!prets.has(parent)) {
+        fs.mkdirSync(parent, { recursive: true });
+        prets.add(parent);
       }
-      fs.appendFileSync(
-        cible,
-        JSON.stringify({ ts: new Date().toISOString(), ...mesure }) + "\n"
-      );
+      fs.appendFileSync(cible, JSON.stringify({ ts, ...mesure }) + "\n");
     } catch (erreur) {
       // Disque plein, permission refusee : on perd la mesure, pas la session.
     }

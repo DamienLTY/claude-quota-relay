@@ -150,6 +150,17 @@ async function attendre(f, n) { for (let i = 0; i < 40; i++) { if (lignes(f).len
       console.log("PASS 4 — sonde-sse.js identique octet pour octet a delest/proxy/sonde-sse.js");
     } else console.log("SKIP 4 — ../../delest absent : identite des deux copies non verifiee");
 
+    // --- 5. sans CQR_USAGE_FILE : le journal du mois s'appelle usage-AAAA-MM.jsonl dans ~/.delest (rotation mensuelle, J3-3)
+    const home5 = p.join(tmp, "home5");
+    const E = await lancer(mockPort, { env: { HOME: home5, USERPROFILE: home5, CQR_USAGE_FILE: "" } }); instances.push(E);
+    const mois = new Date().toISOString().slice(0, 7);
+    const f5 = p.join(home5, ".delest", "usage-" + mois + ".jsonl");
+    assert.strictEqual((await ask(E.port, false)).status, 200);
+    await attendre(f5, 1);
+    assert.strictEqual(lignes(f5).length, 1, "une ligne dans " + f5);
+    assert.ok(!fs.existsSync(p.join(home5, ".delest", "usage.jsonl")), "l'ancien nom sans date ne doit plus etre ecrit");
+    console.log("PASS 5 — sans CQR_USAGE_FILE : ~/.delest/usage-AAAA-MM.jsonl, pas d'usage.jsonl");
+
     console.log("PASS 2 — sonde coupee / module absent / journal non inscriptible : flux intact, aucune ligne parasite");
   } catch (e) { failed = e; }
   finally {

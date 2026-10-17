@@ -169,7 +169,7 @@ cqr compact dynamic off    # revient à : on n'allège qu'au changement de compt
 
 ### Le compactage gratuit (coupé par défaut)
 
-Quand Claude Code compacte la conversation — tout seul vers 300 000 tokens, ou quand vous tapez `/compact` —, c'est normalement Claude qui écrit le résumé, et ça consomme du quota. Cette option fait écrire ce résumé par **Nemotron 3 Ultra** (NVIDIA, offre gratuite via OpenRouter) à la place. **Au moindre échec, Claude reprend** et écrit le résumé comme s'il ne s'était rien passé.
+Quand Claude Code compacte la conversation — tout seul vers 300 000 tokens, ou quand vous tapez `/compact` —, c'est normalement Claude qui écrit le résumé, et ça consomme du quota. Cette option fait écrire ce résumé par **Nemotron 3.5 Super VL** (NVIDIA, offre gratuite via OpenRouter) à la place. **Au moindre échec, Claude reprend** et écrit le résumé comme s'il ne s'était rien passé.
 
 **C'est coupé par défaut, et ça se règle poste par poste** (le réglage vit dans le `tokens.json` de chaque PC). Ne l'activez pas sur un poste ou un projet confidentiel : c'est la seule fonction du programme qui envoie du texte de conversation à un tiers.
 
@@ -210,7 +210,7 @@ Ancre Nemotron (DR-170, DR-176, DR-177, `src/ancre.js`, grâce réglable par `CQ
 
 **Mesure et délai, différents de ceux d'openrouter-relay** : la tête et la queue sont mesurées en caractères du rendu texte ici, et par `sizeOf` (texte plus appels d'outils) dans openrouter-relay, donc les coupes diffèrent légèrement d'un relais à l'autre. Délai d'attente : 240 s ici (DR-123), 200 s dans openrouter-relay (DR-120).
 
-Réglages avancés, dans `compaction.free` de `tokens.json` : `model` (défaut `nvidia/nemotron-3-ultra-550b-a55b:free`), `kinds` (`["auto","manual"]`), `timeoutMs` (240000), `minSummaryChars` (1500), `names`.
+Réglages avancés, dans `compaction.free` de `tokens.json` : `model` (défaut `nvidia/nemotron-3.5-super-vl:free`), `kinds` (`["auto","manual"]`), `timeoutMs` (240000), `minSummaryChars` (1500), `names`.
 
 ### La statusline (barre d'état)
 

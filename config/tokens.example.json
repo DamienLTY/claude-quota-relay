@@ -20,7 +20,7 @@
     "archiveDir": ".cqr-archive",
     "free": {
       "enabled": false,
-      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "model": "nvidia/nemotron-3.5-super-vl:free",
       "kinds": ["auto", "manual"],
       "timeoutMs": 240000,
       "minSummaryChars": 1500,

@@ -1,5 +1,6 @@
 # Secrets & runtime — NEVER commit
 tokens.json
+tokens.json.tmp-*
 state.json
 statusline.json
 *.pid

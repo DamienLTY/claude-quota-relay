@@ -11,6 +11,11 @@ const ANC = require("../src/ancre.js");
 const SRC = p.join(__dirname, "..", "src");
 const VARIANTE_FILE = p.join(os.tmpdir(), "cqr-compactage-" + process.pid + ".json"); // jamais le vrai ~/.etabli/compactage.json
 process.env.CQR_COMPACTAGE_FILE = VARIANTE_FILE;
+const ENT_DIR = fs.mkdtempSync(p.join(os.tmpdir(), "cqr-entreprise-")); // DR-297 : jamais la vraie liste de l'entreprise ni PowerShell ; test/entreprise.test.js couvre ce masquage
+fs.writeFileSync(p.join(ENT_DIR, "config.json"), JSON.stringify({ names: [], internes: [] }));
+process.env.CQR_ENTREPRISE_DIR = ENT_DIR; process.env.NODE_ENV = "test"; // CQR_POWERSHELL* ne valent que dans les tests
+process.env.CQR_POWERSHELL = process.execPath; process.env.CQR_POWERSHELL_ARGS = JSON.stringify(["-e", "console.log('{\"d\":\"\",\"s\":[],\"l\":[]}')"]); // faux PowerShell : aucun domaine (liste vide : on continue)
+require("../src/entreprise.js").prechauffer();
 const setVariante = (v, extra) => fs.writeFileSync(VARIANTE_FILE, JSON.stringify(Object.assign({ variante: v, ancre: false }, extra)));
 setVariante("court"); // les scenarios d'origine portent sur la conversation entiere ; les variantes ont leurs scenarios
 const PORT_A = 8820, MOCK_ANTH = 8821, MOCK_OR = 8822, PORT_B = 8823, PORT_C = 8824, PORT_D = 8825, PORT_E = 8826;
@@ -214,7 +219,7 @@ const AUTO = { "x-claude-code-compaction": "auto", "x-claude-code-request-class"
 }
 {
   const c = FC.resolveConfig(undefined);
-  assert.deepStrictEqual(c, { enabled: false, model: "nvidia/nemotron-3-ultra-550b-a55b:free", kinds: ["auto", "manual"], timeoutMs: 240000, minSummaryChars: 1500, names: [], fallback: "journal" }, "config : valeurs par defaut, coupe");
+  assert.deepStrictEqual(c, { enabled: false, model: "nvidia/nemotron-3.5-super-vl:free", kinds: ["auto", "manual"], timeoutMs: 240000, minSummaryChars: 1500, names: [], fallback: "journal" }, "config : valeurs par defaut, coupe");
   assert.strictEqual(FC.resolveConfig({ enabled: "true" }).enabled, false, "config : seul `true` active");
   assert.deepStrictEqual(FC.resolveConfig({ kinds: ["auto", "reactive", "manual"] }).kinds, ["auto", "manual"], "config : reactive n'est jamais detourne, meme demande");
 }
@@ -369,12 +374,13 @@ function writeConf(dir, port, compaction) {
   fs.writeFileSync(p.join(dir, "state.json"), JSON.stringify({ activeIndex: 0, pct: { account1: { h5: 10, d7: 10 } }, exhausted: {}, reset5h: {}, reset7d: {} }));
 }
 async function startRelay(dir, port, withKey, withoutModule, envExtra) {
-  for (const f of ["proxy.js", "compaction.js", "lib.js", ...(withoutModule ? [] : ["free-compact.js", "ancre.js"])]) fs.copyFileSync(p.join(SRC, f), p.join(dir, f));
+  for (const f of ["proxy.js", "compaction.js", "lib.js", ...(withoutModule ? [] : ["free-compact.js", "entreprise.js", "ancre.js"])]) fs.copyFileSync(p.join(SRC, f), p.join(dir, f));
   const env = Object.assign({}, process.env, { CQR_UPSTREAM_HOST: "127.0.0.1", CQR_UPSTREAM_PORT: String(MOCK_ANTH), CQR_UPSTREAM_HTTP: "1", CQR_NO_POPUP: "1", CQR_FREE_COMPACT_URL: "http://127.0.0.1:" + MOCK_OR + "/api/v1/chat/completions", CQR_FREE_COMPACT_BLOCK_MS: "400", CQR_FREE_COMPACT_RETRY_MS: "30" }, envExtra);
   if (withKey) env.OPENROUTER_API_KEY = FAKE_OR_KEY; else delete env.OPENROUTER_API_KEY; // jamais la vraie cle de la machine
   const child = cp.spawn(process.execPath, [p.join(dir, "proxy.js")], { env, stdio: "ignore", windowsHide: true });
   let up = false; for (let i = 0; i < 40; i++) { if (await health(port)) { up = true; break; } await sleep(150); }
   assert.ok(up, "le relais d'essai (port " + port + ") doit demarrer");
+  await sleep(700); // le faux PowerShell des noms d'entreprise est lu a l'amorcage
   return child;
 }
 // Une requete au relais. o.abortAfterMs : le client part sans attendre la reponse.
@@ -401,6 +407,7 @@ const FREE = (extra) => Object.assign({ enabled: true, timeoutMs: 3000, names: [
 const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode: "native", keepToolUses: 10, thresholds: {}, free }, extra);
 
 (async () => {
+  await sleep(700); // lecture (asynchrone) du faux PowerShell des domaines, en cache pour les essais en processus
   const DIR_A = fs.mkdtempSync(p.join(os.tmpdir(), "cqr-free-a-")), DIR_B = fs.mkdtempSync(p.join(os.tmpdir(), "cqr-free-b-")), DIR_C2 = fs.mkdtempSync(p.join(os.tmpdir(), "cqr-free-d-")), DIR_D = fs.mkdtempSync(p.join(os.tmpdir(), "cqr-free-h-")), DIR_E = fs.mkdtempSync(p.join(os.tmpdir(), "cqr-free-u-"));
   const mockAnth = await startAnthropic(), mockOr = await startOpenRouter();
   let relayA = null, relayB = null, relayC = null, relayD = null, relayE = null, failed = null;
@@ -429,7 +436,7 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
     // --- masquage : ce que Nemotron a recu, puis ce que le client recoit ---
     const sent = orBodies[orBodies.length - 1], seen = sent.messages[0].content;
     assert.strictEqual(orAuth[orAuth.length - 1], "Bearer " + FAKE_OR_KEY, "appel : la cle part en Bearer");
-    assert.deepStrictEqual([sent.model, sent.max_tokens, sent.reasoning, sent.stream], ["nvidia/nemotron-3-ultra-550b-a55b:free", 3000, { effort: "low" }, false], "appel : modele, plafond court (2 x 1500), effort, sans flux");
+    assert.deepStrictEqual([sent.model, sent.max_tokens, sent.reasoning, sent.stream], ["nvidia/nemotron-3.5-super-vl:free", 3000, { effort: "low" }, false], "appel : modele, plafond court (2 x 1500), effort, sans flux");
     for (const s of PERSONAL) assert.ok(!seen.toLowerCase().includes(s.toLowerCase()), "masquage : Nemotron ne voit pas " + (s === EXTRA || s === USER ? s : "le dossier personnel"));
     for (const s of [TOKEN_ANT, TOKEN_OR, PASSWORD]) assert.ok(!seen.includes(s), "masquage : Nemotron ne voit pas un jeton ou un mot de passe");
     for (const s of ["PENSEE-NE-PART-PAS", "SYSTEME-NE-PART-PAS", "OUTIL-NE-PART-PAS"]) assert.ok(!seen.includes(s) && !JSON.stringify(sent).includes(s), "masquage : " + s);
@@ -846,7 +853,7 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
           { const { r, nOr, nAncre } = await apres("ok");
             assert.ok(r.ok && nOr === 2 && nAncre === 1, "ancre : un appel de resume, un d'extraction");
             const eb = ancreBodies[ancreBodies.length - 1];
-            assert.deepStrictEqual([eb.model, eb.temperature, eb.stream, eb.messages.length], ["nvidia/nemotron-3-ultra-550b-a55b:free", 0, false, 1], "ancre : modele, temperature 0, sans flux");
+            assert.deepStrictEqual([eb.model, eb.temperature, eb.stream, eb.messages.length], ["nvidia/nemotron-3.5-super-vl:free", 0, false, 1], "ancre : modele, temperature 0, sans flux");
             assert.ok(eb.messages[0].content.includes("[user] migre le module X") && eb.messages[0].content.includes("[appel Read] {\"file\":\"x.js\"}") && eb.messages[0].content.includes("[résultat] RESULTAT-OUTIL"), "ancre : la vue de la conversation");
             assert.ok(!eb.messages[0].content.includes(FC.INVITE), "ancre : l'invite de compactage ne part pas");
             assert.ok(r.text.indexOf("Rapport de session") < r.text.indexOf(marque) && r.text.indexOf(marque) < r.text.indexOf("</summary>") && r.text.trimEnd().endsWith("</summary>"), "ancre : apres le resume, avant </summary>");
@@ -995,13 +1002,13 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
     // --- commande cqr compact gratuit (copie jetable, jamais le vrai tokens.json) ---
     const DIR_C = fs.mkdtempSync(p.join(os.tmpdir(), "cqr-free-c-"));
     try {
-      for (const f of ["cli.js", "lib.js", "compaction.js", "free-compact.js", "ancre.js"]) fs.copyFileSync(p.join(SRC, f), p.join(DIR_C, f));
+      for (const f of ["cli.js", "lib.js", "compaction.js", "free-compact.js", "entreprise.js", "ancre.js"]) fs.copyFileSync(p.join(SRC, f), p.join(DIR_C, f));
       fs.writeFileSync(p.join(DIR_C, "tokens.json"), JSON.stringify({ port: 8787, compaction: { enabled: true, dryRun: false, keepToolUses: 7 }, tokens: [{ name: "1", token: FAKE, enabled: true }] }));
       const cli = (...a) => cp.spawnSync(process.execPath, [p.join(DIR_C, "cli.js"), ...a], { encoding: "utf8", windowsHide: true, env: Object.assign({}, process.env, { OPENROUTER_API_KEY: FAKE_OR_KEY }) });
       const conf = () => JSON.parse(fs.readFileSync(p.join(DIR_C, "tokens.json"), "utf8"));
       let r = cli("compact", "gratuit", "status");
       assert.strictEqual(r.status, 0, "cli status : sortie 0 : " + r.stderr);
-      assert.ok(/coupé \(défaut\)/.test(r.stdout) && r.stdout.includes("nvidia/nemotron-3-ultra-550b-a55b:free"), "cli status : coupe par defaut, modele affiche");
+      assert.ok(/coupé \(défaut\)/.test(r.stdout) && r.stdout.includes("nvidia/nemotron-3.5-super-vl:free"), "cli status : coupe par defaut, modele affiche");
       r = cli("compact", "gratuit", "on");
       assert.strictEqual(r.status, 0, "cli on : sortie 0 : " + r.stderr);
       assert.strictEqual(conf().compaction.free.enabled, true, "cli on : reglage ecrit");

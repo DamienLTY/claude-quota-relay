@@ -32,7 +32,7 @@ const PIDFILE = p.join(DIR, "proxy.pid");
 const STOPPED = p.join(DIR, "proxy.stopped"); // arret voulu : le gardien de la statusline ne relance pas (DR-012)
 
 function readConf() { return JSON.parse(fs.readFileSync(CONF, "utf8")); }
-function writeConf(c) { fs.writeFileSync(CONF, JSON.stringify(c, null, 2)); }
+function writeConf(c) { lib.writeConf(CONF, c); }
 function readState() { try { return JSON.parse(fs.readFileSync(STATE, "utf8")); } catch (e) { return { activeIndex: 0, exhausted: {}, pct: {} }; } }
 function writeState(s) { fs.writeFileSync(STATE, JSON.stringify(s, null, 2)); }
 function isPlaceholder(t) { return !t || !t.token || /^(PASTE|REMPLACE|<)/i.test(t.token); }
@@ -424,7 +424,7 @@ switch (cmd) {
       const f = cc.free = Object.assign({}, cc.free);
       if (a2 === "on") {
         f.enabled = true; writeConf(c);
-        console.log("Compactage gratuit ACTIVÉ : les compactages automatiques et manuels (/compact) de Claude Code sont écrits par Nemotron 3 Ultra (OpenRouter, offre gratuite de NVIDIA) au lieu de Claude ; au moindre échec, Claude reprend.");
+        console.log("Compactage gratuit ACTIVÉ : les compactages automatiques et manuels (/compact) de Claude Code sont écrits par Nemotron 3.5 Super VL (OpenRouter, offre gratuite de NVIDIA) au lieu de Claude ; au moindre échec, Claude reprend.");
         console.log("Le texte de la conversation part chez un tiers : jetons et mots de passe masqués, dossier personnel et noms remplacés par des repères (voir le README pour ce que NVIDIA peut en faire).");
         console.log("La clé OPENROUTER_API_KEY doit être dans l'environnement du relais (relancer le relais après l'avoir posée). Effet immédiat, aucun redémarrage nécessaire.");
         if (!cc.enabled) console.log("compactage coupé : `cqr compact on` d'abord");
