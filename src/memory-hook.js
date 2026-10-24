@@ -17,6 +17,10 @@
  *     session had been injected, so the next prompt injects it again.
  *   - UserPromptSubmit : inject only (de-duplicated per session, see emitInject). Never rebuilds.
  *
+ * Sous-projet (0.23.0) : une session lancee dans `projets/<id>/` (dossier sans .git propre, racine git au-dessus,
+ * CLAUDE.md a frontmatter `projet:`) voit les commits / fichiers non commites de SON perimetre seulement, exclut
+ * ses fichiers via le info/exclude de la racine, et recoit une section « Voisins » (lecture seule).
+ *
  * Safety: git calls are bounded by a timeout (failure = the section is omitted); the project's
  * .gitignore is never touched (the files go to .git/info/exclude instead). Always exits 0.
  */
@@ -65,15 +69,18 @@ function cut(s, n) { s = String(s == null ? "" : s).trim(); return s.length > n 
 // `git status` through info/exclude (local to the clone, never committed) -- the project's own .gitignore
 // is left alone. The path comes from `git rev-parse --git-path`: in a worktree or a submodule .git is a
 // FILE, and the exclude is the one of the main repo (shared by all its worktrees). Idempotent, best-effort.
-function ensureExcluded(cwd, memName, archName) {
+// En mode sous-projet (sub), l'exclusion va dans le info/exclude de la RACINE git, en motifs `**/nom`.
+function ensureExcluded(cwd, memName, archName, sub) {
   try {
-    if (!fs.existsSync(p.join(cwd, ".git"))) return;
-    const out = git(cwd, ["rev-parse", "--git-path", "info/exclude"]);
+    const base = sub ? sub.root : cwd;
+    if (!sub && !fs.existsSync(p.join(cwd, ".git"))) return;
+    const out = git(base, ["rev-parse", "--git-path", "info/exclude"]);
     if (!out || !out.trim()) return;
-    const f = p.resolve(cwd, out.trim());
+    const f = p.resolve(base, out.trim());
     const cur = readText(f);
     const have = new Set(cur.split(/\r?\n/).map((l) => l.trim().replace(/\/$/, "")));
-    const want = [memName, archName + "/"].filter((w) => !have.has(w.replace(/\/$/, "")));
+    const pre = sub ? "**/" : "";
+    const want = [pre + memName, pre + archName + "/"].filter((w) => !have.has(w.replace(/\/$/, "")));
     if (!want.length) return;
     ensureDir(p.dirname(f));
     fs.appendFileSync(f, (cur && !cur.endsWith("\n") ? "\n" : "") + "# claude-quota-relay project memory (auto-added)\n" + want.join("\n") + "\n");
@@ -92,15 +99,61 @@ function git(cwd, args) {
   } catch (e) { return null; }
 }
 
+// Racine git : premier ancetre (cwd compris) qui contient `.git` (dossier ou fichier). null si aucun.
+function findGitRoot(dir) {
+  let d = p.resolve(dir);
+  for (;;) {
+    if (fs.existsSync(p.join(d, ".git"))) return d;
+    const up = p.dirname(d);
+    if (up === d) return null;
+    d = up;
+  }
+}
+
+// Frontmatter d'un CLAUDE.md : 1re ligne exactement `---`, fin au `---` suivant. `projet` obligatoire, sinon null.
+// Cles : projet, prefixe, but, verrous (une ligne) ; perimetre (lignes `  - <glob>`). Guillemets retires.
+function unquote(v) { v = String(v).trim(); const m = /^(["'])(.*)\1$/.exec(v); return m ? m[2].trim() : v; }
+function parseFrontmatter(file) {
+  const lines = readText(file).replace(/^﻿/, "").split(/\r?\n/);
+  if (lines[0] !== "---") return null;
+  const fm = { perimetre: [] };
+  let cle = "", fin = false;
+  for (let i = 1; i < lines.length; i++) {
+    const l = lines[i];
+    if (l.trimEnd() === "---") { fin = true; break; }
+    const it = /^\s+-\s+(.*)$/.exec(l);
+    if (it) { if (cle === "perimetre" && unquote(it[1])) fm.perimetre.push(unquote(it[1])); continue; }
+    const kv = /^([A-Za-z_]\w*):[ \t]*(.*)$/.exec(l);
+    if (!kv) continue;
+    cle = kv[1];
+    if (cle !== "perimetre") fm[cle] = unquote(kv[2]);
+  }
+  return fin && fm.projet ? fm : null;
+}
+
+// Mode sous-projet : cwd sans .git propre, racine git au-dessus, CLAUDE.md avec `projet:`. Sinon null (comportement inchange).
+function subprojet(cwd) {
+  if (fs.existsSync(p.join(cwd, ".git"))) return null;
+  const root = findGitRoot(cwd);
+  if (!root) return null;
+  const fm = parseFrontmatter(p.join(cwd, "CLAUDE.md"));
+  if (!fm) return null;
+  const rel = p.relative(root, p.resolve(cwd)).split(p.sep).join("/");
+  const specs = fm.perimetre.map((g) => ":(glob)" + g.replace(/\\/g, "/"));
+  if (rel) specs.push(":(literal)" + rel);
+  return { root, fm, rel, specs };
+}
+
 // Chaque section rend son corps (texte) ou null quand sa source manque.
-function sectionCommits(cwd) {
-  const out = git(cwd, ["log", "-5", "--date=short", "--format=%h %cd %s"]);
+function sectionCommits(cwd, sub) {
+  const out = sub ? git(sub.root, ["log", "-5", "--date=short", "--format=%h %cd %s", "--"].concat(sub.specs))
+    : git(cwd, ["log", "-5", "--date=short", "--format=%h %cd %s"]);
   if (!out || !out.trim()) return null;
   return out.trim().split(/\r?\n/).map((l) => "- " + cut(l, 100)).join("\n");
 }
 
-function sectionNonCommites(cwd, ignores) {
-  const out = git(cwd, ["status", "--porcelain"]);
+function sectionNonCommites(cwd, ignores, sub) {
+  const out = sub ? git(sub.root, ["status", "--porcelain", "--"].concat(sub.specs)) : git(cwd, ["status", "--porcelain"]);
   if (out == null) return null;
   // nos propres fichiers n'ont pas a se lister eux-memes (cas d'un .git qui n'est pas un dossier : pas d'exclusion)
   const lines = out.split(/\r?\n/).filter((l) => l.trim() && !ignores.includes(l.slice(3).replace(/\/$/, "")));
@@ -113,7 +166,7 @@ function sectionNonCommites(cwd, ignores) {
 
 // Section « En cours » de TODO.md : du titre jusqu'au prochain titre de meme niveau ou plus haut.
 // Une case cochee est finie, donc pas « en cours » : seules les lignes restantes comptent.
-function sectionTodo(cwd) {
+function todoOpenLines(cwd) {
   const lines = readText(p.join(cwd, "TODO.md")).split(/\r?\n/);
   const i = lines.findIndex((l) => /^#{1,6}\s+en cours\b/i.test(l));
   if (i < 0) return null;
@@ -126,7 +179,11 @@ function sectionTodo(cwd) {
   }
   // un sous-titre perd ses # : une ligne de la TODO ne doit jamais ressembler a un titre du fichier
   const open = body.filter((l) => l.trim() && !/^\s*[-*]\s*\[[xX]\]/.test(l)).map((l) => l.replace(/^\s*#+\s*/, ""));
-  if (!open.length) return null;
+  return open.length ? open : null;
+}
+function sectionTodo(cwd) {
+  const open = todoOpenLines(cwd);
+  if (!open) return null;
   const MAX = 8;
   const shown = open.slice(0, MAX).map((l) => cut(l, 140));
   if (open.length > MAX) shown.push("… et " + (open.length - MAX) + " lignes de plus dans TODO.md");
@@ -134,22 +191,73 @@ function sectionTodo(cwd) {
 }
 
 // Les 5 dernieres lignes `| DR-xxx | type | question | reponse | ... |` du registre, question tronquee.
-function sectionRegistre(cwd) {
-  const rows = readText(p.join(cwd, "REGISTRE-DECISIONS.md")).split(/\r?\n/).filter((l) => /^\|\s*DR-\d+/.test(l)).slice(-5);
+// En mode sous-projet avec `prefixe`, les lignes `| <prefixe>-001` comptent aussi.
+function sectionRegistre(cwd, prefixe) {
+  const pre = prefixe ? "|" + prefixe.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : "";
+  const re = new RegExp("^\\|\\s*(?:DR" + pre + ")-\\d+");
+  const rows = readText(p.join(cwd, "REGISTRE-DECISIONS.md")).split(/\r?\n/).filter((l) => re.test(l)).slice(-5);
   if (!rows.length) return null;
   return rows.map((l) => { const c = l.split("|").map((x) => x.trim()); return "- " + c[1] + " : " + cut(c[3] || c[2], 120); }).join("\n");
 }
 
+const VOISINS_TITRE = "Voisins (lecture seule : ce ne sont PAS tes tâches)";
+const VOISINS_MAX = 600;
+
+// Verrous du sous-projet : `verrous:` est un chemin glob ($TEMP / %TEMP% developpes) ; le glob ne porte que sur le nom de fichier.
+function lignesVerrous(fm) {
+  if (!fm.verrous) return null;
+  try {
+    const tmp = process.env.TEMP || process.env.TMP || require("os").tmpdir();
+    const g = fm.verrous.replace(/\$TEMP\b|%TEMP%/gi, () => tmp).replace(/\\/g, "/");
+    const dir = g.includes("/") ? g.slice(0, g.lastIndexOf("/")) : ".";
+    const re = new RegExp("^" + g.slice(g.lastIndexOf("/") + 1).replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$", "i");
+    const noms = fs.readdirSync(dir).filter((n) => re.test(n)).sort();
+    if (!noms.length) return null;
+    return "- Verrous pris : " + noms.map((n) => {
+      const l = readText(p.join(dir, n)).split(/\r?\n/).find((x) => x.trim()) || "";
+      return n.replace(/^VERROU-/i, "").replace(/\.txt$/i, "") + " (" + cut(l, 50) + ")";
+    }).join(", ");
+  } catch (e) { return null; }
+}
+
+// Voisins : dossiers freres dont le CLAUDE.md a un frontmatter `projet:`. Rien du registre ni de l'historique du voisin.
+function sectionVoisins(cwd, sub) {
+  const lignes = [];
+  try {
+    const me = p.resolve(cwd), parent = p.dirname(me);
+    for (const n of fs.readdirSync(parent).sort()) {
+      const d = p.join(parent, n);
+      if (d === me) continue;
+      let ok = false; try { ok = fs.statSync(d).isDirectory(); } catch (e) {}
+      if (!ok) continue;
+      const fm = parseFrontmatter(p.join(d, "CLAUDE.md"));
+      if (!fm) continue;
+      const todo = todoOpenLines(d);
+      lignes.push("- " + fm.projet + " : " + (todo ? cut(todo[0].replace(/^\s*[-*]\s*\[ \]\s*/, ""), 110) : "rien en cours déclaré")
+        + " ; écrit : " + (fm.perimetre.length ? cut(fm.perimetre.join(", "), 90) : "périmètre non déclaré"));
+    }
+  } catch (e) {}
+  const verrous = lignesVerrous(sub.fm);
+  if (!lignes.length && !verrous) return null;
+  const budget = VOISINS_MAX - ("## " + VOISINS_TITRE + "\n").length;
+  const vl = verrous ? cut(verrous, budget - 1) : "";
+  const room = budget - (vl ? vl.length + 1 : 0);
+  let voisins = lignes.join("\n");
+  if (voisins.length > room) voisins = voisins.slice(0, Math.max(0, room - 1)).trimEnd() + "…";
+  return [voisins, vl].filter(Boolean).join("\n");
+}
+
 // Le .git doit etre dans le dossier meme : un dossier sans depot, sous un depot parent, ne doit pas
-// afficher les commits du parent comme les siens.
-function buildFacts(cwd, ignores) {
-  const hasGit = fs.existsSync(p.join(cwd, ".git"));
+// afficher les commits du parent comme les siens -- sauf en mode sous-projet (sub), ou le perimetre filtre.
+function buildFacts(cwd, ignores, sub) {
+  const hasGit = fs.existsSync(p.join(cwd, ".git")) || !!sub;
   const all = [
-    ["Derniers commits", hasGit ? sectionCommits(cwd) : null],
-    ["Fichiers non commités", hasGit ? sectionNonCommites(cwd, ignores) : null],
+    ["Derniers commits", hasGit ? sectionCommits(cwd, sub) : null],
+    ["Fichiers non commités", hasGit ? sectionNonCommites(cwd, ignores, sub) : null],
     ["En cours (TODO.md)", sectionTodo(cwd)],
-    ["Dernières décisions (REGISTRE-DECISIONS.md)", sectionRegistre(cwd)],
+    ["Dernières décisions (REGISTRE-DECISIONS.md)", sectionRegistre(cwd, sub && sub.fm.prefixe)],
   ];
+  if (sub) all.push([VOISINS_TITRE, sectionVoisins(cwd, sub)]);
   return all.filter((s) => s[1]);
 }
 
@@ -166,10 +274,14 @@ function notesOf(old) {
 // les faits n'ont pas change, donc pas de mtime qui bouge pour rien.
 function rebuildMemory(cwd, memFile, memName, archName) {
   const old = readText(memFile);
-  const facts = buildFacts(cwd, [memName, archName]);
+  const sub = subprojet(cwd);
+  const facts = buildFacts(cwd, [memName, archName], sub);
   if (!facts.length && !old) return; // rien a dire : pas de fichier
-  ensureExcluded(cwd, memName, archName);
-  const txt = [TITLE].concat(facts.map((s) => "## " + s[0] + "\n" + s[1])).join("\n\n")
+  ensureExcluded(cwd, memName, archName, sub);
+  const entete = sub
+    ? ["# État factuel bâti sans modèle — sous-projet " + sub.fm.projet + " ; les fichiers du projet font foi"].concat(sub.fm.but ? ["**Ton but** : " + sub.fm.but] : [])
+    : [TITLE];
+  const txt = entete.concat(facts.map((s) => "## " + s[0] + "\n" + s[1])).join("\n\n")
     + "\n\n" + NOTES_HEADING + "\n" + notesOf(old);
   if (txt === old) return;
   const tmp = memFile + ".tmp-" + process.pid;
@@ -251,7 +363,7 @@ function emitInject(event, memFile, opts) {
   try { raw = await readStdin(); } catch (e) {}
   let hook = {}; try { hook = JSON.parse(raw); } catch (e) {}
   const event = hook.hook_event_name || hook.hookEventName || "";
-  const cwd = hook.cwd || process.cwd();
+  const cwd = process.env.CLAUDE_PROJECT_DIR || hook.cwd || process.cwd(); // le cwd du payload suit le `cd` du shell
   const sessionId = String(hook.session_id || hook.sessionId || "");
 
   const conf = readJson(confPath(DIR), {});

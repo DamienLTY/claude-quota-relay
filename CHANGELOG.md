@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.23.0
+
+Le hook memoire sait travailler dans un sous-projet : un dossier `projets/<id>/` sans `.git` propre, sous un depot git, dont le `CLAUDE.md` commence par un frontmatter `projet:`. Hors de ce cas, rien ne change.
+
+- **Mode sous-projet.** Racine git = premier ancetre contenant `.git`. Les sections commits et fichiers non commites sont bornees au `perimetre:` du frontmatter (globs relatifs a la racine git, plus le dossier du sous-projet), via `git log -5 -- ` et `git status --porcelain -- ` lances depuis la racine. Un dossier sans frontmatter sous un depot parent ne montre toujours pas les commits du parent.
+- **Exclusion** : `**/.cqr-memory.md` et `**/.cqr-archive/` vont dans le `info/exclude` de la racine git (une seule fois), jamais dans un `.gitignore`.
+- **Registre** : `| <prefixe>-001` est reconnu en plus de `| DR-xxx` quand `prefixe:` est defini.
+- **Titre** `# État factuel bâti sans modèle — sous-projet <projet> ; …`, puis `**Ton but** : <but>` si `but:` est defini.
+- **Section « Voisins (lecture seule : ce ne sont PAS tes tâches) »**, derniere des faits, 600 caracteres au plus : par dossier frere ayant un frontmatter `projet:`, la 1re ligne ouverte de « En cours » de son `TODO.md` (ou « rien en cours déclaré ») et son `perimetre:` ; puis les fichiers correspondant au `verrous:` du sous-projet (`$TEMP` / `%TEMP%` developpes). Jamais le registre ni l'historique d'un voisin. Bâtie a SessionStart et PreCompact seulement, sans heure.
+- **Dossier de session** : `CLAUDE_PROJECT_DIR` (dossier de lancement) prime sur le `cwd` du payload, qui suit le `cd` du shell de la session ; le payload reste le repli.
+
 ## Non publie
 
 - **Modele gratuit par defaut : `nvidia/nemotron-3.5-super-vl:free` (DR-409).** Remplace `nemotron-3-ultra-550b-a55b:free` pour le compactage gratuit (`compaction.free.model`, defaut et `tokens.example.json`). Un `model` deja ecrit dans `tokens.json` n'est pas modifie.

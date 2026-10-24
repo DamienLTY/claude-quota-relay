@@ -28,7 +28,7 @@ function setup(compaction) {
 function run(INSTALL, PROJ, event, sid, env) {
   return cp.spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify({ hook_event_name: event, cwd: PROJ, session_id: sid || "sess-1" }),
-    env: Object.assign({}, process.env, { CQR_DIR: INSTALL }, env || {}),
+    env: Object.assign({}, process.env, { CLAUDE_PROJECT_DIR: undefined }, { CQR_DIR: INSTALL }, env || {}),
     encoding: "utf8",
   });
 }
@@ -359,5 +359,126 @@ const rows = (n, longue) => Array.from({ length: n }, (_, i) => "| DR-" + String
   assert.ok(fs.readFileSync(orrF(s)).equals(orrBytes), ".orr-memory.md : octets identiques apres SessionStart, UserPromptSubmit, PreCompact");
 }
 
+// --- 8. Mode sous-projet (0.23.0) : racine git + projets/A, B, C, chacun avec un CLAUDE.md a frontmatter ---
+{
+  const { T, INSTALL } = setup(enabled);
+  const ROOT = p.join(T, "depot"); fs.mkdirSync(ROOT);
+  const TMPV = p.join(T, "tmpv"); fs.mkdirSync(TMPV);
+  git(ROOT, "init", "-q");
+  const A = p.join(ROOT, "projets", "A"), B = p.join(ROOT, "projets", "B"), C = p.join(ROOT, "projets", "C");
+  for (const d of [A, B, C]) fs.mkdirSync(d, { recursive: true });
+  fs.mkdirSync(p.join(ROOT, "src"));
+  const fm = (nom, extra) => "---\nprojet: " + nom + "\n" + (extra || "") + "---\n\n# " + nom + "\n";
+  fs.writeFileSync(p.join(A, "CLAUDE.md"), fm("A", 'prefixe: A\nbut: "Faire le travail de A"\nperimetre:\n  - projets/A/**\n  - src/a_*.py\nverrous: $TEMP/VERROU-*.txt\n'));
+  fs.writeFileSync(p.join(B, "CLAUDE.md"), fm("B", "perimetre:\n  - projets/B/**\n  - src/b_*.py\n"));
+  fs.writeFileSync(p.join(C, "CLAUDE.md"), fm("C", "perimetre:\n  - projets/C/**\n"));
+  fs.writeFileSync(p.join(B, "TODO.md"), "# TODO\n\n## En cours\n- [ ] " + "travail du voisin B ".repeat(10) + "\n");
+  fs.writeFileSync(p.join(C, "TODO.md"), "# TODO\n\n## Plus tard\n- rien\n");
+  fs.writeFileSync(p.join(B, "REGISTRE-DECISIONS.md"), "| DR-901 | t | decision secrete de B | r |\n| B-001 | t | autre decision de B | r |\n");
+  fs.writeFileSync(p.join(A, "REGISTRE-DECISIONS.md"), "| DR-001 | t | Question DR | r |\n| A-001 | t | Question prefixee A | r |\n| B-001 | t | pas a moi | r |\n");
+  fs.writeFileSync(p.join(A, "TODO.md"), "# TODO\n\n## En cours\n- [ ] ma tache A\n");
+  fs.writeFileSync(p.join(A, "a.txt"), "a1"); fs.writeFileSync(p.join(B, "b.txt"), "b1"); fs.writeFileSync(p.join(ROOT, "src", "x.py"), "x");
+  git(ROOT, "add", "-A"); git(ROOT, "commit", "-qm", "commit initial qui touche A");
+  fs.writeFileSync(p.join(B, "b.txt"), "b2"); git(ROOT, "commit", "-qam", "commit seulement B");
+  fs.writeFileSync(p.join(A, "a.txt"), "a2"); git(ROOT, "commit", "-qam", "commit A deux");
+  fs.writeFileSync(p.join(B, "b.txt"), "b3"); // modification non commitee de B
+  fs.writeFileSync(p.join(A, "nouveau-a.txt"), "n");
+  fs.writeFileSync(p.join(TMPV, "VERROU-banc-modele.txt"), "pris par B pour le banc\nligne 2");
+  const env = { TEMP: TMPV, TMP: TMPV };
+  const memA = p.join(A, ".cqr-memory.md");
+
+  run(INSTALL, A, "SessionStart", "sess-sp", env);
+  const m = lu(memA);
+
+  // (a) commits filtres au perimetre
+  const commits = section(m, "Derniers commits");
+  assert.ok(commits, "sous-projet : section commits presente (racine git au-dessus)");
+  assert.ok(commits.includes("commit A deux") && commits.includes("commit initial"), "commits qui touchent A : " + commits);
+  assert.ok(!commits.includes("seulement B"), "un commit qui ne touche que B n'apparait pas : " + commits);
+  const nc = section(m, "Fichiers non commités");
+  assert.ok(nc.includes("nouveau-a.txt") && !nc.includes("b.txt"), "non commites : ceux de A, pas ceux de B : " + nc);
+
+  // (b) l'exclusion est dans le info/exclude de la racine
+  const st = git(ROOT, "status", "--porcelain");
+  assert.ok(!st.includes(".cqr-memory.md") && !st.includes(".cqr-archive"), "git status de la racine ne liste pas la memoire de A : " + st);
+  const exc = lu(p.join(ROOT, ".git", "info", "exclude"));
+  assert.ok(exc.includes("**/.cqr-memory.md") && exc.includes("**/.cqr-archive/"), "motifs **/ dans info/exclude");
+  run(INSTALL, A, "PreCompact", "sess-sp", env);
+  assert.strictEqual(lu(p.join(ROOT, ".git", "info", "exclude")).split("**/.cqr-memory.md").length, 2, "exclusion ecrite une seule fois");
+  assert.ok(!fs.existsSync(p.join(ROOT, ".gitignore")), "aucun .gitignore cree");
+
+  // titre + but
+  assert.ok(m.startsWith("# État factuel bâti sans modèle — sous-projet A ; les fichiers du projet font foi\n\n**Ton but** : Faire le travail de A\n"), "titre + but : " + m.slice(0, 200));
+
+  // (c) prefixe
+  const reg = section(m, "Dernières décisions");
+  assert.ok(reg.includes("A-001") && reg.includes("DR-001") && !reg.includes("B-001"), "registre : DR- et prefixe A- reconnus, pas B- : " + reg);
+
+  // (d) voisins
+  const vois = section(m, "Voisins");
+  assert.ok(vois, "section Voisins");
+  assert.ok(/^- B : travail du voisin B/m.test(vois) && /^- C : /m.test(vois) && !/^- A : /m.test(vois), "B et C, pas A : " + vois);
+  assert.ok(vois.includes("projets/B/**, src/b_*.py"), "perimetre du voisin : " + vois);
+  assert.ok(!vois.includes("DR-901") && !vois.includes("secrete"), "rien du registre du voisin");
+  const sectionTxt = m.slice(m.indexOf("## Voisins"), m.indexOf("## Notes")).trimEnd();
+  assert.ok(sectionTxt.length <= 600, "Voisins <= 600 caracteres : " + sectionTxt.length);
+  assert.ok(m.indexOf("## Voisins") > m.indexOf("## Dernières décisions") && m.indexOf("## Voisins") < m.indexOf("## Notes"), "Voisins en dernier des faits, avant Notes");
+
+  // (e) voisin sans « En cours »
+  assert.ok(/^- C : rien en cours déclaré ; écrit : projets\/C\/\*\*/m.test(vois), "voisin sans En cours : " + vois);
+
+  // (f) verrou
+  assert.ok(/^- Verrous pris : banc-modele \(pris par B pour le banc\)/m.test(vois), "verrou liste : " + vois);
+
+  // memoire de B : ses voisins sont A et C
+  run(INSTALL, B, "SessionStart", "sess-b", env);
+  assert.ok(!/^- B : /m.test(section(lu(p.join(B, ".cqr-memory.md")), "Voisins") || ""), "B ne se liste pas lui-meme");
+
+  // (h) contre-epreuve : meme hook avec le mode sous-projet neutralise -> la section commits disparait (l'assertion (a) echoue)
+  const NEUTRE = p.join(T, "hook-neutre.js");
+  const src = fs.readFileSync(HOOK, "utf8");
+  assert.ok(src.includes("function subprojet(cwd) {"), "point d'ancrage de la contre-epreuve");
+  fs.writeFileSync(NEUTRE, src.replace("function subprojet(cwd) {", "function subprojet(cwd) { return null;"));
+  fs.unlinkSync(memA);
+  cp.spawnSync(process.execPath, [NEUTRE], {
+    input: JSON.stringify({ hook_event_name: "SessionStart", cwd: A, session_id: "sess-neutre" }),
+    env: Object.assign({}, process.env, { CLAUDE_PROJECT_DIR: undefined }, { CQR_DIR: INSTALL }, env), encoding: "utf8",
+  });
+  const mn = lu(memA);
+  assert.throws(() => assert.ok(section(mn, "Derniers commits") && !section(mn, "Derniers commits").includes("seulement B")), "contre-epreuve : sans mode sous-projet, (a) echoue");
+  assert.ok(!section(mn, "Voisins") && !mn.includes("sous-projet A"), "contre-epreuve : plus de Voisins ni de titre sous-projet");
+  fs.unlinkSync(memA); fs.rmSync(p.join(A, ".cqr-archive"), { recursive: true, force: true });
+  run(INSTALL, A, "SessionStart", "sess-sp2", env);
+  assert.ok(section(lu(memA), "Derniers commits"), "mode restaure : la section revient");
+  fs.writeFileSync(p.join(T, "A-exemple.md"), lu(memA)); // pour le rapport
+
+  // (g) non-regression : dossier SANS frontmatter sous un depot parent -> pas de commits du parent
+  const D = p.join(ROOT, "projets", "D"); fs.mkdirSync(D);
+  fs.writeFileSync(p.join(D, "CLAUDE.md"), "# D sans frontmatter\n");
+  fs.writeFileSync(p.join(D, "TODO.md"), TODO);
+  run(INSTALL, D, "SessionStart", "sess-d", env);
+  const md = lu(p.join(D, ".cqr-memory.md"));
+  assert.ok(md.startsWith(TITLE + "\n"), "sans frontmatter : titre ordinaire");
+  assert.ok(!section(md, "Derniers commits") && !section(md, "Fichiers non commités") && !section(md, "Voisins"), "sans frontmatter : ni commits, ni non commites, ni voisins");
+  assert.ok(section(md, "En cours"), "sans frontmatter : la TODO reste lue");
+  // frontmatter sans `projet` : pas un sous-projet
+  fs.writeFileSync(p.join(D, "CLAUDE.md"), "---\nbut: x\n---\n");
+  fs.unlinkSync(p.join(D, ".cqr-memory.md"));
+  run(INSTALL, D, "SessionStart", "sess-d2", env);
+  assert.ok(!section(lu(p.join(D, ".cqr-memory.md")), "Derniers commits"), "frontmatter sans projet : pas de mode sous-projet");
+  if (process.env.CQR_DUMP_EXEMPLE) console.log(lu(p.join(T, "A-exemple.md")));
+}
+
+// --- CLAUDE_PROJECT_DIR : dossier de lancement ; le cwd du payload suit le `cd` du shell ---
+{
+  const { INSTALL, PROJ } = setup(enabled);
+  const sous = p.join(PROJ, "sous"); fs.mkdirSync(sous);
+  fs.writeFileSync(p.join(PROJ, "TODO.md"), TODO); fs.writeFileSync(p.join(sous, "TODO.md"), TODO);
+  run(INSTALL, sous, "SessionStart", "sess-env", { CLAUDE_PROJECT_DIR: PROJ });
+  assert.ok(fs.existsSync(p.join(PROJ, ".cqr-memory.md")) && !fs.existsSync(p.join(sous, ".cqr-memory.md")), "CLAUDE_PROJECT_DIR : memoire dans le dossier de session, pas dans le cwd du payload");
+  run(INSTALL, sous, "SessionStart", "sess-env2", {});
+  assert.ok(fs.existsSync(p.join(sous, ".cqr-memory.md")), "sans CLAUDE_PROJECT_DIR : repli sur le cwd du payload");
+}
+
 for (const T of roots) { try { fs.rmSync(T, { recursive: true, force: true }); } catch (e) {} }
-console.log("PASS — memory-hook.js (0.21.0, sans modele) : faits git/TODO/registre rebatis a SessionStart et PreCompact, Notes recopiees a l'identique (premier passage = ancien contenu), UserPromptSubmit ne reecrit rien, dossier sans git / sous-dossier / worktree / .git casse, exclusion par info/exclude (chemin resolu par git : worktree compris) sans toucher .gitignore, plafonds, dedup + reinjection apres compaction, SessionStart note l'injection, .orr-memory.md injecte en lecture seule");
+console.log("PASS — memory-hook.js (0.21.0, sans modele) : faits git/TODO/registre rebatis a SessionStart et PreCompact, Notes recopiees a l'identique (premier passage = ancien contenu), UserPromptSubmit ne reecrit rien, dossier sans git / sous-dossier / worktree / .git casse, exclusion par info/exclude (chemin resolu par git : worktree compris) sans toucher .gitignore, plafonds, dedup + reinjection apres compaction, SessionStart note l'injection, .orr-memory.md injecte en lecture seule, mode sous-projet (frontmatter projet:, commits/non commites filtres au perimetre, exclusion dans le info/exclude de la racine, prefixe de registre, section Voisins, verrous, contre-epreuve)");
