@@ -359,114 +359,124 @@ const rows = (n, longue) => Array.from({ length: n }, (_, i) => "| DR-" + String
   assert.ok(fs.readFileSync(orrF(s)).equals(orrBytes), ".orr-memory.md : octets identiques apres SessionStart, UserPromptSubmit, PreCompact");
 }
 
-// --- 8. Mode sous-projet (0.23.0) : racine git + projets/A, B, C, chacun avec un CLAUDE.md a frontmatter ---
+// --- 8. Mode sous-projet (0.24.0) : lancement a la RACINE, sous-projet tire de la liaison de la session ---
 {
   const { T, INSTALL } = setup(enabled);
   const ROOT = p.join(T, "depot"); fs.mkdirSync(ROOT);
-  const TMPV = p.join(T, "tmpv"); fs.mkdirSync(TMPV);
   git(ROOT, "init", "-q");
-  const A = p.join(ROOT, "projets", "A"), B = p.join(ROOT, "projets", "B"), C = p.join(ROOT, "projets", "C");
-  for (const d of [A, B, C]) fs.mkdirSync(d, { recursive: true });
-  fs.mkdirSync(p.join(ROOT, "src"));
+  const PROJETS = p.join(ROOT, "0. MEMORY", "projets");
+  const A = p.join(PROJETS, "A"), B = p.join(PROJETS, "B");
+  const SRC = p.join(ROOT, "src");
+  for (const d of [A, B, SRC]) fs.mkdirSync(d, { recursive: true });
   const fm = (nom, extra) => "---\nprojet: " + nom + "\n" + (extra || "") + "---\n\n# " + nom + "\n";
-  fs.writeFileSync(p.join(A, "CLAUDE.md"), fm("A", 'prefixe: A\nbut: "Faire le travail de A"\nperimetre:\n  - projets/A/**\n  - src/a_*.py\nverrous: $TEMP/VERROU-*.txt\n'));
-  fs.writeFileSync(p.join(B, "CLAUDE.md"), fm("B", "perimetre:\n  - projets/B/**\n  - src/b_*.py\n"));
-  fs.writeFileSync(p.join(C, "CLAUDE.md"), fm("C", "perimetre:\n  - projets/C/**\n"));
-  fs.writeFileSync(p.join(B, "TODO.md"), "# TODO\n\n## En cours\n- [ ] " + "travail du voisin B ".repeat(10) + "\n");
-  fs.writeFileSync(p.join(C, "TODO.md"), "# TODO\n\n## Plus tard\n- rien\n");
-  fs.writeFileSync(p.join(B, "REGISTRE-DECISIONS.md"), "| DR-901 | t | decision secrete de B | r |\n| B-001 | t | autre decision de B | r |\n");
-  fs.writeFileSync(p.join(A, "REGISTRE-DECISIONS.md"), "| DR-001 | t | Question DR | r |\n| A-001 | t | Question prefixee A | r |\n| B-001 | t | pas a moi | r |\n");
+  fs.writeFileSync(p.join(A, "PROJET.md"), fm("A", 'prefixe: A\nbut: "Faire le travail de A"\ndescriptif: "A court"\nperimetre:\n  - 1. PROJET/a/**\n  - src/a_*.py\n'));
+  fs.writeFileSync(p.join(B, "PROJET.md"), fm("B", "perimetre:\n  - 1. PROJET/b/**\n"));
   fs.writeFileSync(p.join(A, "TODO.md"), "# TODO\n\n## En cours\n- [ ] ma tache A\n");
-  fs.writeFileSync(p.join(A, "a.txt"), "a1"); fs.writeFileSync(p.join(B, "b.txt"), "b1"); fs.writeFileSync(p.join(ROOT, "src", "x.py"), "x");
+  fs.writeFileSync(p.join(B, "TODO.md"), "# TODO\n\n## En cours\n- [ ] tache secrete de B\n");
+  fs.writeFileSync(p.join(A, "REGISTRE-DECISIONS.md"), "| DR-001 | t | Question DR | r |\n| A-001 | t | Question prefixee A | r |\n| B-001 | t | pas a moi | r |\n");
+  fs.writeFileSync(p.join(ROOT, "TODO.md"), "# TODO\n\n## En cours\n- [ ] tache de la RACINE\n");
+  fs.mkdirSync(p.join(ROOT, "1. PROJET", "a"), { recursive: true }); fs.mkdirSync(p.join(ROOT, "1. PROJET", "b"), { recursive: true });
+  fs.writeFileSync(p.join(ROOT, "1. PROJET", "a", "a.txt"), "a1"); fs.writeFileSync(p.join(ROOT, "1. PROJET", "b", "b.txt"), "b1"); fs.writeFileSync(p.join(SRC, "x.py"), "x");
   git(ROOT, "add", "-A"); git(ROOT, "commit", "-qm", "commit initial qui touche A");
-  fs.writeFileSync(p.join(B, "b.txt"), "b2"); git(ROOT, "commit", "-qam", "commit seulement B");
-  fs.writeFileSync(p.join(A, "a.txt"), "a2"); git(ROOT, "commit", "-qam", "commit A deux");
-  fs.writeFileSync(p.join(B, "b.txt"), "b3"); // modification non commitee de B
-  fs.writeFileSync(p.join(A, "nouveau-a.txt"), "n");
-  fs.writeFileSync(p.join(TMPV, "VERROU-banc-modele.txt"), "pris par B pour le banc\nligne 2");
-  const env = { TEMP: TMPV, TMP: TMPV };
-  const memA = p.join(A, ".cqr-memory.md");
+  fs.writeFileSync(p.join(ROOT, "1. PROJET", "b", "b.txt"), "b2"); git(ROOT, "commit", "-qam", "commit seulement B");
+  fs.writeFileSync(p.join(ROOT, "1. PROJET", "a", "a.txt"), "a2"); git(ROOT, "commit", "-qam", "commit A deux");
+  fs.writeFileSync(p.join(ROOT, "1. PROJET", "b", "b.txt"), "b3"); // modification non commitee de B
+  fs.writeFileSync(p.join(ROOT, "1. PROJET", "a", "nouveau-a.txt"), "n");
+  const lier = (sid, projet) => {
+    const d = p.join(PROJETS, ".sessions"); fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(p.join(d, sid + ".json"), JSON.stringify({ projet, mode: projet ? "sous-projet" : "racine", le: "2026-10-25T00:00:00Z", vu: "" }));
+  };
+  const memA = p.join(A, "memoire", ".cqr-memory.md"), memRacine = p.join(ROOT, ".cqr-memory.md");
 
-  run(INSTALL, A, "SessionStart", "sess-sp", env);
+  // (0) session NON liee : memoire racine, TODO racine, rien ecrit dans le sous-projet
+  run(INSTALL, ROOT, "SessionStart", "sess-libre-1");
+  const mr = lu(memRacine);
+  assert.ok(mr.startsWith(TITLE + "\n"), "non liee : titre ordinaire");
+  assert.ok(section(mr, "En cours").includes("tache de la RACINE"), "non liee : TODO de la racine");
+  assert.ok(!fs.existsSync(memA), "non liee : rien ecrit dans le sous-projet");
+
+  // (a) session liee : memoire sous 0. MEMORY/projets/A/memoire, commits filtres au perimetre
+  lier("sess-sp-1", "A");
+  run(INSTALL, ROOT, "SessionStart", "sess-sp-1");
   const m = lu(memA);
-
-  // (a) commits filtres au perimetre
+  assert.ok(m, "memoire ecrite sous projets/A/memoire/.cqr-memory.md");
   const commits = section(m, "Derniers commits");
-  assert.ok(commits, "sous-projet : section commits presente (racine git au-dessus)");
+  assert.ok(commits, "section commits presente");
   assert.ok(commits.includes("commit A deux") && commits.includes("commit initial"), "commits qui touchent A : " + commits);
   assert.ok(!commits.includes("seulement B"), "un commit qui ne touche que B n'apparait pas : " + commits);
   const nc = section(m, "Fichiers non commités");
   assert.ok(nc.includes("nouveau-a.txt") && !nc.includes("b.txt"), "non commites : ceux de A, pas ceux de B : " + nc);
+  assert.strictEqual(lu(memRacine), mr, "la memoire racine n'a pas bouge");
 
-  // (b) l'exclusion est dans le info/exclude de la racine
-  const st = git(ROOT, "status", "--porcelain");
-  assert.ok(!st.includes(".cqr-memory.md") && !st.includes(".cqr-archive"), "git status de la racine ne liste pas la memoire de A : " + st);
-  const exc = lu(p.join(ROOT, ".git", "info", "exclude"));
-  assert.ok(exc.includes("**/.cqr-memory.md") && exc.includes("**/.cqr-archive/"), "motifs **/ dans info/exclude");
-  run(INSTALL, A, "PreCompact", "sess-sp", env);
-  assert.strictEqual(lu(p.join(ROOT, ".git", "info", "exclude")).split("**/.cqr-memory.md").length, 2, "exclusion ecrite une seule fois");
-  assert.ok(!fs.existsSync(p.join(ROOT, ".gitignore")), "aucun .gitignore cree");
-
-  // titre + but
-  assert.ok(m.startsWith("# État factuel bâti sans modèle — sous-projet A ; les fichiers du projet font foi\n\n**Ton but** : Faire le travail de A\n"), "titre + but : " + m.slice(0, 200));
-
-  // (c) prefixe
+  // TODO, registre, titre du sous-projet
+  assert.ok(section(m, "En cours").includes("ma tache A") && !m.includes("RACINE") && !m.includes("secrete"), "TODO du sous-projet seulement");
   const reg = section(m, "Dernières décisions");
   assert.ok(reg.includes("A-001") && reg.includes("DR-001") && !reg.includes("B-001"), "registre : DR- et prefixe A- reconnus, pas B- : " + reg);
+  assert.ok(m.startsWith("# État factuel bâti sans modèle — sous-projet A ; les fichiers du projet font foi\n\n**Ton but** : Faire le travail de A\n"), "titre + but : " + m.slice(0, 200));
 
-  // (d) voisins
-  const vois = section(m, "Voisins");
-  assert.ok(vois, "section Voisins");
-  assert.ok(/^- B : travail du voisin B/m.test(vois) && /^- C : /m.test(vois) && !/^- A : /m.test(vois), "B et C, pas A : " + vois);
-  assert.ok(vois.includes("projets/B/**, src/b_*.py"), "perimetre du voisin : " + vois);
-  assert.ok(!vois.includes("DR-901") && !vois.includes("secrete"), "rien du registre du voisin");
-  const sectionTxt = m.slice(m.indexOf("## Voisins"), m.indexOf("## Notes")).trimEnd();
-  assert.ok(sectionTxt.length <= 600, "Voisins <= 600 caracteres : " + sectionTxt.length);
-  assert.ok(m.indexOf("## Voisins") > m.indexOf("## Dernières décisions") && m.indexOf("## Voisins") < m.indexOf("## Notes"), "Voisins en dernier des faits, avant Notes");
+  // plus de section Voisins
+  assert.ok(!/Voisins/.test(m), "plus de section Voisins dans la memoire");
 
-  // (e) voisin sans « En cours »
-  assert.ok(/^- C : rien en cours déclaré ; écrit : projets\/C\/\*\*/m.test(vois), "voisin sans En cours : " + vois);
+  // exclusion dans le info/exclude de la racine
+  const st = git(ROOT, "status", "--porcelain");
+  assert.ok(!st.includes(".cqr-memory.md") && !st.includes(".cqr-archive"), "git status de la racine ne liste pas la memoire de A : " + st);
+  run(INSTALL, ROOT, "PreCompact", "sess-sp-1");
+  assert.strictEqual(lu(p.join(ROOT, ".git", "info", "exclude")).split("**/.cqr-memory.md").length, 2, "exclusion ecrite une seule fois");
+  assert.ok(!fs.existsSync(p.join(ROOT, ".gitignore")), "aucun .gitignore cree");
+  assert.ok(fs.existsSync(p.join(A, "memoire", ".cqr-archive", ".injected.json")), "dedup/archive sous memoire/");
 
-  // (f) verrou
-  assert.ok(/^- Verrous pris : banc-modele \(pris par B pour le banc\)/m.test(vois), "verrou liste : " + vois);
+  // .orr-memory.md lu au meme endroit
+  fs.writeFileSync(p.join(A, "memoire", ".orr-memory.md"), "note FCC du sous-projet A");
+  fs.writeFileSync(p.join(ROOT, ".orr-memory.md"), "note FCC de la racine");
+  const iA = injected(run(INSTALL, ROOT, "SessionStart", "sess-sp-1"));
+  assert.ok(iA.includes("note FCC du sous-projet A") && !iA.includes("note FCC de la racine"), ".orr-memory.md du sous-projet, pas celui de la racine");
+  assert.ok(!/Voisins/.test(iA), "plus de Voisins dans l'injection");
 
-  // memoire de B : ses voisins sont A et C
-  run(INSTALL, B, "SessionStart", "sess-b", env);
-  assert.ok(!/^- B : /m.test(section(lu(p.join(B, ".cqr-memory.md")), "Voisins") || ""), "B ne se liste pas lui-meme");
+  // (b) liaison creee en cours de session : le UserPromptSubmit suivant rebatit et injecte la memoire du sous-projet
+  run(INSTALL, ROOT, "SessionStart", "sess-tard-1");
+  lier("sess-tard-1", "B");
+  assert.ok(!fs.existsSync(p.join(B, "memoire", ".cqr-memory.md")), "avant le tour : memoire de B pas encore batie");
+  const rB = injected(run(INSTALL, ROOT, "UserPromptSubmit", "sess-tard-1"));
+  assert.ok(fs.existsSync(p.join(B, "memoire", ".cqr-memory.md")), "UserPromptSubmit : memoire de B rebatie apres la liaison");
+  assert.ok(rB.includes("sous-projet B") && rB.includes("tache secrete de B") && !rB.includes("RACINE"), "injection du sous-projet B : " + rB.slice(0, 300));
+  assert.strictEqual(injected(run(INSTALL, ROOT, "UserPromptSubmit", "sess-tard-1")), "", "tour suivant : dedup, rien de plus");
+  lier("sess-tard-1", "A"); // la liaison change (B -> A)
+  assert.ok(injected(run(INSTALL, ROOT, "UserPromptSubmit", "sess-tard-1")).includes("sous-projet A"), "liaison changee : memoire de A injectee");
 
-  // (h) contre-epreuve : meme hook avec le mode sous-projet neutralise -> la section commits disparait (l'assertion (a) echoue)
+  // (c) sous-projet disparu, id hostile, fichier illisible, session_id invalide : mode racine, exit 0
+  lier("sess-perdu-1", "Z");
+  run(INSTALL, ROOT, "SessionStart", "sess-perdu-1");
+  assert.ok(!fs.existsSync(p.join(PROJETS, "Z")), "sous-projet disparu : rien recree");
+  lier("sess-evil-01", "../../x");
+  run(INSTALL, ROOT, "SessionStart", "sess-evil-01");
+  assert.ok(!fs.existsSync(p.join(ROOT, "0. MEMORY", "x")) && !fs.existsSync(p.join(ROOT, "x")), "id hostile refuse");
+  fs.writeFileSync(p.join(PROJETS, ".sessions", "sess-casse-1.json"), "{pas du json");
+  assert.strictEqual(run(INSTALL, ROOT, "SessionStart", "sess-casse-1").status, 0, "liaison illisible : exit 0");
+  assert.strictEqual(run(INSTALL, ROOT, "SessionStart", "../ab").status, 0, "session_id invalide : exit 0, mode racine");
+  assert.ok(!/sous-projet/.test(lu(memRacine).split("\n")[0]), "modes racine : la memoire racine n'a pas de titre sous-projet");
+
+  // (d) PROJET.md sans frontmatter : lie mais sans perimetre -> ni commits ni non commites ; la TODO du sous-projet reste lue
+  const C = p.join(PROJETS, "C"); fs.mkdirSync(C);
+  fs.writeFileSync(p.join(C, "PROJET.md"), "# C sans frontmatter\n"); fs.writeFileSync(p.join(C, "TODO.md"), TODO);
+  lier("sess-c-0001", "C");
+  run(INSTALL, ROOT, "SessionStart", "sess-c-0001");
+  const mc = lu(p.join(C, "memoire", ".cqr-memory.md"));
+  assert.ok(!section(mc, "Derniers commits") && !section(mc, "Fichiers non commités") && section(mc, "En cours"), "sans perimetre : pas de git, TODO lue");
+
+  // (e) contre-epreuve : sans lecture de la liaison, (a) echoue
   const NEUTRE = p.join(T, "hook-neutre.js");
   const src = fs.readFileSync(HOOK, "utf8");
-  assert.ok(src.includes("function subprojet(cwd) {"), "point d'ancrage de la contre-epreuve");
-  fs.writeFileSync(NEUTRE, src.replace("function subprojet(cwd) {", "function subprojet(cwd) { return null;"));
+  assert.ok(src.includes("function subprojet(cwd, sid) {"), "point d'ancrage de la contre-epreuve");
+  fs.writeFileSync(NEUTRE, src.replace("function subprojet(cwd, sid) {", "function subprojet(cwd, sid) { return null;"));
   fs.unlinkSync(memA);
   cp.spawnSync(process.execPath, [NEUTRE], {
-    input: JSON.stringify({ hook_event_name: "SessionStart", cwd: A, session_id: "sess-neutre" }),
-    env: Object.assign({}, process.env, { CLAUDE_PROJECT_DIR: undefined }, { CQR_DIR: INSTALL }, env), encoding: "utf8",
+    input: JSON.stringify({ hook_event_name: "SessionStart", cwd: ROOT, session_id: "sess-sp-1" }),
+    env: Object.assign({}, process.env, { CLAUDE_PROJECT_DIR: undefined }, { CQR_DIR: INSTALL }), encoding: "utf8",
   });
-  const mn = lu(memA);
-  assert.throws(() => assert.ok(section(mn, "Derniers commits") && !section(mn, "Derniers commits").includes("seulement B")), "contre-epreuve : sans mode sous-projet, (a) echoue");
-  assert.ok(!section(mn, "Voisins") && !mn.includes("sous-projet A"), "contre-epreuve : plus de Voisins ni de titre sous-projet");
-  fs.unlinkSync(memA); fs.rmSync(p.join(A, ".cqr-archive"), { recursive: true, force: true });
-  run(INSTALL, A, "SessionStart", "sess-sp2", env);
-  assert.ok(section(lu(memA), "Derniers commits"), "mode restaure : la section revient");
-  fs.writeFileSync(p.join(T, "A-exemple.md"), lu(memA)); // pour le rapport
-
-  // (g) non-regression : dossier SANS frontmatter sous un depot parent -> pas de commits du parent
-  const D = p.join(ROOT, "projets", "D"); fs.mkdirSync(D);
-  fs.writeFileSync(p.join(D, "CLAUDE.md"), "# D sans frontmatter\n");
-  fs.writeFileSync(p.join(D, "TODO.md"), TODO);
-  run(INSTALL, D, "SessionStart", "sess-d", env);
-  const md = lu(p.join(D, ".cqr-memory.md"));
-  assert.ok(md.startsWith(TITLE + "\n"), "sans frontmatter : titre ordinaire");
-  assert.ok(!section(md, "Derniers commits") && !section(md, "Fichiers non commités") && !section(md, "Voisins"), "sans frontmatter : ni commits, ni non commites, ni voisins");
-  assert.ok(section(md, "En cours"), "sans frontmatter : la TODO reste lue");
-  // frontmatter sans `projet` : pas un sous-projet
-  fs.writeFileSync(p.join(D, "CLAUDE.md"), "---\nbut: x\n---\n");
-  fs.unlinkSync(p.join(D, ".cqr-memory.md"));
-  run(INSTALL, D, "SessionStart", "sess-d2", env);
-  assert.ok(!section(lu(p.join(D, ".cqr-memory.md")), "Derniers commits"), "frontmatter sans projet : pas de mode sous-projet");
-  if (process.env.CQR_DUMP_EXEMPLE) console.log(lu(p.join(T, "A-exemple.md")));
+  assert.ok(!fs.existsSync(memA), "contre-epreuve : sans mode sous-projet, la memoire de A n'est pas ecrite");
+  run(INSTALL, ROOT, "SessionStart", "sess-sp-1");
+  assert.ok(section(lu(memA), "Derniers commits"), "mode restaure : la memoire de A revient");
+  if (process.env.CQR_DUMP_EXEMPLE) console.log(lu(memA));
 }
 
 // --- CLAUDE_PROJECT_DIR : dossier de lancement ; le cwd du payload suit le `cd` du shell ---
@@ -481,4 +491,4 @@ const rows = (n, longue) => Array.from({ length: n }, (_, i) => "| DR-" + String
 }
 
 for (const T of roots) { try { fs.rmSync(T, { recursive: true, force: true }); } catch (e) {} }
-console.log("PASS — memory-hook.js (0.21.0, sans modele) : faits git/TODO/registre rebatis a SessionStart et PreCompact, Notes recopiees a l'identique (premier passage = ancien contenu), UserPromptSubmit ne reecrit rien, dossier sans git / sous-dossier / worktree / .git casse, exclusion par info/exclude (chemin resolu par git : worktree compris) sans toucher .gitignore, plafonds, dedup + reinjection apres compaction, SessionStart note l'injection, .orr-memory.md injecte en lecture seule, mode sous-projet (frontmatter projet:, commits/non commites filtres au perimetre, exclusion dans le info/exclude de la racine, prefixe de registre, section Voisins, verrous, contre-epreuve)");
+console.log("PASS — memory-hook.js (0.21.0, sans modele) : faits git/TODO/registre rebatis a SessionStart et PreCompact, Notes recopiees a l'identique (premier passage = ancien contenu), UserPromptSubmit ne reecrit rien, dossier sans git / sous-dossier / worktree / .git casse, exclusion par info/exclude (chemin resolu par git : worktree compris) sans toucher .gitignore, plafonds, dedup + reinjection apres compaction, SessionStart note l'injection, .orr-memory.md injecte en lecture seule, mode sous-projet 0.24.0 (liaison de session, memoire sous 0. MEMORY/projets/<id>/memoire, commits/non commites filtres au perimetre, TODO et registre du sous-projet, rebatissage au UserPromptSubmit apres liaison, plus de Voisins, contre-epreuve)");

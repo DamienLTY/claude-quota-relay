@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.24.0
+
+Le sous-projet vient de la LIAISON de la session (projet racine, DR-379 a DR-381) au lieu du `CLAUDE.md` a frontmatter du cwd : la session est lancee a la racine. Session non liee : comportement racine inchange.
+
+- **Liaison** : `<racine>/0. MEMORY/projets/.sessions/<session_id>.json` (`projet`, `mode`, `le`, `vu`), racine = `CLAUDE_PROJECT_DIR` puis `cwd` du payload, `session_id` valide `^[0-9A-Za-z_-]{8,64}$`. Fichier absent, illisible, id hostile ou dossier `0. MEMORY/projets/<id>/` disparu : mode racine. Lecture recopiee dans le hook (il ne charge pas jalon), avec renvoi au contrat du skill jalon `projet`.
+- **Memoire du sous-projet** dans `0. MEMORY/projets/<id>/memoire/.cqr-memory.md` (+ `.cqr-archive/`, `.injected.json`) ; `.orr-memory.md` lu au meme endroit. But, perimetre et prefixe viennent de `0. MEMORY/projets/<id>/PROJET.md` (memes cles que l'ancien frontmatter, plus `descriptif`). Commits et fichiers non commites filtres au perimetre (logique 0.23.0) ; sans perimetre declare, ces deux sections sont omises. TODO et registre lus dans le dossier du sous-projet.
+- **UserPromptSubmit** rebatit la memoire quand la session n'a encore rien recu de ce sous-projet (liaison apparue ou changee en cours de session), puis l'injecte.
+- **Retire** : la section « Voisins » (elle est dans le hook jalon `projet-session.js`, un seul endroit pour les deux profils), les verrous qui y figuraient, et la detection par `CLAUDE.md` a frontmatter du cwd.
+
 ## 0.23.0
 
 Le hook memoire sait travailler dans un sous-projet : un dossier `projets/<id>/` sans `.git` propre, sous un depot git, dont le `CLAUDE.md` commence par un frontmatter `projet:`. Hors de ce cas, rien ne change.

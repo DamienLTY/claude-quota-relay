@@ -17,9 +17,11 @@
  *     session had been injected, so the next prompt injects it again.
  *   - UserPromptSubmit : inject only (de-duplicated per session, see emitInject). Never rebuilds.
  *
- * Sous-projet (0.23.0) : une session lancee dans `projets/<id>/` (dossier sans .git propre, racine git au-dessus,
- * CLAUDE.md a frontmatter `projet:`) voit les commits / fichiers non commites de SON perimetre seulement, exclut
- * ses fichiers via le info/exclude de la racine, et recoit une section « Voisins » (lecture seule).
+ * Sous-projet (0.24.0) : la session est lancee a la RACINE ; le sous-projet vient de la LIAISON de la session
+ * (voir subprojet), plus d'un CLAUDE.md a frontmatter dans le cwd. Une session liee voit les commits / fichiers non
+ * commites de SON perimetre seulement (PROJET.md du sous-projet), lit la TODO et le registre du sous-projet, ecrit sa
+ * memoire dans `0. MEMORY/projets/<id>/memoire/.cqr-memory.md` et exclut ses fichiers via le info/exclude de la racine.
+ * Session non liee = comportement racine inchange. La section « Voisins » n'est plus ici : elle est dans le hook jalon.
  *
  * Safety: git calls are bounded by a timeout (failure = the section is omitted); the project's
  * .gitignore is never touched (the files go to .git/info/exclude instead). Always exits 0.
@@ -110,11 +112,11 @@ function findGitRoot(dir) {
   }
 }
 
-// Frontmatter d'un CLAUDE.md : 1re ligne exactement `---`, fin au `---` suivant. `projet` obligatoire, sinon null.
-// Cles : projet, prefixe, but, verrous (une ligne) ; perimetre (lignes `  - <glob>`). Guillemets retires.
+// Frontmatter de PROJET.md : 1re ligne exactement `---`, fin au `---` suivant. `projet` obligatoire, sinon null.
+// Cles : projet, prefixe, but, descriptif, verrous (une ligne) ; perimetre (lignes `  - <glob>`). Guillemets retires.
 function unquote(v) { v = String(v).trim(); const m = /^(["'])(.*)\1$/.exec(v); return m ? m[2].trim() : v; }
 function parseFrontmatter(file) {
-  const lines = readText(file).replace(/^﻿/, "").split(/\r?\n/);
+  const lines = readText(file).replace(/^\uFEFF/, "").split(/\r?\n/);
   if (lines[0] !== "---") return null;
   const fm = { perimetre: [] };
   let cle = "", fin = false;
@@ -131,21 +133,30 @@ function parseFrontmatter(file) {
   return fin && fm.projet ? fm : null;
 }
 
-// Mode sous-projet : cwd sans .git propre, racine git au-dessus, CLAUDE.md avec `projet:`. Sinon null (comportement inchange).
-function subprojet(cwd) {
-  if (fs.existsSync(p.join(cwd, ".git"))) return null;
-  const root = findGitRoot(cwd);
-  if (!root) return null;
-  const fm = parseFrontmatter(p.join(cwd, "CLAUDE.md"));
-  if (!fm) return null;
-  const rel = p.relative(root, p.resolve(cwd)).split(p.sep).join("/");
+// LIAISON session -> sous-projet. Contrat du skill jalon `projet` (ce hook ne charge pas jalon : lecture recopiee ici) :
+// racine = CLAUDE_PROJECT_DIR || payload.cwd ; fichier `<racine>/0. MEMORY/projets/.sessions/<session_id>.json` =
+// {"projet": "<id>"|null, "mode": "sous-projet"|"racine", "le": ISO, "vu": ...} ; session_id valide ^[0-9A-Za-z_-]{8,64}$ ;
+// fichier absent = mode racine ; sous-projet dont le dossier `0. MEMORY/projets/<id>/` a disparu = mode racine ;
+// but / perimetre / prefixe dans `0. MEMORY/projets/<id>/PROJET.md` (frontmatter projet/prefixe/but/descriptif/perimetre/verrous).
+// Rend null (mode racine, comportement inchange) ou { id, root, dir, memDir, fm, specs } ; `specs` vide = perimetre non declare.
+const SID_RE = /^[0-9A-Za-z_-]{8,64}$/;
+const ID_RE = /^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$/;
+function subprojet(cwd, sid) {
+  if (!SID_RE.test(sid)) return null;
+  const projets = p.join(cwd, "0. MEMORY", "projets");
+  const l = readJson(p.join(projets, ".sessions", sid + ".json"), null);
+  if (!l || typeof l !== "object" || l.mode !== "sous-projet" || typeof l.projet !== "string" || !ID_RE.test(l.projet)) return null;
+  const dir = p.join(projets, l.projet);
+  let ok = false; try { ok = fs.statSync(dir).isDirectory(); } catch (e) {}
+  if (!ok) return null;
+  const fm = Object.assign({ perimetre: [] }, parseFrontmatter(p.join(dir, "PROJET.md")) || {}, { projet: l.projet });
   const specs = fm.perimetre.map((g) => ":(glob)" + g.replace(/\\/g, "/"));
-  if (rel) specs.push(":(literal)" + rel);
-  return { root, fm, rel, specs };
+  return { id: l.projet, root: findGitRoot(cwd), dir, memDir: p.join(dir, "memoire"), fm, specs };
 }
 
 // Chaque section rend son corps (texte) ou null quand sa source manque.
 function sectionCommits(cwd, sub) {
+  if (sub && (!sub.root || !sub.specs.length)) return null;
   const out = sub ? git(sub.root, ["log", "-5", "--date=short", "--format=%h %cd %s", "--"].concat(sub.specs))
     : git(cwd, ["log", "-5", "--date=short", "--format=%h %cd %s"]);
   if (!out || !out.trim()) return null;
@@ -153,6 +164,7 @@ function sectionCommits(cwd, sub) {
 }
 
 function sectionNonCommites(cwd, ignores, sub) {
+  if (sub && (!sub.root || !sub.specs.length)) return null;
   const out = sub ? git(sub.root, ["status", "--porcelain", "--"].concat(sub.specs)) : git(cwd, ["status", "--porcelain"]);
   if (out == null) return null;
   // nos propres fichiers n'ont pas a se lister eux-memes (cas d'un .git qui n'est pas un dossier : pas d'exclusion)
@@ -200,64 +212,17 @@ function sectionRegistre(cwd, prefixe) {
   return rows.map((l) => { const c = l.split("|").map((x) => x.trim()); return "- " + c[1] + " : " + cut(c[3] || c[2], 120); }).join("\n");
 }
 
-const VOISINS_TITRE = "Voisins (lecture seule : ce ne sont PAS tes tâches)";
-const VOISINS_MAX = 600;
-
-// Verrous du sous-projet : `verrous:` est un chemin glob ($TEMP / %TEMP% developpes) ; le glob ne porte que sur le nom de fichier.
-function lignesVerrous(fm) {
-  if (!fm.verrous) return null;
-  try {
-    const tmp = process.env.TEMP || process.env.TMP || require("os").tmpdir();
-    const g = fm.verrous.replace(/\$TEMP\b|%TEMP%/gi, () => tmp).replace(/\\/g, "/");
-    const dir = g.includes("/") ? g.slice(0, g.lastIndexOf("/")) : ".";
-    const re = new RegExp("^" + g.slice(g.lastIndexOf("/") + 1).replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$", "i");
-    const noms = fs.readdirSync(dir).filter((n) => re.test(n)).sort();
-    if (!noms.length) return null;
-    return "- Verrous pris : " + noms.map((n) => {
-      const l = readText(p.join(dir, n)).split(/\r?\n/).find((x) => x.trim()) || "";
-      return n.replace(/^VERROU-/i, "").replace(/\.txt$/i, "") + " (" + cut(l, 50) + ")";
-    }).join(", ");
-  } catch (e) { return null; }
-}
-
-// Voisins : dossiers freres dont le CLAUDE.md a un frontmatter `projet:`. Rien du registre ni de l'historique du voisin.
-function sectionVoisins(cwd, sub) {
-  const lignes = [];
-  try {
-    const me = p.resolve(cwd), parent = p.dirname(me);
-    for (const n of fs.readdirSync(parent).sort()) {
-      const d = p.join(parent, n);
-      if (d === me) continue;
-      let ok = false; try { ok = fs.statSync(d).isDirectory(); } catch (e) {}
-      if (!ok) continue;
-      const fm = parseFrontmatter(p.join(d, "CLAUDE.md"));
-      if (!fm) continue;
-      const todo = todoOpenLines(d);
-      lignes.push("- " + fm.projet + " : " + (todo ? cut(todo[0].replace(/^\s*[-*]\s*\[ \]\s*/, ""), 110) : "rien en cours déclaré")
-        + " ; écrit : " + (fm.perimetre.length ? cut(fm.perimetre.join(", "), 90) : "périmètre non déclaré"));
-    }
-  } catch (e) {}
-  const verrous = lignesVerrous(sub.fm);
-  if (!lignes.length && !verrous) return null;
-  const budget = VOISINS_MAX - ("## " + VOISINS_TITRE + "\n").length;
-  const vl = verrous ? cut(verrous, budget - 1) : "";
-  const room = budget - (vl ? vl.length + 1 : 0);
-  let voisins = lignes.join("\n");
-  if (voisins.length > room) voisins = voisins.slice(0, Math.max(0, room - 1)).trimEnd() + "…";
-  return [voisins, vl].filter(Boolean).join("\n");
-}
-
 // Le .git doit etre dans le dossier meme : un dossier sans depot, sous un depot parent, ne doit pas
 // afficher les commits du parent comme les siens -- sauf en mode sous-projet (sub), ou le perimetre filtre.
 function buildFacts(cwd, ignores, sub) {
   const hasGit = fs.existsSync(p.join(cwd, ".git")) || !!sub;
+  const docs = sub ? sub.dir : cwd; // TODO.md et REGISTRE-DECISIONS.md : ceux du sous-projet quand la session est liee
   const all = [
     ["Derniers commits", hasGit ? sectionCommits(cwd, sub) : null],
     ["Fichiers non commités", hasGit ? sectionNonCommites(cwd, ignores, sub) : null],
-    ["En cours (TODO.md)", sectionTodo(cwd)],
-    ["Dernières décisions (REGISTRE-DECISIONS.md)", sectionRegistre(cwd, sub && sub.fm.prefixe)],
+    ["En cours (TODO.md)", sectionTodo(docs)],
+    ["Dernières décisions (REGISTRE-DECISIONS.md)", sectionRegistre(docs, sub && sub.fm.prefixe)],
   ];
-  if (sub) all.push([VOISINS_TITRE, sectionVoisins(cwd, sub)]);
   return all.filter((s) => s[1]);
 }
 
@@ -272,14 +237,14 @@ function notesOf(old) {
 
 // Rebatit le fichier sans modele. Contenu deterministe (pas d'heure) : rien n'est reecrit tant que
 // les faits n'ont pas change, donc pas de mtime qui bouge pour rien.
-function rebuildMemory(cwd, memFile, memName, archName) {
+function rebuildMemory(cwd, memFile, memName, archName, sub) {
   const old = readText(memFile);
-  const sub = subprojet(cwd);
   const facts = buildFacts(cwd, [memName, archName], sub);
   if (!facts.length && !old) return; // rien a dire : pas de fichier
-  ensureExcluded(cwd, memName, archName, sub);
+  if (sub) ensureDir(p.dirname(memFile));
+  ensureExcluded(cwd, memName, archName, sub && sub.root ? sub : null);
   const entete = sub
-    ? ["# État factuel bâti sans modèle — sous-projet " + sub.fm.projet + " ; les fichiers du projet font foi"].concat(sub.fm.but ? ["**Ton but** : " + sub.fm.but] : [])
+    ? ["# État factuel bâti sans modèle — sous-projet " + sub.id + " ; les fichiers du projet font foi"].concat(sub.fm.but ? ["**Ton but** : " + sub.fm.but] : [])
     : [TITLE];
   const txt = entete.concat(facts.map((s) => "## " + s[0] + "\n" + s[1])).join("\n\n")
     + "\n\n" + NOTES_HEADING + "\n" + notesOf(old);
@@ -372,15 +337,24 @@ function emitInject(event, memFile, opts) {
 
   const memName = cc.memoryFile || ".cqr-memory.md";
   const archName = cc.archiveDir || ".cqr-archive";
-  const memFile = p.join(cwd, memName);
-  const injFile = p.join(cwd, archName, ".injected.json");
+  // Session liee : tout (memoire, archive, injections, .orr-memory.md) vit sous `0. MEMORY/projets/<id>/memoire/`.
+  const sub = subprojet(cwd, sessionId);
+  const base = sub ? sub.memDir : cwd;
+  const memFile = p.join(base, memName);
+  const injFile = p.join(base, archName, ".injected.json");
   // Actif par defaut : la dedup ne retire aucune information (le contexte porte deja la
   // memoire), elle evite seulement de la repeter. `memoryDedup: false` revient a l'injection
   // systematique pour qui la veut.
-  const injOpts = { dedup: cc.memoryDedup !== false, sessionId, injFile, orrFile: p.join(cwd, ".orr-memory.md") };
+  const injOpts = { dedup: cc.memoryDedup !== false, sessionId, injFile, orrFile: p.join(base, ".orr-memory.md") };
 
   try {
-    if (event === "SessionStart" || event === "PreCompact") rebuildMemory(cwd, memFile, memName, archName);
+    if (event === "SessionStart" || event === "PreCompact") rebuildMemory(cwd, memFile, memName, archName, sub);
+    else if (event === "UserPromptSubmit" && sub && sessionId && !lireInjections(injFile)[sessionId]) {
+      // Liaison apparue (ou changee) apres le SessionStart : cette session n'a encore rien recu de CE sous-projet.
+      // Reconstruire, puis marquer la session (h vide : l'injection qui suit s'emet toujours, emitInject note la vraie empreinte).
+      rebuildMemory(cwd, memFile, memName, archName, sub);
+      noterInjection(injFile, sessionId, "");
+    }
 
     if (event === "PreCompact") {
       // La compaction reecrit le contexte : ce qui y avait ete injecte peut disparaitre. On
