@@ -436,7 +436,7 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
     // --- masquage : ce que Nemotron a recu, puis ce que le client recoit ---
     const sent = orBodies[orBodies.length - 1], seen = sent.messages[0].content;
     assert.strictEqual(orAuth[orAuth.length - 1], "Bearer " + FAKE_OR_KEY, "appel : la cle part en Bearer");
-    assert.deepStrictEqual([sent.model, sent.max_tokens, sent.reasoning, sent.stream], ["nvidia/nemotron-3.5-super-vl:free", 3000, { effort: "low" }, false], "appel : modele, plafond court (2 x 1500), effort, sans flux");
+    assert.deepStrictEqual([sent.model, sent.max_tokens, sent.reasoning, sent.stream], ["nvidia/nemotron-3.5-super-vl:free", 3000, { enabled: false }, false], "appel : modele, plafond court (2 x 1500), reflexion coupee (DR-416), sans flux");
     for (const s of PERSONAL) assert.ok(!seen.toLowerCase().includes(s.toLowerCase()), "masquage : Nemotron ne voit pas " + (s === EXTRA || s === USER ? s : "le dossier personnel"));
     for (const s of [TOKEN_ANT, TOKEN_OR, PASSWORD]) assert.ok(!seen.includes(s), "masquage : Nemotron ne voit pas un jeton ou un mot de passe");
     for (const s of ["PENSEE-NE-PART-PAS", "SYSTEME-NE-PART-PAS", "OUTIL-NE-PART-PAS"]) assert.ok(!seen.includes(s) && !JSON.stringify(sent).includes(s), "masquage : " + s);
@@ -854,6 +854,7 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
             assert.ok(r.ok && nOr === 2 && nAncre === 1, "ancre : un appel de resume, un d'extraction");
             const eb = ancreBodies[ancreBodies.length - 1];
             assert.deepStrictEqual([eb.model, eb.temperature, eb.stream, eb.messages.length], ["nvidia/nemotron-3.5-super-vl:free", 0, false, 1], "ancre : modele, temperature 0, sans flux");
+            assert.deepStrictEqual(eb.reasoning, { enabled: false }, "ancre : reflexion coupee (DR-416)");
             assert.ok(eb.messages[0].content.includes("[user] migre le module X") && eb.messages[0].content.includes("[appel Read] {\"file\":\"x.js\"}") && eb.messages[0].content.includes("[résultat] RESULTAT-OUTIL"), "ancre : la vue de la conversation");
             assert.ok(!eb.messages[0].content.includes(FC.INVITE), "ancre : l'invite de compactage ne part pas");
             assert.ok(r.text.indexOf("Rapport de session") < r.text.indexOf(marque) && r.text.indexOf(marque) < r.text.indexOf("</summary>") && r.text.trimEnd().endsWith("</summary>"), "ancre : apres le resume, avant </summary>");

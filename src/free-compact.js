@@ -507,13 +507,13 @@ async function run(plan, body, io) {
   try {
     masker = makeMasker(personalStrings(plan.cfg.names));
     const sent = masker.mask(maskSecrets(plan.text, plan.secrets)); // les secrets d'abord : un secret ne doit jamais entrer dans la table des reperes
-    const reqBody = JSON.stringify({ model: plan.cfg.model, messages: [{ role: "user", content: sent }], max_tokens: plan.maxTokens || 8000, reasoning: { effort: "low" }, stream: false });
+    const reqBody = JSON.stringify({ model: plan.cfg.model, messages: [{ role: "user", content: sent }], max_tokens: plan.maxTokens || 8000, reasoning: { enabled: false }, stream: false });
     const deadline = t0 + plan.cfg.timeoutMs;
     if (plan.ancre) { // en parallele du resume : le compactage n'en est pas allonge ; le meme masquage (et les memes reperes) que le resume
       ancreP = (async () => {
         try {
           const vue = masker.mask(maskSecrets(AN.vueConversation((body && body.messages) || []), plan.secrets));
-          const eb = JSON.stringify({ model: plan.cfg.model, messages: [{ role: "user", content: AN.inviteExtraction(vue) }], temperature: 0, stream: false });
+          const eb = JSON.stringify({ model: plan.cfg.model, messages: [{ role: "user", content: AN.inviteExtraction(vue) }], temperature: 0, reasoning: { enabled: false }, stream: false });
           const rr = await appeler(eb, deadline, { n: 0 }, (q) => { ancreReq = q; if (io.onReqAncre) io.onReqAncre(q); }, () => ancreStop);
           return AN.ancreDepuisReponse(rr.status, rr.body);
         } catch (e) { return { raison: e.raison || (e.code === "DELAI" ? "delai" : e.code ? "reseau-" + e.code : "erreur-" + e.name) }; }
