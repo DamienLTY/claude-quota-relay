@@ -4,7 +4,8 @@
  * Usage:
  *   cqr status                 etat des tokens + quota vu + attente en cours
  *   cqr list                   liste les tokens (masques)
- *   cqr use <nom|index>        EPINGLE le token actif (effet immediat, ignore regles+attente)
+ *   cqr quota --json           quotas par compte en JSON (lecture seule, sans jeton)
+ *   cqr use <nom|index|#rang>  EPINGLE le token actif (effet immediat, ignore regles+attente)
  *   cqr auto                   revient au mode automatique (failover + waiting)
  *   cqr reset                  oublie l'etat "epuise" (re-essaie tous les tokens)
  *   cqr set <nom> <token>      renseigne/ecrase le token d'un compte (script/manuel, sans prompt)
@@ -251,8 +252,31 @@ function showStatus() {
   });
 }
 
+// J5-6 (cqr:J5-018, J5-022) : quotas par compte en JSON, pour les outils (passer, compactage). Lecture seule, JAMAIS un jeton.
+// Meme regle que pickRoute : une fenetre dont le reset est passe vaut 0. "vieux" : releve de plus de VIEUX_MIN minutes (ou absent) ->
+// l'appelant peut sonder le compte avant de decider (la sonde vit hors du relais).
+const VIEUX_MIN = 30;
+function quotaJson() {
+  let c; try { c = readConf(); } catch (e) { console.error("Aucun tokens.json dans " + DIR + " — lancez d'abord l'installeur."); process.exit(1); }
+  const s = readState(), t0 = Date.now(), cc = c.compaction || {}, f = cc.free || {};
+  const comptes = c.tokens.map((t) => {
+    const q = (s.pct || {})[t.name] || {}, r5 = (s.reset5h || {})[t.name] || null, r7 = (s.reset7d || {})[t.name] || null, ex = (s.exhausted || {})[t.name] || 0;
+    const at = q.at || null, ageMin = at && !isNaN(Date.parse(at)) ? Math.max(0, Math.round((t0 - Date.parse(at)) / 60000)) : null;
+    return {
+      nom: t.name, actif: !!t.enabled && !isPlaceholder(t),
+      h5: q.h5 == null ? null : (r5 && t0 >= r5 ? 0 : q.h5), d7: q.d7 == null ? null : (r7 && t0 >= r7 ? 0 : q.d7),
+      at, ageMin, vieux: ageMin == null || ageMin > VIEUX_MIN, reset5h: r5, reset7d: r7, epuiseJusqua: ex > t0 ? ex : null,
+    };
+  });
+  const fc = require("./free-compact.js").resolveConfig(f);
+  console.log(JSON.stringify({ lu: new Date(t0).toISOString(), vieuxApresMin: VIEUX_MIN, comptes, gratuit: { actif: fc.enabled, compactage: !!cc.enabled, types: fc.kinds, repli: fc.fallback } }, null, 2));
+}
+
 switch (cmd) {
   case "status": case undefined: showStatus(); break;
+  case "quota":
+    if (!process.argv.includes("--json")) { console.error("Usage : cqr quota --json  (seule la sortie JSON existe ; pour le texte : cqr status)"); process.exit(1); }
+    quotaJson(); break;
   case "list": {
     const c = readConf();
     c.tokens.forEach((t, i) => console.log(`[${i}] ${t.name}  ${t.enabled ? "on" : "off"}  ${mask(t.token)}`));
@@ -260,7 +284,8 @@ switch (cmd) {
   }
   case "use": {
     const c = readConf(); const s = readState();
-    let idx = c.tokens.findIndex((t) => t.name === a1);
+    // DR-016 : "#3" = 3e de `cqr list`, jamais pris pour un nom (les comptes s'appellent souvent "1", "2"…)
+    let idx = /^#\d+$/.test(a1 || "") ? Number(a1.slice(1)) - 1 : c.tokens.findIndex((t) => t.name === a1);
     if (idx < 0 && /^\d+$/.test(a1)) idx = Number(a1);
     if (idx < 0 || idx >= c.tokens.length) { console.error("Compte introuvable :", a1); process.exit(1); }
     s.activeIndex = idx; s.forceIndex = idx;
@@ -567,6 +592,7 @@ function printHelp() {
     "État",
     "  cqr status                 quota par compte (5h/7j), resets, attente en cours",
     "  cqr list                   liste les comptes (clés masquées)",
+    "  cqr quota --json           quotas par compte (5h, 7j, âge du relevé) et réglages du détour gratuit, sans aucun jeton",
     "  cqr help                   cette aide",
     "",
     "Comptes",
@@ -578,7 +604,7 @@ function printHelp() {
     "",
     "Proxy",
     "  cqr start | stop | restart démarre / arrête / redémarre le proxy",
-    "  cqr use <nom|index>        force un compte précis",
+    "  cqr use <nom|index|#rang>  force un compte précis (#3 = 3e de la liste)",
     "  cqr auto                   revient au choix automatique",
     "  cqr reset                  oublie l'état 'épuisé' (re-teste tout)",
     "",

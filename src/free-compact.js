@@ -354,12 +354,16 @@ function decide(req, getConf) { // getConf : la config ne se lit que pour un vra
   const cc = (conf && conf.compaction) || {};
   const cfg = resolveConfig(cc.free);
   const no = (raison, quiet) => ({ go: false, kind: rec.kind, raison, quiet: !!quiet });
+  // J5-6 (cqr:J5-018, J5-019, J5-025) : x-cqr-resume choisit le resumeur de CETTE requete. "claude" : Claude ecrit ce resume.
+  // "gratuit" : un echec du detour retombe sur Claude meme avec fallback=journal. Toute autre valeur est ignoree. Jamais d'ecriture de config.
+  const demande = hv(req.headers && req.headers["x-cqr-resume"]);
+  if (demande === "claude") return no("demande-client");
   if (!cfg.enabled) return no("reglage-coupe", true);
   if (!cc.enabled) return no("compaction-coupee"); // DR-066 : cqr compact off coupe tout ; absent = coupe, comme pour le proxy
   if (!cfg.kinds.includes(rec.kind)) return no("type-non-liste");
   const V = readVariante();
   const journal = (repli) => ({ go: true, kind: rec.kind, cfg, variante: "journal", repli, text: "", secrets: [], invalide: V.invalide });
-  const repli = (raison) => cfg.fallback === "journal" ? journal(raison) : no(raison); // un repli rend le journal, sauf demande explicite de Claude
+  const repli = (raison) => cfg.fallback === "journal" && demande !== "gratuit" ? journal(raison) : no(raison); // un repli rend le journal, sauf demande explicite de Claude
   if (V.variante === "journal") return journal(null); // aucun appel : ni cle ni service requis
   if (!hasKey()) return repli("cle-absente");
   if (Date.now() < blockedUntil) return repli("blocage");

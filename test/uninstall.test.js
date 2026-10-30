@@ -13,11 +13,19 @@ const CFG = fs.mkdtempSync(p.join(os.tmpdir(), "cqr-uninstall-"));
 const IDIR = p.join(CFG, "claude-quota-relay");
 const SETTINGS = p.join(CFG, "settings.json");
 fs.writeFileSync(SETTINGS, JSON.stringify({ env: { FOO: "bar" }, statusLine: { type: "command", command: "echo MINE" } }));
+// DR-016 : anciennes commandes figees a 2 comptes ; une /auth-2 qui n'est pas la notre reste
+const CMDS = p.join(CFG, "commands");
+fs.mkdirSync(CMDS);
+fs.writeFileSync(p.join(CMDS, "auth-1.md"), '!`node "$HOME/.claude/claude-quota-relay/cli.js" use compte1`');
+fs.writeFileSync(p.join(CMDS, "auth-2.md"), "autre chose");
 
 // --- install first (non-interactive, path registration skipped) ---
 const ri = cp.spawnSync(process.execPath, [INSTALLER, "--no-interactive", "--config-dir", CFG], { encoding: "utf8", env: ENV });
 assert.strictEqual(ri.status, 0, "install exits 0: " + (ri.stderr || ""));
 assert.ok(fs.existsSync(p.join(IDIR, "bin", "cqr")), "install created the cqr wrapper");
+assert.ok(fs.existsSync(p.join(CMDS, "auth-use.md")), "install pose /auth-use");
+assert.ok(!fs.existsSync(p.join(CMDS, "auth-1.md")), "install retire l'ancienne /auth-1 de cqr");
+assert.ok(fs.existsSync(p.join(CMDS, "auth-2.md")), "install garde une /auth-2 qui n'est pas de cqr");
 
 // DR-012 : l'installeur a pose les deux reglages ; le desinstalleur doit les retirer (cf. plus bas)
 const s0 = JSON.parse(fs.readFileSync(SETTINGS, "utf8"));
@@ -38,6 +46,7 @@ assert.strictEqual(s1.env.CLAUDE_CODE_GATEWAY_HINT_HEADERS, undefined, "env.CLAU
 assert.ok(!s1.hooks || !JSON.stringify(s1.hooks).includes("memory-hook.js"), "our hooks removed");
 assert.ok(fs.existsSync(p.join(IDIR, "tokens.json")), "soft uninstall keeps tokens.json");
 assert.ok(fs.existsSync(p.join(IDIR, "bin", "cqr")), "soft uninstall keeps the cqr wrapper (still usable)");
+assert.ok(!fs.existsSync(p.join(CMDS, "auth-use.md")), "uninstall retire /auth-use");
 
 // --- purge: removes the whole install dir (incl. bin/ wrappers) ---
 const r2 = cp.spawnSync(process.execPath, [UNINSTALLER, "--config-dir", CFG, "--purge"], { encoding: "utf8", env: ENV });

@@ -176,7 +176,7 @@ function parseEpochMs(v) {
 
 // ----- selection du token -----
 // renvoie {idx} pour router maintenant, ou {wait:true, idx, untilMs, reason}
-function pickRoute(conf, state, bodyObj) {
+function pickRoute(conf, state, bodyObj, compteDemande, info) {
   const t0 = now();
   state.exhausted = state.exhausted || {}; state.reset5h = state.reset5h || {}; state.reset7d = state.reset7d || {}; state.pct = state.pct || {};
   // Si la compaction est active et qu'on connait le modele, on switche au seuil STATIQUE par
@@ -197,6 +197,20 @@ function pickRoute(conf, state, bodyObj) {
   // mais pas depasser ce plafond. Aucun effet si la compaction est off (comportement inchange).
   let SOFT = conf.waitAtSoftPercent;
   if (conf.compaction && conf.compaction.enabled) SOFT = Math.min(SOFT == null ? 100 : SOFT, comp.COMPACTION_RESERVE_CEILING);
+
+  // J5-6 (cqr:J5-018) : en-tete x-cqr-compte = le compte de CETTE requete, ni epinglage ni ecriture d'etat. Inconnu, coupe ou
+  // vide : ignore, la politique normale s'applique (le journal le dit, voir attempt).
+  if (typeof compteDemande === "string" && compteDemande) {
+    const i = conf.tokens.findIndex((t) => t && t.name === compteDemande);
+    if (i >= 0 && conf.tokens[i].enabled && !isPlaceholder(conf.tokens[i])) {
+      // J5-027 : honore seulement si le compte passe les controles de la politique normale (rejet, seuil 5h soft, bloc 7j)
+      const p = state.pct[compteDemande] || {}, r5 = state.reset5h[compteDemande], r7 = state.reset7d[compteDemande];
+      const u5 = (r5 && t0 >= r5) || p.h5 == null ? null : p.h5, u7 = (r7 && t0 >= r7) || p.d7 == null ? null : p.d7;
+      const raison = (state.exhausted[compteDemande] || 0) > t0 ? "epuise" : ((SOFT != null && u5 != null && u5 >= SOFT) || (u7 != null && u7 >= BLOCK)) ? "seuil" : null;
+      if (!raison) return { idx: i, forced: true, parRequete: true };
+      if (info) info.refus = raison;
+    }
+  }
 
   // override manuel (claude-auth use) : on force ce token, sans regle ni attente
   if (state.forceIndex != null) {
@@ -454,6 +468,7 @@ const tag = (v, n) => String(v == null ? "" : v).replace(/[^A-Za-z0-9_-]/g, "").
 // x-claude-code-session-id / -agent-id / -parent-agent-id n'y sont PAS : Claude Code les envoie meme sans la variable.
 const INDICES_CLAUDE_CODE = ["x-claude-code-request-class", "x-claude-code-agent-type", "x-claude-code-prompt-id",
   "x-claude-code-compaction", "x-claude-code-context-compacted", "x-claude-code-prev-tool-durations"];
+const hv1 = (v) => String(Array.isArray(v) ? v[0] : v == null ? "" : v).trim();
 function tagsRequete(h) {
   h = h || {};
   return ["classe=" + tag(h["x-claude-code-request-class"], 20), "session=" + tag(h["x-claude-code-session-id"], 8)];
@@ -624,14 +639,18 @@ function serve(creq, cres) {
       try { conf = readConf(); state = readState(); }
       catch (e) { try { cres.writeHead(500); cres.end("proxy: conf illisible: " + e.message); } catch (x) {} return; }
 
-      const route = pickRoute(conf, state, bodyObj);
+      const demande = hv1(creq.headers["x-cqr-compte"]);
+      const infoDemande = {};
+      const route = pickRoute(conf, state, bodyObj, demande, infoDemande);
+      if (infoDemande.refus && !ctx.compteIgnore) { ctx.compteIgnore = true; log("x-cqr-compte ignore compte=" + tag(demande, 20) + " raison=" + infoDemande.refus); }
+      if (demande && !route.parRequete && !ctx.compteIgnore) { ctx.compteIgnore = true; log("x-cqr-compte ignore (inconnu ou coupe) compte=" + tag(demande, 20)); }
       if (route.none) { try { cres.writeHead(502); cres.end("proxy: aucun token configuré"); } catch (x) {} return; }
 
       if (route.wait) return enterWait(conf, state, route);
 
       // route immediate
       const prevActive = state.activeIndex || 0;
-      const switching = prevActive !== route.idx;
+      const switching = prevActive !== route.idx && !route.parRequete; // un compte demande par requete ne devient pas le compte actif
       // routage sur les credits : trace une fois par requete (sinon 1 ligne par tentative)
       if (route.overage && !ctx.overageLogged) {
         ctx.overageLogged = true;
@@ -714,6 +733,7 @@ function serve(creq, cres) {
       // we always send with an explicit content-length -> drop any chunked encoding from the client
       delete headers["transfer-encoding"];
       for (const h of INDICES_CLAUDE_CODE) delete headers[h];
+      for (const h of Object.keys(headers)) if (h.toLowerCase().startsWith("x-cqr-")) delete headers[h]; // J5-6 : consignes au relais (x-cqr-resume, x-cqr-compte, et tout x-cqr-* inconnu), jamais vers l'amont
 
       // --- auto-compaction : reduit les tokens envoyes au compte cible (0 token) ---
       let sendBody = body;

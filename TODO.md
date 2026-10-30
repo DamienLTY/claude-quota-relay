@@ -74,3 +74,4 @@ Tâches de fond lancées le 2026-10-01 (sous-agents `ouvrier`, fichiers disjoint
 - [ ] Ménage `%TEMP%` des essais DR-012 (sans jeton) : `cqr-stress`, `cqr-retry`, `cqr-statusline-essai`, `cqr-essai-reel`, `cqr-probe-job-console.ps1`.
 
 - [x] 2026-10-06 (preuve : 9 fichiers COPY_FILES = src/ par cmp, port 8787 nouveau PID, 6 comptes listes par `cli.js status`), sous-agent ouvrier en fond : reinstallation de la copie ~/.claude/claude-quota-relay (retard sur le depot) ; fini quand les fichiers installes = src/ et que `cqr status` repond apres redemarrage.
+- [x] 2026-10-30 DR-016 : `/auth-use <n>` remplace `/auth-1`/`/auth-2` (preuve : `npm test` code 0, relecteur ACCEPTABLE, installé ici, `use "#3"` -> compte 3). Reste : commit, puis réinstaller sur l'autre PC.

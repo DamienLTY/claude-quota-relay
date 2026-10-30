@@ -232,6 +232,14 @@ async function main() {
   for (const f of COPY_FILES) fs.copyFileSync(p.join(SRC_DIR, f), p.join(INSTALL_DIR, f));
   // package.json (a la racine du depot, pas dans src/) : le relais y lit sa version pour sa ligne de demarrage (DR-012)
   fs.copyFileSync(p.join(REPO_ROOT, "package.json"), p.join(INSTALL_DIR, "package.json"));
+  // DR-016 : /auth-use <n> remplace les /auth-1, /auth-2 poses a la main (figes a 2 comptes) ; on ne retire que les notres.
+  const CMD_DIR = p.join(CONFIG_DIR, "commands");
+  fs.mkdirSync(CMD_DIR, { recursive: true });
+  fs.copyFileSync(p.join(REPO_ROOT, "commands", "auth-use.md"), p.join(CMD_DIR, "auth-use.md"));
+  for (const old of ["auth-1.md", "auth-2.md"]) {
+    const f = p.join(CMD_DIR, old);
+    try { if (fs.readFileSync(f, "utf8").includes("claude-quota-relay")) fs.unlinkSync(f); } catch (e) {} // absente : rien a retirer
+  }
 
   const tokensPath = lib.confPath(INSTALL_DIR); // ~/.etabli/cles/cqr-tokens.json s'il existe, sinon tokens.json (DR-220, repli DR-226 permanent)
   let conf, tokensLine;

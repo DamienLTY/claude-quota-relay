@@ -61,6 +61,8 @@ if (s) {
   ok("variables d'env + hooks (autostart/mémoire/garde-fou) retirés de settings.json (sauvegarde conservée)");
 }
 
+try { fs.unlinkSync(p.join(CONFIG_DIR, "commands", "auth-use.md")); ok("commande /auth-use retirée"); } catch (e) {} // absente : deja retiree
+
 if (PURGE) {
   try { setupPath.removeAlias(INSTALL_DIR, process.env.CQR_SKIP_PATH_REGISTER ? { skipRegister: true } : undefined); ok("`cqr` retiré du PATH"); } catch (e) {}
   try { fs.rmSync(INSTALL_DIR, { recursive: true, force: true }); ok(INSTALL_DIR + " supprimé (tokens.json inclus)"); } catch (e) { console.error("  ! impossible de supprimer " + INSTALL_DIR + " : " + e.message); }

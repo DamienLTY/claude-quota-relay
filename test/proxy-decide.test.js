@@ -330,6 +330,20 @@ const ALLOWED = { status: "allowed", u: 0 };
   assert.ok(route.wait, "aucun credit utilisable -> attente (comportement d'origine)");
 }
 
+// --- J5-6 (cqr:J5-018) : x-cqr-compte designe le compte de CETTE requete (4e argument de pickRoute) ---
+{
+  const conf = twoTokens(); conf.tokens[0].token = "t0"; conf.tokens[1].token = "t1";
+  conf.tokens.push({ name: "c", token: "t2", enabled: false }, { name: "d", token: "PASTE-ICI", enabled: true });
+  const st = () => ({ activeIndex: 0, pct: { a: { h5: 10 }, b: { h5: 50 } }, exhausted: {}, reset5h: {}, reset7d: {} });
+  assert.strictEqual(pickRoute(conf, st(), bigBody).idx, 0, "sans demande : politique normale (a est le moins charge)");
+  const r = pickRoute(conf, st(), bigBody, "b");
+  assert.deepStrictEqual([r.idx, r.forced, r.parRequete], [1, true, true], "compte demande : sa route, sans failover, marquee par requete");
+  const s2 = st(); s2.forceIndex = 0;
+  assert.strictEqual(pickRoute(conf, s2, bigBody, "b").idx, 1, "la demande de la requete prime sur l'epinglage global, qui reste en place");
+  assert.strictEqual(s2.forceIndex, 0, "state.forceIndex non touche");
+  for (const nom of ["c", "d", "inconnu", "", undefined, null, 5, "A"]) assert.strictEqual(pickRoute(conf, st(), bigBody, nom).idx, 0, "compte " + JSON.stringify(nom) + " (coupe, vide, inconnu, invalide) : ignore, politique normale");
+}
+
 // --- surcharge Anthropic (529) : la pause s'allonge et la sonde ne la leve pas ---
 // Cas reel du 29/07/2026 : 529 -> pause 90 s -> la sonde (8 tokens) passe -> "deblocage
 // anticipe" -> on relache la vraie requete -> 529 ... en boucle toutes les 45 s.

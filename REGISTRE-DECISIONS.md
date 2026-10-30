@@ -397,3 +397,22 @@ Refusés, avec leur raison : réécriture en `fetch` (Node ≥ 18 sans `AbortSig
 - résumés : 0 repère resté, chemins revenus.
 
 Réserve : le `system` vide final n'est observé qu'en `claude -p --resume`. En interactif, un écart ferait seulement revenir à Claude.
+
+## DR-016 — Choisir son compte quel que soit le nombre de comptes
+
+**Type** : correction · **État** : appliqué et installé sur ce PC le 2026-10-30, `npm test` code 0
+
+**Constat.** Le poste a 6 comptes (`cqr list`), mais seules `/auth-1` et `/auth-2` existent, posées à la main dans `~/.claude/commands/` : rien dans le dépôt ne les crée. `/auth-1` est déjà cassée : elle lance `cqr use compte1`, alors que les comptes s'appellent `1` à `6` (`src/cli.js:287`).
+
+**Questions posées et réponses citées (2026-10-30).**
+- « Comment veux-tu corriger ? » → « *Une seule commande* — Une commande /auth-use suivie du numéro (/auth-use 4). Marche pour n'importe quel nombre de comptes, sans fichier à tenir à jour. »
+- « /auth-3 doit viser quel compte ? » → « *Le 3e de la liste* — Le numéro suit l'ordre de « cqr list » (1 = premier compte), quel que soit le nom du compte. »
+
+- « Où doit vivre la commande /auth-use ? » → « *Posée par l'installeur* — Le fichier va dans le dépôt cqr ; « installer » la pose dans ~/.claude/commands (et « désinstaller » la retire). L'autre PC l'aura aussi. »
+- « Que faire des anciennes /auth-1 et /auth-2 ? » → « *Les supprimer* — /auth-use 1 et /auth-use 2 les remplacent ; /auth-1 est cassée de toute façon. »
+
+**Source** : demande directe de l'utilisateur, grill du 2026-10-30.
+
+**Ce qui change.** `commands/auth-use.md` (`/auth-use 3`) lance `cqr use "#3"`. Nouvelle forme `#rang` dans `cqr use` (`src/cli.js`, case `use`) : au premier essai, `cqr use 2` avait épinglé le compte *nommé* « 2 » au lieu du 3e, car les noms sont des chiffres. `src/install.js` pose la commande et retire `auth-1.md`/`auth-2.md` s'ils mentionnent `claude-quota-relay` ; `src/uninstall.js` retire `auth-use.md`.
+
+**Preuve.** `test/cli-commands.test.js` (bloc DR-016) et `test/uninstall.test.js` verts ; sur ce PC, `use "#3"` → « ÉPINGLÉ -> 3 », `use "#7"` → « Compte introuvable », puis `cqr auto`. L'autre PC aura la commande à sa prochaine installation.

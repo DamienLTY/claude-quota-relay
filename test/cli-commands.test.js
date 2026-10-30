@@ -7,7 +7,7 @@ const SRC = p.join(__dirname, "..", "src");
 const FAKE = "sk-ant-oat01-FAKE-TEST-TOKEN-not-real-000000";
 
 const DIR = fs.mkdtempSync(p.join(os.tmpdir(), "cqr-cli-"));
-for (const f of ["cli.js", "lib.js", "compaction.js"]) fs.copyFileSync(p.join(SRC, f), p.join(DIR, f));
+for (const f of ["cli.js", "lib.js", "compaction.js", "free-compact.js", "ancre.js", "entreprise.js"]) fs.copyFileSync(p.join(SRC, f), p.join(DIR, f));
 fs.writeFileSync(p.join(DIR, "tokens.json"), JSON.stringify({ port: 8787, compaction: { enabled: false, dryRun: false }, tokens: [{ name: "1", token: FAKE, enabled: true }] }));
 
 const run = (...args) => cp.spawnSync(process.execPath, [p.join(DIR, "cli.js"), ...args], { encoding: "utf8", windowsHide: true });
@@ -131,5 +131,53 @@ const conf = () => JSON.parse(fs.readFileSync(p.join(DIR, "tokens.json"), "utf8"
   assert.ok(fs.existsSync(p.join(DIR, "proxy.stopped")), "cqr stop pose proxy.stopped a cote de proxy.pid");
 }
 
+// J5-6 (cqr:J5-014/018/022) : `cqr quota --json` = quotas par compte lus dans state.json, lecture seule, JAMAIS un jeton
+{
+  const T2 = "sk-ant-oat01-FAKE-SECOND-TOKEN-not-real-1111111";
+  const now = Date.now(), iso = (ms) => new Date(ms).toISOString();
+  fs.writeFileSync(p.join(DIR, "tokens.json"), JSON.stringify({ port: 8787, compaction: { enabled: true, free: { enabled: true, kinds: ["manual"] } }, tokens: [{ name: "1", token: FAKE, enabled: true }, { name: "2", token: T2, enabled: false }, { name: "3", token: FAKE + "x", enabled: true }] }));
+  fs.writeFileSync(p.join(DIR, "state.json"), JSON.stringify({ activeIndex: 0, forceIndex: 2,
+    pct: { 1: { h5: 12, d7: 34, max: 34, at: iso(now - 60000) }, 2: { h5: 5, d7: 5, at: iso(now - 3600000) }, 3: { h5: 95, d7: 40, at: iso(now - 40 * 60000) }, retire: { h5: 1, d7: 1, at: iso(now) } },
+    reset5h: { 1: now + 3600000, 3: now - 1000 }, reset7d: { 1: now + 86400000 }, exhausted: { 3: now + 600000 } }));
+  const avant = [fs.readFileSync(p.join(DIR, "state.json"), "utf8"), fs.readFileSync(p.join(DIR, "tokens.json"), "utf8")];
+  const r = run("quota", "--json");
+  assert.strictEqual(r.status, 0, "quota --json exits 0: " + r.stderr);
+  assert.ok(!r.stdout.includes(FAKE) && !r.stdout.includes(T2) && !/sk-ant/.test(r.stdout), "AUCUN jeton dans la sortie");
+  const q = JSON.parse(r.stdout);
+  assert.deepStrictEqual(q.comptes.map((c) => c.nom), ["1", "2", "3"], "comptes de la config seulement (le compte retire de state.json est absent)");
+  const [c1, c2, c3] = q.comptes;
+  assert.deepStrictEqual([c1.actif, c1.h5, c1.d7, c1.vieux], [true, 12, 34, false], "compte 1 : on, 12/34, relevé frais");
+  assert.strictEqual(c1.at, iso(now - 60000), "at = horodatage du relevé");
+  assert.strictEqual(c2.actif, false, "compte coupé signalé");
+  assert.strictEqual(c2.vieux, true, "relevé d'une heure : vieux (J5-022, seuil 30 min)");
+  assert.strictEqual(c3.h5, 0, "fenêtre 5h dont le reset est passé = 0 (règle de pickRoute)");
+  assert.strictEqual(c3.d7, 40, "7j inchangé");
+  assert.strictEqual(c3.vieux, true, "relevé de 40 min : vieux");
+  assert.ok(c3.epuiseJusqua > now, "épuisé jusqu'à : donné");
+  assert.strictEqual(c1.epuiseJusqua, null, "non épuisé : null");
+  assert.strictEqual(q.vieuxApresMin, 30, "seuil de péremption publié");
+  assert.deepStrictEqual([q.gratuit.actif, q.gratuit.compactage], [true, true], "détour gratuit : réglages lus");
+  assert.deepStrictEqual(q.gratuit.types, ["manual"], "types listés");
+  assert.deepStrictEqual([fs.readFileSync(p.join(DIR, "state.json"), "utf8"), fs.readFileSync(p.join(DIR, "tokens.json"), "utf8")], avant, "lecture seule : state.json et config inchangés");
+  // sans --json : refus clair (la sortie texte existe déjà ailleurs : cqr status)
+  const t = run("quota");
+  assert.strictEqual(t.status, 1, "quota sans --json : refus");
+  assert.ok(/--json/.test(t.stderr) && t.stdout === "", "quota sans --json : dit pourquoi, rien sur stdout");
+  assert.ok(run("help").stdout.includes("cqr quota"), "help mentionne cqr quota");
+  // état absent : pas de plantage, comptes à null
+  fs.rmSync(p.join(DIR, "state.json"));
+  const v = JSON.parse(run("quota", "--json").stdout);
+  assert.deepStrictEqual([v.comptes[0].h5, v.comptes[0].at, v.comptes[0].vieux], [null, null, true], "pas d'état : null, et vieux");
+}
+
+// DR-016 : "use #3" vise le 3e de la liste, meme quand un compte s'appelle "3" ailleurs
+{
+  fs.writeFileSync(p.join(DIR, "tokens.json"), JSON.stringify({ port: 8787, tokens: ["2", "3", "1"].map((name) => ({ name, token: FAKE, enabled: true })) }));
+  assert.ok(/-> 1 /.test(run("use", "#3").stdout), "#3 = 3e de la liste (nomme \"1\")");
+  assert.ok(/-> 3 /.test(run("use", "3").stdout), "3 sans # reste le nom");
+  assert.strictEqual(run("use", "#4").status, 1, "#4 hors liste -> erreur");
+  assert.strictEqual(run("use", "#0").status, 1, "#0 -> erreur");
+}
+
 fs.rmSync(DIR, { recursive: true, force: true });
-console.log("PASS — cqr help lists commands; compact dynamic on auto-enables compaction; unknown -> help; derniere compaction visible; credits on/off/max + etat par compte");
+console.log("PASS — cqr help lists commands; quota --json sans jeton, lecture seule; compact dynamic on auto-enables compaction; unknown -> help; derniere compaction visible; credits on/off/max + etat par compte");

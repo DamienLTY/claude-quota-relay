@@ -635,6 +635,20 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
     const decideIn = (F, text) => F.decide({ url: "/v1/messages", headers: AUTO, body: { messages: [{ role: "user", content: text || "bonjour" }, { role: "assistant", content: "ok" }, { role: "user", content: FC.INVITE + " fin" }] } }, () => confIn());
     try {
       process.env.OPENROUTER_API_KEY = FAKE_OR_KEY; process.env.CQR_FREE_COMPACT_URL = MOCK_URL; // jamais la vraie cle, jamais le vrai service
+      // J5-6 (cqr:J5-014/019/025) : x-cqr-resume choisit le resumeur pour CETTE requete, sans toucher a la config
+      { const F = fresh(), withH = (v, free) => F.decide({ url: "/v1/messages", headers: Object.assign({}, AUTO, v === undefined ? {} : { "x-cqr-resume": v }), body: { messages: [{ role: "user", content: "bonjour" }, { role: "assistant", content: "ok" }, { role: "user", content: FC.INVITE + " fin" }] } }, () => confIn(free));
+        const sans = withH(undefined); assert.strictEqual(sans.go, true, "x-cqr-resume absent : le detour gratuit part comme avant");
+        let pl = withH("claude"); assert.deepStrictEqual([pl.go, pl.raison, pl.quiet], [false, "demande-client", false], "claude : Claude ecrit ce resume (repli journalise)");
+        pl = withH(" Claude "); assert.strictEqual(pl.go, false, "claude : casse et espaces ignores");
+        pl = withH("claude", { enabled: false }); assert.strictEqual(pl.go, false, "claude avec detour coupe : Claude sert aussi");
+        for (const v of ["", "n'importe quoi", "journal", "0"]) assert.deepStrictEqual([withH(v).go, withH(v).variante], [sans.go, sans.variante], "valeur invalide " + JSON.stringify(v) + " : ignoree, comportement d'avant");
+        pl = withH("gratuit"); assert.strictEqual(pl.go, true, "gratuit : le detour part");
+        assert.strictEqual(withH("gratuit", { enabled: false }).go, false, "gratuit ne passe JAMAIS outre un detour coupe (vie privee : reglage de l'utilisateur)");
+        delete process.env.OPENROUTER_API_KEY;
+        pl = withH("gratuit", { fallback: "journal" }); assert.deepStrictEqual([pl.go, pl.raison], [false, "cle-absente"], "gratuit en panne : repli sur Claude payant meme si fallback=journal (J5-025)");
+        pl = withH(undefined, { fallback: "journal" }); assert.strictEqual(pl.variante, "journal", "sans en-tete, fallback=journal garde son effet");
+        process.env.OPENROUTER_API_KEY = FAKE_OR_KEY; }
+
       // duree du blocage : vide, non numerique, nulle ou negative = ignoree, les 10 minutes par defaut valent
       for (const v of ["", "0", "-5", "abc", "   "]) {
         process.env.CQR_FREE_COMPACT_BLOCK_MS = v; const F = fresh(); orMode = "500";
