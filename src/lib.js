@@ -106,6 +106,78 @@ function captureSetupToken(opts) {
   });
 }
 
+// "A un compte" (J7B-020, DR-271) : au moins un jeton non fictif dans le fichier de comptes.
+// Sans compte, cqr est installe mais eteint : ni routage dans settings.json, ni relais lance.
+function hasRealToken(conf) { return !!conf && (conf.tokens || []).some((t) => !isPlaceholder(t)); }
+
+// Timeouts injected into settings.json env. These are what let a held request survive until a 5h
+// window resets instead of being cut. CLAUDE_STREAM_IDLE_TIMEOUT_MS is the critical one (the CLI's
+// semantic idle watchdog defaults to a 5-minute floor that SSE keepalive does NOT reset).
+const TIMEOUTS = {
+  API_TIMEOUT_MS: "605400000",                    // ~7 days, overall HTTP request timeout
+  CLAUDE_STREAM_IDLE_TIMEOUT_MS: "605400000",      // ~7 days, semantic stream idle (THE fix)
+  CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS: "605400000",// ~7 days, subagent stall watchdog
+  CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS: "120000",    // 2 min, byte-level idle (fed by 20s keepalive)
+  CLAUDE_CODE_MAX_RETRIES: "15",                   // ~6 min de patience si le relais est mort (defaut 10 = ~3 min), DR-012
+};
+
+// Branche l'objet settings (en memoire) sur le relais : adresse locale + delais. Appelee par install.js
+// quand un compte existe, et par cli.js au premier compte (une seule fonction pour les deux chemins).
+function brancherSettings(settings, port) {
+  settings.env = settings.env || {};
+  settings.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:" + port;
+  for (const [k, v] of Object.entries(TIMEOUTS)) settings.env[k] = v;
+  // DR-048 : Claude Code ajoute a chaque requete son type et le motif d'un compactage ; le journal les note. Posee seulement si
+  // elle est ABSENTE : une valeur choisie par l'utilisateur est a lui (la desinstallation ne retire que "1").
+  if (!("CLAUDE_CODE_GATEWAY_HINT_HEADERS" in settings.env)) settings.env.CLAUDE_CODE_GATEWAY_HINT_HEADERS = "1";
+  return settings;
+}
+
+// Inverse de brancherSettings (une seule) : retire adresse locale, delais et en-tetes de passerelle. Le jeton reste (comme a la
+// desinstallation : le retirer pourrait deconnecter le CLI). L'en-tete n'est retire que s'il vaut "1", la valeur posee par cqr.
+function debrancherSettings(settings) {
+  if (!settings.env) return settings;
+  delete settings.env.ANTHROPIC_BASE_URL;
+  for (const k of Object.keys(TIMEOUTS)) delete settings.env[k];
+  if (settings.env.CLAUDE_CODE_GATEWAY_HINT_HEADERS === "1") delete settings.env.CLAUDE_CODE_GATEWAY_HINT_HEADERS;
+  return settings;
+}
+
+// Ecriture de settings.json : fichier temporaire dans le meme dossier puis rename, comme writeConf.
+function writeSettings(sp, s) { const tmp = sp + ".tmp-" + process.pid; try { fs.writeFileSync(tmp, JSON.stringify(s, null, 2)); fs.renameSync(tmp, sp); } catch (e) { try { fs.unlinkSync(tmp); } catch (e2) {} throw e; } }
+
+// Lit settings.json ; rend null (et dit quoi faire sur stderr) s'il est illisible ou n'est pas du JSON.
+function readSettingsOuMessage(sp, quoi) {
+  try { return JSON.parse(fs.readFileSync(sp, "utf8").replace(/^﻿/, "")); }
+  catch (e) { console.error("settings.json (" + sp + ") est illisible ou n'est pas un JSON valide : " + quoi + " Réparez ce fichier (ou rétablissez une sauvegarde settings.json.bak-*), puis refaites la commande."); return null; }
+}
+
+// Dernier compte retire : settings.json cesse de pointer vers le relais. Rend true (ecrit), false (fichier absent, rien a faire)
+// ou null (fichier illisible, message deja affiche, rien d'ecrit).
+function debrancherFichier(sp) {
+  sp = sp || settingsPath();
+  if (!fs.existsSync(sp)) return false;
+  const s = readSettingsOuMessage(sp, "le retrait du routage vers le relais n'a PAS été fait (ANTHROPIC_BASE_URL, délais).");
+  if (!s) return null;
+  debrancherSettings(s);
+  writeSettings(sp, s);
+  return true;
+}
+
+// Premier compte (0 -> au moins 1 vrai jeton, pose par cli.js) : branche settings.json puis y copie le jeton.
+// Rend false si settings.json manque (rien d'ecrit), comme syncAuthToken ; null s'il est illisible (message affiche, jeton deja
+// enregistre dans le fichier de comptes, branchement a refaire).
+function brancherPremierCompte(conf, sp, port) {
+  sp = sp || settingsPath();
+  if (!fs.existsSync(sp)) return false;
+  const s = readSettingsOuMessage(sp, "le jeton est bien enregistré, mais le branchement sur le relais n'a PAS été fait.");
+  if (!s) return null;
+  brancherSettings(s, port || conf.port || 8787);
+  writeSettings(sp, s);
+  return syncAuthToken(conf, sp);
+}
+
+// Rend false (rien a copier / fichier absent), true (ecrit) ou null (settings.json illisible, message affiche).
 // Copy the first usable token into settings.json's ANTHROPIC_AUTH_TOKEN so Claude Code has
 // a token to start with (the proxy rewrites the Authorization header per request anyway).
 function syncAuthToken(conf, sp) {
@@ -113,11 +185,11 @@ function syncAuthToken(conf, sp) {
   if (!fs.existsSync(sp)) return false;
   const first = (conf.tokens || []).find((t) => !isPlaceholder(t));
   if (!first) return false;
-  const raw = fs.readFileSync(sp, "utf8").replace(/^﻿/, "");
-  const s = JSON.parse(raw);
+  const s = readSettingsOuMessage(sp, "le jeton est bien enregistré dans le fichier de comptes, mais sa copie dans settings.json n'a PAS été faite.");
+  if (!s) return null;
   s.env = s.env || {};
   s.env.ANTHROPIC_AUTH_TOKEN = first.token;
-  fs.writeFileSync(sp, JSON.stringify(s, null, 2));
+  writeSettings(sp, s);
   return true;
 }
 
@@ -272,4 +344,4 @@ function notifyWindows(title, msg, spawnFn, onError) {
   } catch (e) { return false; }
 }
 
-module.exports = { confPath, TOKEN_RE, isPlaceholder, mask, configDir, settingsPath, readConf, writeConf, ask, findClaude, captureSetupToken, pasteTokenManually, syncAuthToken, fmtDur, accounts, bestHeadroom, overageUsable, overageReasonFr, OVERAGE_REASONS, creditsBudget, creditsRemaining, fmtMoney, decodeBody, isTermsBlock, notifyWindows };
+module.exports = { confPath, TOKEN_RE, isPlaceholder, mask, configDir, settingsPath, readConf, writeConf, ask, findClaude, captureSetupToken, pasteTokenManually, syncAuthToken, hasRealToken, brancherSettings, debrancherSettings, debrancherFichier, brancherPremierCompte, TIMEOUTS, fmtDur, accounts, bestHeadroom, overageUsable, overageReasonFr, OVERAGE_REASONS, creditsBudget, creditsRemaining, fmtMoney, decodeBody, isTermsBlock, notifyWindows };

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.26.0
+
+Cle OpenRouter enregistrable et README public refait (DR-022).
+
+- **`cqr compact gratuit cle <cle>|off`** : la cle est rangee dans `compaction.free.key` du fichier de comptes ; `OPENROUTER_API_KEY`, si elle est posee, reste prioritaire. Refuse une cle vide, de moins de 8 caracteres ou avec des espaces (code 1, rien d'ecrit). Effet immediat, aucun redemarrage.
+- **Jamais en clair** : `status`, `on` et la commande n'affichent que la cle masquee ; la cle de config est ajoutee aux secrets masques avant l'envoi et n'entre dans aucun journal. `status` dit la source (environnement, enregistree, absente).
+- **Relais** : une seule fonction `cleOR` (environnement puis config) pour la decision, l'appel et le prechauffage des noms de l'entreprise.
+- **README** : refait en anglais (`README.md`) et en francais (`README.fr.md`).
+- **Test** : `test/free-compact.test.js` couvre la commande, la priorite de l'environnement et le repli sans cle.
+
+## 0.25.0
+
+Sans compte reel, cqr est installe mais eteint ; il se branche et demarre au premier compte (DR-021, etabli J7B-020). Avec au moins un compte : comportement identique a 0.24.0 (`test/eteint-sans-compte.test.js`, C4, octet pour octet contre `85a0b5a`).
+
+- **Sans compte** : `install.js` ne pose ni `ANTHROPIC_BASE_URL`, ni les delais, ni `CLAUDE_CODE_GATEWAY_HINT_HEADERS` ; `ensure-proxy.js` sort sans demarrer ; `cqr start|restart|port|live` ne relancent pas.
+- **Premier compte** (`add`, `login`, `set`) : `settings.json` branche (`lib.brancherSettings`), jeton copie, relais demarre.
+- **Dernier compte retire** : `settings.json` debranche (`ANTHROPIC_AUTH_TOKEN` garde, en-tete retire seulement s'il vaut `1`), relais arrete.
+- **`settings.json` illisible** : message clair, code 1, jeton garde dans le fichier de comptes ; ecriture par fichier temporaire puis renommage.
+- **Test** : C4 echoue si la reference manque, sauf `CQR_ALLOW_SKIP=1`.
+
 ## 0.24.0
 
 Le sous-projet vient de la LIAISON de la session (projet racine, DR-379 a DR-381) au lieu du `CLAUDE.md` a frontmatter du cwd : la session est lancee a la racine. Session non liee : comportement racine inchange.

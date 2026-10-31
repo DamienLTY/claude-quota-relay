@@ -38,6 +38,7 @@ function writeConf(c) { lib.writeConf(CONF, c); }
 function readState() { try { return JSON.parse(fs.readFileSync(STATE, "utf8")); } catch (e) { return { activeIndex: 0, exhausted: {}, pct: {} }; } }
 function writeState(s) { fs.writeFileSync(STATE, JSON.stringify(s, null, 2)); }
 function isPlaceholder(t) { return !t || !t.token || /^(PASTE|REMPLACE|<)/i.test(t.token); }
+function maskCle(k) { return k.length >= 20 ? k.slice(0, 10) + "..." + k.slice(-4) : "..." + k.slice(-4); } // cle OpenRouter : jamais en clair
 function mask(tok) { return isPlaceholder({ token: tok }) ? "(vide)" : tok.slice(0, 14) + "..." + tok.slice(-4); }
 
 function health(cb) {
@@ -127,6 +128,21 @@ function reportStartFailure() {
   console.error("  - un antivirus/EDR d'entreprise bloque les process détachés en arrière-plan -> vérifiez les journaux de votre antivirus, ou lancez le proxy au premier plan pour voir l'erreur : node \"" + PROXY + "\"");
 }
 
+// J7B-020 / DR-271 : sans compte (aucun jeton non fictif), cqr est installe mais eteint. Fichier illisible : on laisse faire (comportement d'avant).
+function sansCompte() { try { return !lib.hasRealToken(readConf()); } catch (e) { return false; } }
+function refuserSansCompte() { console.error("Aucun compte Claude : le relais ne démarre pas. Ajoutez-en un d'abord : cqr add"); process.exit(1); }
+// Premier compte (passage de 0 a au moins 1 vrai jeton) : settings.json est branche par lib.brancherPremierCompte (appelee par
+// l'appelant) ; ici on demarre le relais et on verifie qu'il repond. Un relais deja en ligne n'est pas relance.
+function demarrerPremierCompte() {
+  health((h) => {
+    if (h) { console.log("Relais déjà en ligne : redémarrez Claude Code pour qu'il passe par lui."); process.exit(0); }
+    startProxyAndVerify((ok) => {
+      if (ok) { console.log("Premier compte : relais démarré et branché. Redémarrez Claude Code pour que ce soit pris en compte."); process.exit(0); }
+      reportStartFailure(); process.exit(1);
+    });
+  });
+}
+
 function pidAlive(pid) { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } }
 
 // Arret portable : lit le PID file ecrit par le proxy, envoie SIGTERM (ou taskkill en dernier
@@ -160,6 +176,11 @@ function stopProxy(cb) {
 function restartIfRunning(savedMsg, extraNote) {
   let pid = null;
   try { pid = parseInt(fs.readFileSync(PIDFILE, "utf8").trim(), 10); } catch (e) {}
+  if (sansCompte()) { // J7B-020 : sans compte, cqr est eteint : on ne relance pas, on arrete ce qui tournerait
+    const note = " (aucun compte : le relais reste éteint, il démarrera au premier compte : cqr add).";
+    if (pid && pidAlive(pid)) stopProxy(() => console.log(savedMsg + note)); else console.log(savedMsg + note);
+    return;
+  }
   if (!(pid && pidAlive(pid))) {
     console.log(savedMsg + " (le proxy est à l'arrêt — réglage pris au prochain `cqr start`).");
     if (extraNote) console.log(extraNote);
@@ -309,6 +330,7 @@ switch (cmd) {
     // add [name] [--paste]         : capture a token for a NEW account and append it.
     (async () => {
       const c = readConf();
+      const avant = lib.hasRealToken(c); // avant l'ecriture : le passage de 0 a 1 compte branche et demarre le relais (J7B-020)
       const paste = process.argv.includes("--paste");
       const tok = paste ? await lib.pasteTokenManually() : await lib.captureSetupToken();
       if (!tok) { console.error("\nAucun token récupéré. Vous ne voulez pas du navigateur ? Essayez : cqr " + cmd + " " + (a1 || "") + " --paste  (ou : cqr set <nom> <token>)"); process.exit(1); }
@@ -325,8 +347,11 @@ switch (cmd) {
         c.tokens[idx].token = tok; c.tokens[idx].enabled = true; name = c.tokens[idx].name;
       }
       writeConf(c);
-      const synced = lib.syncAuthToken(c, SETTINGS);
+      const premier = !avant && lib.hasRealToken(c);
+      const synced = premier ? lib.brancherPremierCompte(c, SETTINGS, c.port) : lib.syncAuthToken(c, SETTINGS);
       console.log("\n✓ token enregistré pour '" + name + "' (" + mask(tok) + ")" + (synced ? " et synchronisé dans settings.json" : "") + ".");
+      if (synced === null) process.exit(1); // settings.json illisible : message deja affiche par lib, relais non demarre
+      if (premier) return demarrerPremierCompte();
       console.log("Lancez `cqr restart` puis redémarrez Claude Code pour que ce soit pris en compte.");
       process.exit(0);
     })();
@@ -335,6 +360,7 @@ switch (cmd) {
   case "sync-env": {
     const c = readConf();
     const okk = lib.syncAuthToken(c, SETTINGS);
+    if (okk === null) process.exit(1); // settings.json illisible : message deja affiche par lib
     console.log(okk ? "1er token synchronisé dans settings.json (ANTHROPIC_AUTH_TOKEN)." : "Aucun token utilisable, ou settings.json introuvable.");
     break;
   }
@@ -343,17 +369,30 @@ switch (cmd) {
   case "set": {
     if (!a1 || !a2) { console.error("Usage : cqr set <nom> <token>"); process.exit(1); }
     const c = readConf(); let t = c.tokens.find((x) => x.name === a1);
+    const avant = lib.hasRealToken(c); // avant l'ecriture (J7B-020)
     if (!t) { t = { name: a1, token: a2, enabled: true }; c.tokens.push(t); } else { t.token = a2; t.enabled = true; }
     writeConf(c); console.log("Token '" + a1 + "' enregistré (" + mask(a2) + ").");
+    if (!avant && lib.hasRealToken(c)) {
+      if (lib.brancherPremierCompte(c, SETTINGS, c.port) === null) process.exit(1); // settings.json illisible : message deja affiche, relais non demarre
+      demarrerPremierCompte();
+    }
     break;
   }
   case "remove": case "rm": case "del": {
     if (!a1) { console.error("Usage : cqr remove <nom>"); process.exit(1); }
     const c = readConf();
-    const before = c.tokens.length;
+    const before = c.tokens.length, avant = lib.hasRealToken(c);
     c.tokens = c.tokens.filter((x) => x.name !== a1);
     if (c.tokens.length === before) { console.error("Aucun compte nommé '" + a1 + "'. Voir : cqr list"); process.exit(1); }
     writeConf(c);
+    if (avant && !lib.hasRealToken(c)) { // J7B-020 : plus aucun compte -> cqr eteint : settings.json ne pointe plus vers le relais, le relais s'arrete
+      const d = lib.debrancherFichier(SETTINGS);
+      stopProxy(() => {
+        console.log("Compte '" + a1 + "' retiré. Plus aucun compte : le relais est arrêté" + (d ? " et settings.json ne pointe plus vers lui (redémarrez Claude Code)" : d === null ? ", MAIS settings.json n'a pas pu être débranché (voir ci-dessus)" : "") + ". Il redémarrera au prochain compte : cqr add");
+        process.exit(d === null ? 1 : 0);
+      });
+      break;
+    }
     console.log("Compte '" + a1 + "' retiré. Redémarrez le proxy : cqr restart");
     break;
   }
@@ -460,10 +499,23 @@ switch (cmd) {
         f.enabled = true; writeConf(c);
         console.log("Compactage gratuit ACTIVÉ : les compactages automatiques et manuels (/compact) de Claude Code sont écrits par Nemotron 3.5 Super VL (OpenRouter, offre gratuite de NVIDIA) au lieu de Claude ; au moindre échec, Claude reprend.");
         console.log("Le texte de la conversation part chez un tiers : jetons et mots de passe masqués, dossier personnel et noms remplacés par des repères (voir le README pour ce que NVIDIA peut en faire).");
-        console.log("La clé OPENROUTER_API_KEY doit être dans l'environnement du relais (relancer le relais après l'avoir posée). Effet immédiat, aucun redémarrage nécessaire.");
+        const cle = fc.cleOR(cc);
+        console.log(cle.key ? "Clé OpenRouter : " + (cle.source === "env" ? "OPENROUTER_API_KEY (environnement, prioritaire)." : "enregistrée (" + maskCle(cle.key) + ").") + " Effet immédiat, aucun redémarrage nécessaire."
+          : "Aucune clé OpenRouter : `cqr compact gratuit cle <clé>` (ou la variable OPENROUTER_API_KEY dans l'environnement du relais). Sans clé, Claude écrit les compactages. Effet immédiat, aucun redémarrage nécessaire.");
         if (!cc.enabled) console.log("compactage coupé : `cqr compact on` d'abord");
       }
       else if (a2 === "off") { f.enabled = false; writeConf(c); console.log("Compactage gratuit désactivé : Claude écrit tous les compactages."); }
+      else if (a2 === "cle" || a2 === "key") {
+        // DR-022 : la cle OpenRouter vit dans compaction.free.key (config) ; la variable d'environnement reste prioritaire. Jamais affichee en clair.
+        if (a3 === "off") { delete f.key; writeConf(c); console.log("Clé OpenRouter enregistrée effacée" + (process.env.OPENROUTER_API_KEY ? " (OPENROUTER_API_KEY, elle, reste posée dans l'environnement)." : ".")); }
+        else {
+          const k = a3 === undefined ? "" : String(a3).trim();
+          if (k.length < 8 || /\s/.test(k)) { console.error("Refusé : clé vide, de moins de 8 caractères ou avec des espaces. Rien n'a été modifié. Usage : cqr compact gratuit cle <clé>|off"); process.exit(1); }
+          f.key = k; writeConf(c);
+          console.log("Clé OpenRouter enregistrée (" + maskCle(k) + "). Effet immédiat, aucun redémarrage nécessaire." + (process.env.OPENROUTER_API_KEY ? " Attention : OPENROUTER_API_KEY reste prioritaire dans ce terminal." : ""));
+          console.log("L'historique du terminal garde la commande, donc la clé : pour l'éviter, posez plutôt OPENROUTER_API_KEY dans l'environnement du relais.");
+        }
+      }
       else if (a2 === "noms" || a2 === "names") {
         if (a3 === undefined) { console.error('Usage : cqr compact gratuit noms "<nom1,nom2>"  (liste vide "" pour tout retirer)'); process.exit(1); }
         const noms = [...new Set(String(a3).split(",").map((n) => n.trim()).filter(Boolean))];
@@ -480,9 +532,10 @@ switch (cmd) {
         console.log("types        :", r.kinds.join(", ") || "aucun", "(les compactages « reactive » restent toujours chez Claude)");
         console.log("délai        :", Math.round(r.timeoutMs / 1000) + "s, puis Claude reprend ; résumé d'au moins " + r.minSummaryChars + " caractères");
         console.log("noms masqués :", r.names.join(", ") || "aucun", "(en plus du dossier personnel et du nom d'utilisateur) -- cqr compact gratuit noms \"<a,b>\"");
-        console.log("clé          :", process.env.OPENROUTER_API_KEY ? "OPENROUTER_API_KEY présente dans ce terminal" : "OPENROUTER_API_KEY absente de ce terminal", "(le relais la lit dans son propre environnement)");
+        const cle = fc.cleOR(cc);
+        console.log("clé          :", cle.source === "env" ? "OPENROUTER_API_KEY (environnement, prioritaire)" : cle.source === "config" ? "enregistrée (" + maskCle(cle.key) + ")" : "absente -- cqr compact gratuit cle <clé>");
       }
-      else { console.error('Usage : cqr compact gratuit on|off|status|noms "<a,b>"'); process.exit(1); }
+      else { console.error('Usage : cqr compact gratuit on|off|status|cle <clé>|off|noms "<a,b>"'); process.exit(1); }
     }
     else if (a1 === "status" || !a1) {
       console.log("activée  :", !!cc.enabled);
@@ -587,9 +640,9 @@ switch (cmd) {
     console.log("workflowGuard :", JSON.stringify(wg));
     break;
   }
-  case "start": health((h) => { if (h) console.log("Déjà en cours."); else startProxyAndVerify((ok) => { if (ok) console.log("Proxy démarré et opérationnel."); else { reportStartFailure(); process.exit(1); } }); }); break;
+  case "start": if (sansCompte()) refuserSansCompte(); health((h) => { if (h) console.log("Déjà en cours."); else startProxyAndVerify((ok) => { if (ok) console.log("Proxy démarré et opérationnel."); else { reportStartFailure(); process.exit(1); } }); }); break;
   case "stop": stopProxy((ok) => console.log(ok === true ? "Proxy arrêté." : ok === "unknown" ? "Le proxy répond mais aucun fichier PID (démarré hors du CLI ?)." : "Aucun proxy en cours.")); break;
-  case "restart": stopProxy(() => setTimeout(() => { startProxyAndVerify((ok) => { if (ok) console.log("Proxy redémarré et opérationnel."); else { reportStartFailure(); process.exit(1); } }); }, 800)); break;
+  case "restart": if (sansCompte()) refuserSansCompte(); stopProxy(() => setTimeout(() => { startProxyAndVerify((ok) => { if (ok) console.log("Proxy redémarré et opérationnel."); else { reportStartFailure(); process.exit(1); } }); }, 800)); break;
   case "help": case "--help": case "-h": printHelp(); break;
   default: console.error("Commande inconnue : " + cmd + "\n"); printHelp(); process.exit(1);
 }
@@ -632,6 +685,7 @@ function printHelp() {
     "  cqr compact dynamic on|off réduit sur le MÊME compte quand le contexte est gros",
     "  cqr compact mode native|strip · keep <n> · cooldown <min> · buffer <pts> · memory",
     "  cqr compact gratuit on|off|status   compactages écrits par Nemotron gratuit (coupé par défaut)",
+    "  cqr compact gratuit cle <clé>|off   clé OpenRouter enregistrée (OPENROUTER_API_KEY, si posée, reste prioritaire)",
     "  cqr compact gratuit noms \"<a,b>\"   noms à masquer avant l'envoi",
     "",
     "Crédits d'usage supplémentaire (extra usage — non utilisés par défaut)",

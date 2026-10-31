@@ -479,3 +479,31 @@ Réserve : le `system` vide final n'est observé qu'en `claude -p --resume`. En 
 **Diagnostic de l'autre PC (rapport de son agent, collé par l'utilisateur le 2026-10-31).** Tous les 429 sont passés par le chemin « compte épinglé » : relais 0.24.0 (`59358e1`), session bien routée par le relais (`ANTHROPIC_BASE_URL` 8788), 0 ligne `REJECTED`/`WAIT`/`x-cqr-compte`. Preuves citées : « RESP 429 token=4 classe=subagent session=d8b8601b … "retry-after":"2114" … 5h-status":"rejected" … 5h-utilization":"1.0", alors que PROBE 1/2/5/6 5h=0% » (31/10 07:14 UTC), puis « RESP 429 token=2 classe=main session=f73676fc … "retry-after":"14982" » (08:40 UTC), chaque fois après un `/auth-use` (4 à 21:07, 2 à 07:16, 3 à 08:41). Une quinzaine d'erreurs entre le 30/10 22:01 et le 31/10 01:13 UTC, hors journal (tourné). État : `forceIndex=2` (compte « 3 ») toujours posé. Un `/auth-use auto` tapé à 08:40 n'a pas désépinglé (`#auto` → « Compte introuvable ») : c'est `/auth-auto` qui désépingle. Confirme la cause visée par DR-020.
 
 **Preuve (DR-018 à DR-020, 2026-10-31).** `test/epingle-429.test.js` : S1 à S4 en FAIL sur l'ancien `proxy.js`, 5/5 PASS après ; mutations M1 à M4 font chacune tomber leur scénario ; `cli-commands` en FAIL sur l'ancien `cli.js` (« Commande inconnue : bascule »), PASS après. `npm test` code 0, 76 PASS, 0 FAIL. Relecteur ACCEPTABLE ; son constat 1 corrigé (l'épinglage ne se déplace que si l'épinglé est encore en pause, `src/proxy.js` `attempt`) ; constat 2 non corrigé : la branche « crédits » (épinglage qui ne va pas sur un compte à crédits) n'a pas de test. Installé ici (`cmp` vides, relais redémarré en 0.24.0), puis `cqr bascule "#3"` : plus de `forceIndex`.
+
+## DR-021 — Sans compte, cqr installé et éteint ; démarré au premier compte
+
+**Type** : technique · **État** : tranché et appliqué (2026-10-31, v0.25.0) ; voie C `54c8645`, corrections `32ee99d` et `41e3593`, fusion `184de14` ; pas encore installé sur ce poste (`installer.sh --reel`)
+
+**Question posée et réponse citée (etabli, grill J7-bis round 5, `J7B-020` du registre `0. MEMORY/projets/J7B-onboarding/REGISTRE-DECISIONS.md`).** « Sur une machine vierge sans compte Claude, que fait-on de cqr ? » Proposé : « Pas de cqr avant un compte » (recommandé), « Installé, éteint ». → « *Installé, éteint* » (contre la recommandation) — « cqr est installé mais ne démarre pas sans compte. Il faut modifier cqr (le hook et le réglage du port 8787), alors que cqr fait passer toutes les séances de ce poste. »
+
+**Ce qui en découle (plan etabli `0. MEMORY/projets/J7B-onboarding/plans/2026-10-31-installeur-vierge.md`, voie C).** Sans vrai jeton : `install.js` ne pose ni `ANTHROPIC_BASE_URL`, ni les délais, ni `CLAUDE_CODE_GATEWAY_HINT_HEADERS` ; `ensure-proxy.js` sort sans démarrer ; `cqr start|restart|port|live` ne relancent pas. Au premier vrai jeton (`add`, `login`, `set`) : `settings.json` branché (écriture temporaire puis renommage), relais démarré. Par défaut de l'agent, non questionné : au retrait du dernier vrai jeton, `settings.json` est débranché (le jeton `ANTHROPIC_AUTH_TOKEN` reste) et le relais arrêté ; `settings.json` illisible → message clair, code 1, jeton gardé.
+
+**Preuve (2026-10-31).** `test/eteint-sans-compte.test.js` : C4 compare 13 sorties et 18 fichiers à `85a0b5a` avec 1 puis 6 comptes (identiques ; échoue si la référence manque, sauf `CQR_ALLOW_SKIP=1`) ; trois mutations font tomber leur test. `npm test` code 0. Revues qualité et sécurité ACCEPTABLE sur `54c8645` ; contre-revue À CORRIGER (`syncAuthToken` sans garde pour le 2e compte), corrigé dans `41e3593` avec son test (mutation : échoue sans). Après fusion, C4 compare les fichiers sans tenir compte des fins de ligne (copie de travail en CRLF) ; contre-épreuve : une ligne ajoutée à `free-compact.js` le fait échouer. Non exercé ici : `ensure-proxy` sans fichier de comptes (port 8787 tenu par le vrai relais, SKIP).
+
+## DR-022 — README public refait, clé OpenRouter enregistrable
+
+**Type** : documentation + fonction · **État** : tranché et appliqué le 2026-10-31 (v0.26.0)
+
+**Demande de l'utilisateur (2026-10-31, session etabli liée à J7-outils).** « Il faut refaire le README et tout la page d'accueil de claude-quota-relay (seul repo public). il parle de établi pas sortis et pas utile pour les gens qui utiliserais uniquement CQR. La page n'explique pas bien comment l'installer ou son fonctionnement. Prévenir de la sécurité de cqr, qu'il ne volent pas les clés des gesn. Prévenir pour le compactage qu'il faut une clé openrouter + penser a vérifier si on as mis une procédure comme les comptes claudes pour intégrer facilement une clé openrouter... a toit de jouer. »
+
+**Constat (agent).** Aucune procédure : la clé n'était lue que dans `OPENROUTER_API_KEY` de l'environnement du relais (`src/free-compact.js:355`), perdue quand la barre d'état relance le relais (`src/ensure-proxy.js:52`). Le code ne contacte que `127.0.0.1`, Anthropic (ou `ANTHROPIC_TARGET_API_URL`) et `openrouter.ai`.
+
+**Questions posées et réponses citées (grill, round 1).**
+- « Clé OpenRouter : […] Que fait-on ? » → « Ajouter une commande » (`cqr compact gratuit cle`, rangée dans tokens.json, la variable d'environnement reste prioritaire).
+- « Langue du README public ? » → « Anglais + français » (README.md anglais, README.fr.md français, lien croisé).
+- « Les parties propres à etabli […] : on en fait quoi ? » → « Les retirer du README ».
+- « Une fois fait et relu, je pousse sur GitHub (pousser-subtree.sh --appliquer) ? » → « Oui, pousser ».
+
+**Ce qui en découle (plan `plans/2026-10-31-readme-public-cle-openrouter.md`).** `cqr compact gratuit cle <clé>|off` range la clé dans `compaction.free.key` ; `cleOR` (`src/free-compact.js`) lit l'environnement d'abord, puis la config ; la clé est masquée à l'affichage et avant l'envoi. README.md en anglais, README.fr.md en français, sans etabli. C4 de `test/eteint-sans-compte.test.js` ne compare plus les copies `.js` installées (elles changent avec le code).
+
+**Preuve (2026-10-31).** `npm test` code 0, 88 PASS ; mutation « clé de config ignorée » fait tomber le test ; relecteur ACCEPTABLE (aucun chemin n'affiche la clé ; hôtes contactés conformes au README). Un échec isolé « journal : ligne ok » attribué à deux suites lancées en même temps (ports fixes), non reproduit seul.

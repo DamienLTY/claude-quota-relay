@@ -1,54 +1,84 @@
-# claude-quota-relay
+# claude-quota-relay (`cqr`)
 
-**Le problème :** vous avez plusieurs abonnements Claude, mais Claude Code n'en utilise qu'un seul. Quand son quota est épuisé, il s'arrête net :
+English · [Français](README.fr.md)
+
+## What it is for
+
+You have several Claude subscriptions, but Claude Code only uses one of them. When its quota runs out, everything stops:
 
 ```
 API Error: Request rejected (429) · This request would exceed your account's rate limit.
 ```
 
-**La solution :** ce projet installe un petit programme qui tourne sur votre ordinateur, entre Claude Code et Anthropic. Il jongle entre vos comptes tout seul. Quand l'un est plein, il passe au suivant. Quand ils sont tous pleins, il attend qu'un quota se libère et reprend automatiquement — même au milieu d'une longue tâche. Vous ne voyez rien, ça continue.
+`cqr` is a small program that runs on your computer, between Claude Code and Anthropic. It uses your accounts in turn. When one is full, it moves to the next. When all are full, it waits for a quota to free up, then carries on by itself, even in the middle of a long task. You see nothing: it just keeps going.
 
-> Une image : c'est un standard téléphonique. Claude Code appelle un seul numéro (votre ordinateur) ; le standard redirige l'appel vers celui de vos comptes qui peut répondre.
+An image: it is a switchboard. Claude Code always dials the same number (your computer); the switchboard forwards the call to whichever account can answer.
 
-Projet indépendant, gratuit, non affilié à Anthropic. N'utilisez que des comptes **qui vous appartiennent**, dans le respect des conditions d'Anthropic.
+Independent, free project, not affiliated with Anthropic. Only use accounts that belong to you, in line with Anthropic's terms.
 
----
+## How it works
 
-## Installer (3 commandes)
-
-```bash
-git clone https://github.com/DamienLTY/claude-quota-relay.git
-cd claude-quota-relay
-node src/install.js
+```
+Claude Code  ->  cqr (127.0.0.1:8787, your computer)  ->  Anthropic
+                  |  picks the least loaded account
+                  |  switches account when one is refused
+                  |  waits when every account is full
 ```
 
-L'installeur vous pose 2 questions (combien de comptes, et comment donner leur clé), configure tout seul, et vous dit de redémarrer. Puis :
+During installation, `cqr` edits Claude Code's `~/.claude/settings.json` so that Claude Code talks to `127.0.0.1:8787` (an address that means your own computer) instead of talking to Anthropic directly. For each request, `cqr` swaps in the key of the chosen account, then forwards the request.
 
-1. **Redémarrez Claude Code.**
-2. Ouvrez un **nouveau** terminal et tapez `cqr status`.
+## Security: what cqr does (and does not do)
 
-**Il vous faut juste :** [Node.js](https://nodejs.org) version 18 ou plus, et Claude Code déjà installé.
+You hand this program login keys for your accounts. It is normal to want to know what it does with them.
 
-### Donner la clé de chaque compte
+- **Your keys stay on your computer**, in a single file: `tokens.json`, in `~/.claude/claude-quota-relay/`. The file is ignored by git (it cannot be published by mistake). Logs always mask keys, and `cqr` never prints them in full.
+- **It only listens on `127.0.0.1`**, meaning your computer alone. Nobody else on your network can connect to it.
+- **It only talks to three destinations**: Anthropic (`api.anthropic.com`), the company relay you specify yourself (the `ANTHROPIC_TARGET_API_URL` variable, see [Company network](#company-network)), and `openrouter.ai` only if you turn on free compaction (off by default, see [below](#free-compaction-optional-off-by-default)).
+- **No telemetry**, no statistics sent to the author, no account to create with the author.
+- **The code is short and readable**: about 4,700 lines of JavaScript, with no dependency to install. You can check for yourself:
 
-Pour chaque compte, l'installeur demande : **navigateur** ou **coller** ?
+```bash
+# Which files open a connection to the outside? (only proxy.js and free-compact.js)
+grep -n 'require("https")' src/*.js
 
-- **Navigateur** (le plus simple) : une fenêtre s'ouvre, vous vous connectez à ce compte Claude, la clé est récupérée toute seule.
-- **Coller** : tapez `paste`, puis collez une clé que vous avez déjà (format `sk-ant-oat01-…`, obtenue via la commande `claude setup-token`). Pratique si le navigateur est bloqué sur votre machine.
+# Which outside addresses are written in the code?
+grep -n "api.anthropic.com\|openrouter.ai" src/*.js
+```
 
-> ⚠️ **Le piège le plus courant.** Vos comptes doivent être **vraiment différents** (deux abonnements, deux emails). Si vous générez deux clés en étant connecté au **même** compte Claude, ce sont deux clés du même compte → même quota → la bascule ne sert à rien. Comment vérifier : voir [« Mes deux comptes montrent le même quota »](#mes-deux-comptes-montrent-toujours-le-même-quota) plus bas.
+Honest caveat: a key stored in a file can be read by any program running under your user account. This is true of every key stored on a computer; protect your session as usual.
 
----
+## Install
 
-## Au quotidien
+**You need:** [Node.js](https://nodejs.org) version 18 or later, `git`, and Claude Code already installed.
 
-Une seule commande à retenir :
+1. Download the project and run the installer:
+
+   ```bash
+   git clone https://github.com/DamienLTY/claude-quota-relay.git
+   cd claude-quota-relay
+   node src/install.js
+   ```
+
+   The installer copies the files into `~/.claude/claude-quota-relay/`, adds the `cqr` command to your PATH (the list of folders where the terminal looks for commands), sets up `settings.json`, adds the status bar, and asks for your accounts. It backs up `settings.json` before changing it.
+
+2. **Give the key of each account.** For each one, the installer asks: *browser* or *paste*?
+   - **Browser** (easiest): a window opens, you sign in to that Claude account, and the key is fetched automatically.
+   - **Paste**: type `paste`, then paste a key you already have (it starts with `sk-ant-oat01-`; you get one with the `claude setup-token` command). Handy if your browser is locked down.
+
+   You can also add an account later: `cqr add`.
+
+3. **Restart Claude Code.**
+4. Open a **new** terminal (so that `cqr` is recognized).
+
+> **The most common trap.** Your accounts must be really different (two subscriptions, two e-mail addresses). If you create two keys while signed in to the same Claude account, they are two keys of the same account: same quota, so switching is useless. See [troubleshooting](#my-two-accounts-always-show-the-same-quota).
+
+### Check that it works
 
 ```bash
 cqr status
 ```
 
-Elle montre, pour chaque compte : le quota utilisé (sur 5 h et sur 7 jours), l'heure du prochain reset, et si une attente est en cours. Exemple :
+You should see `Proxy : EN COURS` (running) and one line per account:
 
 ```
 Proxy   : EN COURS (port 8787)
@@ -57,290 +87,155 @@ Actif   : compte-1
    [1] compte-2   on  quota:5h=9%  7d=1%   reset5h~4h05
 ```
 
-Pour tout revoir d'un coup : `cqr help` liste toutes les commandes.
+For each account, these are the quota used over 5 hours and over 7 days, and the time of the next reset. If you see `ARRÊTÉ` (stopped), go to [troubleshooting](#cqr-status-says-stopped-even-after-cqr-start). Then simply start Claude Code: the status bar (see below) shows your accounts.
 
-Le reste est optionnel :
+With no account at all, `cqr` is installed but switched off: it starts when you add the first account.
 
-```bash
-cqr help                 # liste toutes les commandes
-cqr list                 # liste les comptes (clés masquées)
-cqr start | stop | restart   # gère le programme (stop = arrêt voulu : la barre d'état ne le relance pas)
-cqr use <nom>            # force un compte précis ; un 429 sur ce compte déplace l'épinglage sur un compte qui a du quota (DR-018)
-cqr bascule <nom>        # passe sur ce compte sans l'épingler, comme /auth-use (DR-020)
-cqr auto                 # revient au choix automatique
-```
+## Day to day
 
-> Les réglages (compaction, seuils, politique) sont pris en compte **tout de suite**, sans rien redémarrer. Les deux seuls qui ont besoin d'un redémarrage — le **port** et la **cadence de la statusline** — redémarrent le proxy **automatiquement** pour vous.
-
-**Gérer les comptes :**
+One command to remember: `cqr status`. `cqr help` lists all the others.
 
 ```bash
-cqr add [nom]            # ajoute un compte (navigateur, ou --paste pour coller)
-cqr login <nom>          # reconnecte un compte
-cqr set <nom> <clé>      # met une clé directement, sans question
-cqr remove <nom>         # retire un compte
+cqr list                     # list accounts (keys masked)
+cqr add [name]               # add an account (browser, or --paste to paste)
+cqr login <name>             # reconnect an account
+cqr set <name> <key>         # set a key directly, no questions
+cqr remove <name>            # remove an account
+cqr start | stop | restart   # manage the program (stop = deliberate stop, the status bar will not restart it)
+cqr use <name>               # force one account; if it is refused (429), cqr moves to an account that has quota
+cqr bascule <name>           # switch to this account without pinning it (also in Claude Code: /auth-use)
+cqr auto                     # back to automatic choice
 ```
 
----
+Settings take effect immediately, with no restart. Only the port and the status bar refresh rate restart the program, and `cqr` does it for you.
 
-## Ce qui est actif tout seul (rien à faire)
-
-### La bascule + l'attente
-
-Le cœur du projet. À chaque requête, le programme choisit le compte le moins chargé, change de compte si celui-ci est refusé, et **patiente** si tous sont pleins (la requête reste ouverte, Claude Code croit juste que ça répond lentement, puis ça repart). Toujours actif.
-
-Réglage principal — **à quel pourcentage changer de compte** :
+The main setting: at what quota percentage to change account.
 
 ```bash
-cqr policy                     # voir les réglages
-cqr policy waitsoft 85         # attendre dès 85 % au lieu d'aller jusqu'à 100 %
+cqr policy                   # show the settings
+cqr policy waitsoft 85       # start waiting at 85% instead of going all the way to 100%
 ```
 
-**Surcharge chez Anthropic (`529`).** Le compte est mis en pause et la requête part sur l'autre compte. Si la surcharge dure, les tentatives **s'espacent** (90 s, 3 min, puis 5 min au maximum) au lieu de marteler le serveur. Pendant ce temps la sonde de quota, qui est minuscule, peut très bien passer : elle ne lève pas la pause pour autant, sinon on relâcherait la vraie requête pour reprendre un refus.
+## What works on its own
 
-**Panne chez Anthropic (« API Error: 500 »).** Un `500` n'est pas une limite de quota, c'est un serveur qui a un problème — et c'est souvent intermittent (une requête passe, la suivante échoue). Le programme **retente automatiquement** la même requête, en espaçant les essais (2 s, 4 s, 8 s… jusqu'à 1 min), pendant **15 minutes** par défaut. Pas besoin de savoir quand la panne est réparée : c'est l'essai qui aboutit qui le prouve. Si ça échoue encore au bout des 15 minutes, la vraie erreur vous est rendue (une requête que le serveur refuse *toujours* ne doit pas rester suspendue). Réglable par `serverErrorMaxMs` dans la config (`0` = ne rien retenter).
+**Switching and waiting.** For each request, `cqr` picks the least loaded account. If an account is refused, it moves to the next. If all are full, it keeps the request open: Claude Code only thinks the answer is slow, then it resumes at the reset.
 
-**Coupure d'internet en pleine réponse (câble débranché, bascule Wi-Fi, VPN qui se reconnecte).** La réponse d'Anthropic s'arrête au milieu. Selon ce qui est déjà arrivé chez vous :
+**Temporary outages.** If Anthropic is overloaded (error 529) or down (error 500), `cqr` retries at growing intervals for 15 minutes before handing you the error. If your connection drops (sleep, Wi-Fi, a VPN reconnecting), it holds the request and retries for up to 60 minutes. A response cut off halfway is cut cleanly so that Claude Code redoes it.
 
-- **rien n'est encore parti** → le programme **refait la requête tout seul** (2 s, 4 s, 8 s… jusqu'à 30 s) et vous ne voyez rien passer ;
-- **une partie de la réponse est déjà arrivée** → elle ne peut pas être rejouée sans se dupliquer, alors la connexion est **coupée franchement**. Claude Code affiche une erreur réseau ordinaire, qu'il sait retenter.
-
-Ce qu'il ne fait plus, c'est laisser passer une réponse à moitié écrite : Claude Code n'arrivait alors plus à la décompresser et affichait `API Error: ZlibError fetching http://127.0.0.1:8788/v1/messages` — une erreur qu'il ne retente pas, donc la requête était perdue.
-
-**Veille, changement de réseau, VPN qui se reconnecte (Zscaler…).** Au réveil, le réseau n'est pas toujours prêt : pas de connexion du tout, certificat intercepté le temps que le VPN revienne, ou connexion restée ouverte mais muette. Dans tous ces cas, le programme **retient la requête et réessaie** — 90 s de silence d'Anthropic suffisent à tenir une connexion pour morte et à la refaire — en gardant Claude Code en ligne pendant ce temps. Il patiente **60 minutes** à partir de la première erreur, puis rend l'erreur pour que vous la voyiez. Réglable par `networkErrorMaxMs` dans la config. Sans cela, Claude Code épuisait ses tentatives en quelques minutes et le sous-agent mourait avec `Request timed out`.
-
-### L'auto-compaction (active par défaut)
-
-**Quand le programme change de compte, il allège la requête envoyée au nouveau compte** — sans rien perdre. Il demande à Anthropic d'effacer les vieux résultats d'outils de la conversation (en gardant les plus récents), une fonction officielle qui **ne coûte aucun token**. Résultat : le compte tout neuf se remplit beaucoup plus lentement. Mesuré jusqu'à **-98 %** de tokens.
-
-Rien n'est perdu : Claude Code garde tout son historique en local, on allège seulement ce qui part sur le réseau.
-
-C'est **actif par défaut**. Ça n'agit qu'au moment d'un changement de compte, donc votre usage normal n'est pas touché. Pour régler ou couper :
+**Auto-compaction (on by default).** When `cqr` changes account, it lightens the request sent to the new account: it asks Anthropic to clear the old tool results from the conversation (an official feature that costs no tokens). The fresh account fills up much more slowly. Nothing is lost: Claude Code keeps its whole history locally, only what goes over the network is lightened. Switch point per model: Fable 85%, Opus 89%, Sonnet 90%, Haiku 95%.
 
 ```bash
-cqr compact                    # voir l'état + tous les réglages
-cqr compact off                # tout couper
-cqr compact threshold opus 89  # % de quota qui déclenche la bascule pour Opus (défaut ci-dessous)
-cqr compact clearatleast 5000  # n'effacer que si ça rapporte au moins 5000 tokens (défaut : off)
-cqr compact memory-dedup off   # réinjecter la mémoire du projet à chaque tour (défaut : si changée)
+cqr compact                    # show the state and settings
+cqr compact off                # turn everything off
+cqr compact threshold opus 89  # change a model's threshold
 ```
 
-`cqr compact off` coupe **tout** : l'effacement des vieux résultats d'outils **et** la mémoire factuelle du projet (plus de `.cqr-memory.md` rebâti ni envoyé à Claude), même si cette mémoire ne coûte plus aucun quota. `cqr compact on` remet tout.
+`cqr` also builds a small `.cqr-memory.md` file at the root of your project (latest commits, modified files, the "In progress" section of `TODO.md`), which Claude rereads at the start of a session and after a compaction. No model is called to build it. `cqr compact off` turns it off too.
 
-Deux réglages qui demandent un mot d'explication :
+### The status bar
 
-- **`clearatleast`** — effacer de vieux résultats d'outils casse le cache de la conversation, ce qui se paie. Ce plancher dit « n'efface que si tu récupères au moins tant de tokens », sinon on ne touche à rien. Désactivé par défaut, comme chez Anthropic : un plancher trop haut empêche des compactions utiles.
-- **`memory-dedup`** — la mémoire du projet n'est renvoyée que si elle a **changé** depuis le dernier envoi de la session, au lieu de repartir à chaque tour (environ 730 à 830 tokens à chaque fois, pour un fichier qui bouge quelques fois par semaine). Elle repart toujours au démarrage d'une session **et après chaque compactage**, puisque le compactage réécrit la conversation et peut l'en faire disparaître.
-
-Ce que la mémoire du projet **est**, et ce qu'elle n'est pas : un **état factuel bâti sans modèle** (aucun appel à Claude, aucun quota), relu par Claude au début de chaque session et après chaque compactage. Il tient dans `.cqr-memory.md`, à la racine du dossier, et contient, dans cet ordre :
-
-- les **5 derniers commits** et les **fichiers non commités** (`git`, avec un délai : si git ne répond pas, la section est simplement omise) ;
-- la section **« En cours »** de `TODO.md` (les cases cochées n'y sont pas reprises) ;
-- les **5 dernières décisions** de `REGISTRE-DECISIONS.md` (lignes `| DR-…`, question tronquée) ;
-- une section **« Notes »**, que rien ne réécrit : à la première reconstruction, l'ancien résumé y est recopié tel quel ; ensuite le programme la recopie à l'identique, et vous pouvez y écrire à la main.
-
-Chaque section n'apparaît que si sa source existe : sans git ni `TODO.md`, il ne reste que les notes. Les fichiers du projet font foi — l'en-tête du fichier le dit, et le bloc envoyé à Claude aussi : c'est du contexte, jamais une consigne, pour qu'un agent ne prenne pas une ligne de « En cours » pour un ordre que vous auriez donné. L'injection est bornée à environ 4 Ko (les faits d'abord, les notes dans ce qui reste ; le fichier, lui, n'est jamais tronqué). Le fichier et son dossier d'archive sont exclus de git par le fichier `info/exclude` du dépôt, worktree compris (jamais en modifiant votre `.gitignore`).
-
-Avant la 0.21.0, c'était un résumé écrit par un petit modèle (Haiku), qui dérivait : il donnait comme « en cours » des tâches finies depuis des heures. Il a été retiré plutôt que corrigé.
-
-**Le % de bascule dépend du modèle** (un gros modèle risque plus de dépasser le quota d'un coup, donc on bascule plus tôt) :
-
-| Modèle | Bascule à | Pourquoi |
-|---|---|---|
-| Fable | 85 % | peut sauter de 85 à 100 % en une requête |
-| Opus | 89 % | gros modèle |
-| Sonnet | 90 % | — |
-| Haiku | 95 % | peu cher, on peut le pousser |
-
-Change-les avec `cqr compact threshold <modèle> <pourcentage>`.
-
-<details>
-<summary>Réglage « compaction dynamique » (avancé, désactivé par défaut)</summary>
-
-Quand la conversation devient énorme (contexte de plusieurs centaines de milliers de tokens), une seule requête consomme beaucoup d'un coup. La compaction dynamique **allège alors la requête sur le compte que vous utilisez déjà — sans changer de compte**. Vous restez sur la même clé, elle dure juste plus longtemps.
-
-C'est **désactivé par défaut**. L'activer active aussi l'auto-compaction (sinon ça n'aurait aucun effet) :
-
-```bash
-cqr compact dynamic on     # active la compaction dynamique (+ l'auto-compaction)
-cqr compact buffer 4       # marge de sécurité, en points
-cqr compact dynamic off    # revient à : on n'allège qu'au changement de compte
-```
-</details>
-
-### Le compactage gratuit (coupé par défaut)
-
-Quand Claude Code compacte la conversation — tout seul vers 300 000 tokens, ou quand vous tapez `/compact` —, c'est normalement Claude qui écrit le résumé, et ça consomme du quota. Cette option fait écrire ce résumé par **Nemotron 3.5 Super VL** (NVIDIA, offre gratuite via OpenRouter) à la place. **Au moindre échec, Claude reprend** et écrit le résumé comme s'il ne s'était rien passé.
-
-**C'est coupé par défaut, et ça se règle poste par poste** (le réglage vit dans le `tokens.json` de chaque PC). Ne l'activez pas sur un poste ou un projet confidentiel : c'est la seule fonction du programme qui envoie du texte de conversation à un tiers.
-
-Depuis etabli (DR-220, DR-226) : si `~/.etabli/cles/cqr-tokens.json` existe, c’est lui que lisent et écrivent le relais, la CLI, l’installeur et les hooks (installation standard seulement) ; sinon le `tokens.json` historique, à côté des scripts, comme avant. Ce repli est permanent : cqr marche aussi seul.
-
-```bash
-export OPENROUTER_API_KEY=...        # votre clé OpenRouter, dans l'environnement du relais (puis : cqr restart)
-cqr compact gratuit on               # activer (effet immédiat)
-cqr compact gratuit noms "nom,pseudo"  # noms supplémentaires à masquer (facultatif, 3 caractères au moins chacun)
-cqr compact gratuit status           # état, modèle, noms, clé vue ou non dans ce terminal
-cqr compact gratuit off              # couper
-```
-
-La clé n'est lue que dans la variable d'environnement `OPENROUTER_API_KEY` du relais : elle n'est écrite ni dans `tokens.json` ni dans les journaux, et `cqr` ne l'affiche jamais.
-
-**Ce qui part chez NVIDIA** (via OpenRouter) : le texte de la conversation — vos messages, les commandes que Claude a lancées et leurs résultats. Ne partent pas : le prompt système, la liste des outils, le raisonnement interne de Claude. Avant l'envoi :
-
-- les **jetons et mots de passe** reconnus sont remplacés par `[SECRET-MASQUE]`, **définitivement** : ils ne reviennent jamais dans le résumé. Sont reconnus : les clés Anthropic, GitHub, AWS, Google, OpenAI/OpenRouter, Slack, Stripe (`sk_live_`, `sk_test_`, `rk_live_`), npm, Hugging Face et GitLab ; les jetons JWT ; les en-têtes `Authorization: Bearer|Basic`, `Cookie` et `Set-Cookie` ; le mot de passe d'une adresse (`https://nom:motdepasse@hôte`) ; `sshpass -p` et `mysql -p` ; les clés privées, **du `BEGIN` au `END`** (quand le `END` manque : jusqu'au message suivant de la conversation, ou jusqu'à la fin du texte) ; les affectations `token=`, `api_key=`, `password=`, `secret=`, `private_key=`, `access_key=` et `PASS=`, quelle que soit la valeur, sauf un nombre derrière `token` (`max_tokens: 32768` reste lisible) ; les options `--password`, `--passwd`, `--pwd`, `--token` et `--secret`, `curl -u nom:motdepasse` et `login -p` ; et la valeur exacte de `OPENROUTER_API_KEY` et de chaque jeton de `tokens.json`. Ce filtre repose sur des formes connues : un secret d'une forme inconnue passerait. À l'inverse, dans le doute il masque trop plutôt que trop peu : environ 1,3 % des lignes d'un dépôt chargé en `token` ont été masquées à tort (mesuré), et ce qui est masqué ne revient pas dans le résumé ;
-- votre **dossier personnel** (écrit `C:\Users\vous`, `C:/Users/vous`, `/c/Users/vous` ou `C--Users-vous`), votre **nom d'utilisateur**, le **nom de votre dossier personnel** et les **noms** ajoutés avec `cqr compact gratuit noms` sont remplacés par un repère (`[PERSO-a1b2c3-1]`…), un par chaîne d'origine, majuscules comprises. Un nom d'utilisateur ou de dossier de moins de 3 caractères n'est pas masqué seul (il couperait des mots ordinaires) ; le chemin complet l'est toujours. Les repères sont **remis en clair** dans le résumé que reçoit Claude Code : la session suivante retrouve ses vrais chemins. Le repère porte un nombre tiré au hasard à chaque envoi : un `[PERSO-1]` déjà présent dans votre texte n'est jamais remis en chemin, et si le résumé contient un repère que le relais n'a pas posé, Claude reprend la main.
-
-**Conditions de l'offre gratuite** (lues le 5 octobre 2026) : l'accès d'essai de NVIDIA est réservé à un usage d'essai, hors production ; il est interdit d'y envoyer des données confidentielles ou sensibles ; NVIDIA peut réutiliser le contenu envoyé et généré pour améliorer ses produits. Ce que vous envoyez peut donc être gardé et réutilisé.
-
-**Quels compactages** : les automatiques (`auto`) et les manuels (`manual`, la commande `/compact`). Les compactages « réactifs » (déclenchés en urgence quand le contexte déborde) restent toujours chez Claude, même si la config le demande. Le relais reconnaît un compactage à l'en-tête que Claude Code envoie (posé par l'installeur, session démarrée après l'installation) : sans cet en-tête, Claude écrit le résumé. L'invite native est cherchée dans le dernier message qui n'est pas de rôle `system` : Claude Code 2.1.289 termine sa requête de compactage par un message `system` vide.
-
-**Quand Claude reprend la main**, sans rien perdre :
-
-- avant tout envoi : réglage coupé, compactage coupé ou absent (`cqr compact off` coupe tout, ceci compris), clé absente, type non listé, conversation estimée à plus de 900 000 tokens, ou blocage de 10 minutes après une panne du service (erreur HTTP ou réseau, délai dépassé, réponse trop grosse, réponse illisible `json-invalide` ou sans choix `sans-choix` ; un résumé refusé, lui, ne bloque pas) ;
-- après l'envoi : erreur du service ou du réseau, plus de 240 s d'attente, réponse de plus de 2 Mio (la connexion est coupée), ou résumé refusé (réponse non terminée, balise `<summary>` absente, résumé de moins de 1 500 caractères, repère inconnu). Aucun résumé n'est rendu à Claude Code tant qu'il n'est pas valide. Pendant les 60 premières secondes, rien n'est envoyé du tout au client : un repli rapide lui rend la vraie réponse de Claude, erreur comprise (un 400 reste un 400). Au-delà de 60 s, des battements gardent la connexion ouverte, et un repli tardif ne peut plus rendre qu'une erreur de flux (SSE) si Claude refuse ;
-- si Claude Code abandonne sa requête, l'appel à OpenRouter est coupé.
-
-`proxy.log` note chaque cas sur une ligne, jamais le contenu : `COMPACT-GRATUIT ok motif=auto duree=… caracteres=…`, `COMPACT-GRATUIT repli raison=…`, `COMPACT-GRATUIT abandon raison=client-parti`.
-
-**Réessais sur surcharge du modèle** (DR-127) : OpenRouter répond souvent par un statut 200 et un corps `error` (code 503, `provider_overloaded`), sans `choices`, en moins d'une seconde. Avant de passer au repli, le relais réessaie jusqu'à 5 fois, 2 s entre deux essais (soit 6 appels au plus, environ 10 s d'attente en plus), pour les seuls échecs transitoires : statut 200 + `error` de code 429, 502, 503 ou 529, HTTP 502, 503 ou 529, réponse sans `choices`, contenu vide. Jamais pour un échec définitif (400, 401, 404, `<summary>` absent d'une réponse complète, `finish_reason=length`). Les réessais restent dans le délai total de 240 s ; le corps envoyé (donc le masquage) est le même à chaque essai. Le journal note `essais=N` et, après épuisement, `repli=surcharge`. Couture de test : `CQR_FREE_COMPACT_RETRY_MS` (attente entre deux essais, 2000 par défaut).
-
-**Les variantes** (fichier `~/.etabli/compactage.json`, clé `variante`) : `hybride` (défaut ; la queue de la conversation, `queue_jetons`, 25 000 par défaut), `tete-queue` (comme `hybride`, plus les `tete_jetons` premiers jetons : défaut 8000, plafond 50000), `court` (toute la conversation, résumé borné par `court_max_jetons`) et `journal` (aucun appel au modèle). Fichier illisible, trop gros ou variante inconnue : `journal`. La réponse du modèle est plafonnée à `max_tokens` 8000 en `hybride` et `tete-queue` (DR-122).
-
-Ancre Nemotron (DR-170, DR-176, DR-177, `src/ancre.js`, grâce réglable par `CQR_FREE_COMPACT_ANCRE_GRACE_MS`) : en `hybride`, `court` et `tete-queue`, un second appel, en parallèle du résumé, fait extraire par Nemotron des listes (règles, tâches, décisions, avancement) de la conversation entière, masquée comme le résumé ; la vue est plafonnée à ~150 000 jetons (début et fin gardés, milieu coupé avec un repère). Les règles et les demandes ne sont tirées que des messages de l'utilisateur. Le relevé, mis en forme comme memory-anchor et introduit par « relevé automatique, à vérifier », est ajouté à la fin du `<summary>`. Échec ouvert : extraction en erreur, vide, coupée ou hors délai, le résumé part seul ; une fois le résumé prêt, l'ancre n'a plus que 60 s de grâce. La ligne de journal porte `ancre=ok car=N` ou `ancre=absente raison=…`. `"ancre": false` dans le fichier de variante la coupe (active par défaut ; pas d'ancre en variante `journal`).
-
-**Mesure et délai, différents de ceux d'openrouter-relay** : la tête et la queue sont mesurées en caractères du rendu texte ici, et par `sizeOf` (texte plus appels d'outils) dans openrouter-relay, donc les coupes diffèrent légèrement d'un relais à l'autre. Délai d'attente : 240 s ici (DR-123), 200 s dans openrouter-relay (DR-120).
-
-Réglages avancés, dans `compaction.free` de `tokens.json` : `model` (défaut `nvidia/nemotron-3.5-super-vl:free`), `kinds` (`["auto","manual"]`), `timeoutMs` (240000), `minSummaryChars` (1500), `names`.
-
-### Pour etabli : `cqr quota --json` et les en-têtes `x-cqr-*` (J5-6)
-
-`cqr quota --json` imprime les quotas de chaque compte (5 h, 7 jours, âge du relevé) et les réglages du détour gratuit, en JSON, en lecture seule et sans aucun jeton. `outils/passer.mjs` s'en sert pour choisir qui écrit un résumé. Deux en-têtes de requête, valables pour cette seule requête (rien n'est écrit dans la config ni l'état) :
-- `x-cqr-compte: <nom>` : envoie la requête par ce compte. Compte inconnu, coupé, épuisé ou au-dessus des seuils : l'en-tête est ignoré, la politique normale s'applique, et le journal le dit ; un 429 sur ce compte : la requête repart sur la politique normale ;
-- `x-cqr-resume: claude|gratuit` : choisit qui écrit le résumé. `claude` : Claude l'écrit, sans détour gratuit. `gratuit` : si le détour gratuit échoue, Claude écrit quand même le résumé, même avec `fallback` = `journal`. Autre valeur : ignorée.
-
-### La statusline (barre d'état)
-
-Toujours visible dans Claude Code, elle montre le quota de tous vos comptes :
+Always visible in Claude Code, it shows the quota of all your accounts, one line per account (5 hours on the left, 7 days on the right):
 
 ```
 ↻ 19h30 ② │
 │ ①  5h/ 37% ████░░░░░░ ██████░░░░ 7J/ 64% │
 │ ②  5h/100% ██████████ █████████░ 7J/ 88% │
-│ ③  5h/ 12% █░░░░░░░░░ ██████████ 7J/100% │
 ```
 
-**Une ligne par compte** : son 5 h à gauche, son 7 j à droite, chacun avec sa barre. Vous lisez directement ce que *ce* compte a consommé, sans rien recalculer. Une seule ligne pour toute la flotte se repliait n'importe où dès cinq comptes, coupant un bloc en deux ; les barres ont la largeur de la jauge `ctx` de Claude Code, pour un alignement d'ensemble.
+The account number changes colour: green (in use), yellow (in reserve), orange (5h exhausted, comes back at its reset), red (nothing left before the weekly reset). The time after `↻` is the next useful reset. If you already had a status bar, yours is kept and ours is added next to it.
 
-Le **numéro du compte** est coloré selon son état, pour le voir d'un coup d'œil sans lire les chiffres :
+It updates on each exchange with Claude Code, not continuously: at rest, `cqr` makes no request. For continuous checking: `cqr live 120` (every 120 s); `cqr live off` to go back to the default.
 
-| Couleur | État |
-|---|---|
-| 🟢 vert | c'est le compte en service, et il lui reste du quota |
-| 🟡 jaune | en réserve, du quota disponible (5 h et 7 j) |
-| 🟠 orange | son 5 h est épuisé, mais sa semaine tient : il revient à son reset 5 h |
-| 🔴 rouge | plus rien d'utilisable avant le reset hebdomadaire |
+### Extra usage credits (off by default)
 
-L'heure après le `↻` est celle du **prochain reset 5 h utile**, suivie du ou des comptes qui repartent à ce moment-là (`↻ 19h30 ① ②` si plusieurs tombent à la même minute). Elle ne tient compte que des comptes qui ont encore du quota **hebdomadaire** : un compte dont la semaine est finie ne redevient pas utilisable à son reset 5 h — afficher son heure serait un faux espoir. Si plus **aucun** compte n'a de quota hebdomadaire, c'est le reset **hebdomadaire** le plus proche qui s'affiche, marqué et daté : `↻7j sam 02h00`.
-
-**Quand se met-elle à jour ?** À chaque échange avec Claude Code — c'est lui qui la redessine, elle ne se rafraîchit pas toute seule entre deux messages. Le programme mesure donc les quotas là où ça compte : le compte qui sert la requête se renseigne par la réponse elle-même, les autres sont vérifiés à cette occasion (petite requête, 0 token de sortie), et pendant une attente de quota une vérification part toutes les 2 minutes. Au repos, **zéro trafic**.
-
-Si vous voulez quand même une vérification en continu (par exemple pour lire la barre d'état pendant qu'une longue tâche tourne) : `cqr live 120` (secondes), `cqr live off` pour revenir au défaut. Si vous aviez déjà une barre d'état, la vôtre est gardée et la nôtre ajoutée à côté.
-
-### Les crédits d'usage supplémentaire (« extra usage ») — désactivés par défaut
-
-Si Anthropic vous a donné (ou vous a vendu) des **crédits d'usage supplémentaire**, votre compte continue de répondre **même une fois le forfait épuisé** : Anthropic sert la requête et la facture aux crédits. Techniquement, la réponse arrive en `200` avec l'en-tête `anthropic-ratelimit-unified-status: rejected` **et** `anthropic-ratelimit-unified-overage-status: allowed`.
-
-Deux conséquences, traitées séparément :
-
-1. **Le compte n'est plus mis en quarantaine à tort.** Une réponse servie sur les crédits est une réponse *réussie* : le relais la rend au client et n'attend aucun reset. C'est corrigé pour tout le monde, sans réglage.
-2. **Les crédits peuvent servir de dernier recours** — mais uniquement si vous le demandez, parce qu'ils peuvent être **facturés** :
+If Anthropic gave or sold you "extra usage" credits, your account can keep answering once the plan is used up, **at the expense of those credits**. Since they can be billed, `cqr` only uses them if you ask:
 
 ```bash
-cqr credits              # ai-je des crédits ? combien m'en reste-t-il ?
-cqr credits on           # autoriser leur usage quand plus AUCUN compte n'a de forfait
-cqr credits budget 20 EUR  # montant de vos crédits -> affichage en argent restant
-cqr credits max 50       # n'en consommer que la moitié, puis se remettre à attendre
-cqr credits off          # revenir au comportement d'origine (attendre le reset)
+cqr credits              # do I have credits? how many are left?
+cqr credits on           # allow them when NO account has plan quota left
+cqr credits budget 20 EUR  # give the amount of your credits, to see the money left
+cqr credits max 50       # use only half, then go back to waiting
+cqr credits off          # back to waiting for the reset
 ```
 
-**Dans la statusline : une pastille, rien de plus.** Une fois les crédits autorisés, la barre d'état se termine par une pastille qui décrit le **compte utilisé en ce moment** :
+Once allowed, the status bar ends with a badge: green `crédits ●` (served on credits), yellow `◐` (normal plan, credits in reserve), red `○` (nothing usable left). Credits are never used while a free plan quota is available. If `cqr credits` says "indisponibles" (unavailable), extra usage is disabled on your account: turn it on at [claude.ai/settings/usage](https://claude.ai/settings/usage).
 
-| Pastille | Ce que ça veut dire |
-|---|---|
-| `crédits ●` vert | ce compte est **servi sur les crédits** (forfait épuisé, ça continue quand même) |
-| `crédits ◐` jaune | vous consommez votre **forfait** normal, et il reste des crédits **disponibles** en réserve |
-| `crédits ○` rouge | **plus rien d'utilisable** sur ce compte : crédits épuisés, désactivés, ou au-delà de votre plafond `cqr credits max` |
+### The "workflow" safeguard
 
-La forme change en même temps que la couleur, donc ça reste lisible sans couleurs (`NO_COLOR`).
-
-**Pourquoi pas le montant restant ?** Anthropic ne nous le donne pas : l'endpoint qui le contient (`/api/oauth/usage` → `monthly_limit` / `used_credits` / `currency`) **refuse nos clés** — celles de `claude setup-token` n'ont pas le droit de lire la facturation (`403 : scope user:profile`). Seul le **pourcentage consommé** nous parvient. Si vous connaissez votre montant, donnez-le une fois et `cqr credits` / `cqr status` afficheront l'argent restant (la statusline, elle, garde la pastille) :
+Claude Code's Workflow tool (which launches many sub-agents at once) gives up on a stuck sub-agent after about 18 minutes, and `cqr` cannot extend that delay. So before a big workflow, a warning appears if the quota is too tight.
 
 ```bash
-cqr credits budget 20 EUR        # 20 € pour tous les comptes
-cqr credits budget compte-2 50   # montant propre à un compte
+cqr preflight       # is it safe to start a workflow now?
+cqr guard ask       # (default) ask for confirmation when risky
+cqr guard off       # turn the warning off
 ```
 
-Règles appliquées :
+## Free compaction (optional, off by default)
 
-- **jamais avant d'avoir épuisé le forfait gratuit** — tant qu'un compte a du quota, c'est lui qui sert ;
-- **les crédits couvrent aussi la limite hebdomadaire (7 j)** : c'est le seul moyen de continuer quand la semaine est finie, au lieu d'attendre plusieurs jours ;
-- un vrai refus du serveur (`429`) reste un refus : le compte passe en pause, comme avant ;
-- si `cqr credits` affiche « indisponibles — l'usage supplémentaire est désactivé sur ce compte », c'est un réglage **de votre compte Anthropic**, à activer sur [claude.ai/settings/usage](https://claude.ai/settings/usage).
+When Claude Code compacts a long conversation (automatically, or with `/compact`), Claude normally writes the summary, which uses quota. This option has the summary written by a free model, NVIDIA's **Nemotron**, through the OpenRouter service. On the slightest failure, Claude takes over and writes the summary normally.
 
-### Le garde-fou « workflow »
+> **Know this before turning it on.**
+> - **You need an OpenRouter key.** It is free: create it at <https://openrouter.ai/keys>.
+> - **This is the only `cqr` feature that sends your conversation text to a third party**: your messages, the commands Claude ran and their results go to NVIDIA, through OpenRouter. The system prompt, the tool list and Claude's internal reasoning are not sent.
+> - **Terms of the free offer** (read on 5 October 2026): trial use, not for production; confidential or sensitive data is forbidden; NVIDIA may reuse what is sent and generated to improve its products. What you send may therefore be kept and reused.
+> - **Do not turn this on for a confidential machine or project.**
 
-L'outil **Workflow** de Claude Code (qui lance plein de sous-agents d'un coup) abandonne un sous-agent bloqué au bout de ~18 minutes, et **le relais ne peut pas prolonger ce délai**. Donc, avant un gros workflow, un avertissement s'affiche si le quota est trop juste.
+Before sending, `cqr` masks what it recognizes: tokens and passwords (Anthropic, GitHub, AWS, OpenAI/OpenRouter keys, `Authorization` headers, private keys, `password=`, etc.) are replaced by `[SECRET-MASQUE]`, permanently; your home folder, your user name and the names you add are replaced by a placeholder, then restored in the summary you receive. This filter relies on known patterns: **a secret of an unknown shape would get through**. When in doubt it masks too much rather than too little.
+
+**Step by step:**
 
 ```bash
-cqr preflight       # est-ce prudent de lancer un workflow maintenant ?
-cqr guard ask       # (défaut) demande confirmation si risqué
-cqr guard off       # désactive l'avertissement
+cqr compact gratuit cle <your OpenRouter key>   # save the key
+cqr compact gratuit on                          # turn the option on (immediate)
+cqr compact gratuit status                      # check the state (the key is never shown in clear)
 ```
 
----
+- The key is stored in the same local `tokens.json` file as your accounts. To erase it: `cqr compact gratuit cle off`.
+- If the `OPENROUTER_API_KEY` environment variable exists, **it takes priority** over the saved key.
+- Careful: the command `cqr compact gratuit cle <key>` stays in your terminal history. To avoid that, use the `OPENROUTER_API_KEY` variable instead, or delete that line from the history.
+- To turn the option off: `cqr compact gratuit off`. To mask extra names (first name, nickname, company): `cqr compact gratuit noms "name,nickname"` (at least 3 characters each).
 
-## Problèmes courants
+Only automatic and manual (`/compact`) compactions go through this path; emergency compactions stay with Claude. `proxy.log` records each case on one line (`COMPACT-GRATUIT ok…` or `repli…`), never the content. Advanced settings (model, timeout) are in the `compaction.free` block of `tokens.json`.
 
-### Mes deux comptes montrent toujours le même quota
+## Troubleshooting
 
-Vos deux clés viennent probablement du **même compte Claude** (voir le piège plus haut). Vérifiez, sans dépenser de quota — pour chaque clé :
+### My two accounts always show the same quota
+
+Your two keys probably come from the same Claude account. Check, without spending quota, for each key:
 
 ```bash
 curl -s -D - -o /dev/null -X POST https://api.anthropic.com/v1/messages/count_tokens \
-  -H "authorization: Bearer VOTRE_CLÉ" -H "anthropic-version: 2023-06-01" \
+  -H "authorization: Bearer YOUR_KEY" -H "anthropic-version: 2023-06-01" \
   -H "content-type: application/json" \
   -d '{"model":"claude-haiku-4-5","messages":[{"role":"user","content":"hi"}]}' | grep -i organization-id
 ```
 
-(Sur un réseau d'entreprise, remplacez `https://api.anthropic.com` par votre relais.)
+(On a company network, replace `https://api.anthropic.com` with your relay.)
 
-- **`Organization-Id` différents** → deux vrais comptes, tout va bien.
-- **`Organization-Id` identiques** → c'est le même compte. Régénérez une clé depuis un **autre** abonnement : connectez-vous à https://claude.ai, **déconnectez-vous complètement**, reconnectez-vous avec l'autre compte, puis relancez `claude setup-token`. Mettez la nouvelle clé avec `cqr set <nom> <clé>`.
+- **Different** `Organization-Id` values: two real accounts, all good.
+- **Identical** `Organization-Id` values: it is the same account. Sign in at <https://claude.ai>, sign out completely, sign back in with the other account, then run `claude setup-token` again. Set the new key with `cqr set <name> <key>`.
 
-### `cqr status` dit ARRÊTÉ même après `cqr start`
+### `cqr status` says STOPPED even after `cqr start`
 
-Le programme a planté au démarrage. `cqr start` vous montre alors la cause. Les plus fréquentes :
+The program crashed at startup; `cqr start` shows the cause. The most common ones:
 
-- **Le port est déjà pris** (message `EADDRINUSE`). Si vous utilisez Cloudflare Workers, `wrangler dev` prend le même port par défaut. → Changez-en un : `cqr policy port 8788` (le proxy redémarre tout seul ; pensez juste à relancer Claude Code, qui lit le port à son démarrage).
-- **Un fichier manque ou est abîmé** → relancez `node src/install.js`.
-- **Un antivirus d'entreprise** bloque les programmes en arrière-plan → lancez-le au premier plan pour voir l'erreur : `node ~/.claude/claude-quota-relay/proxy.js`.
+- **The port is already taken** (`EADDRINUSE` message): another program (for example `wrangler dev`) uses port 8787. Change it: `cqr policy port 8788`, then restart Claude Code, which reads the port at startup.
+- **A file is missing or damaged**: run `node src/install.js` again.
+- **A corporate antivirus** blocks background programs: run it in the foreground to see the error, `node ~/.claude/claude-quota-relay/proxy.js`.
 
-Les journaux détaillés sont dans `~/.claude/claude-quota-relay/proxy.log` ; les lignes `VIE` y gardent la trace des démarrages, sorties, signaux et arrêts brutaux. Chaque ligne `RESP` porte `classe=` (le type de requête : `main`, `subagent`, `workflow`, `compaction`, `auxiliary`) et `session=` (les 8 premiers caractères de l'identifiant de session, jamais l'identifiant entier), et une ligne `CLAUDE-COMPACT motif=auto|manual|reactive` marque chaque compactage que Claude Code lance lui-même (à ne pas confondre avec `COMPACT`, la compaction du relais à la bascule de compte). Ces informations viennent de `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`, posé par l'installeur quand elle est absente : seules les sessions Claude Code démarrées après l'installation l'envoient. Le relais ne transmet pas ces en-têtes d'indice à Anthropic.
+The detailed log is `~/.claude/claude-quota-relay/proxy.log`.
 
-### Réseau d'entreprise (api.anthropic.com bloqué)
+### Company network
 
-Si `api.anthropic.com` est bloqué chez vous et que vous passez par un relais perso (ex. un Cloudflare Worker), mettez son adresse dans `settings.json` sous la variable **`ANTHROPIC_TARGET_API_URL`**. Le programme la détecte et l'utilise **partout** automatiquement (bascule, vérifications de quota, statusline, compaction). Après l'avoir ajoutée : `cqr restart`.
+If `api.anthropic.com` is blocked where you are and you go through a relay of your own (a Cloudflare Worker, for example), put its address in `settings.json`, under the `ANTHROPIC_TARGET_API_URL` variable. `cqr` uses it everywhere automatically. Then: `cqr restart`.
 
 ### `Request timed out · attempt N/10`
 
-Il manque un réglage de timeout dans `settings.json`. Relancez `node src/install.js`, qui les repose (voir le tableau plus bas).
+A timeout setting is missing from `settings.json`. Run `node src/install.js` again: it puts them back.
 
----
+## Reference
 
-## Référence
-
-### Mettre à jour
+### Update
 
 ```bash
 cd claude-quota-relay
@@ -348,21 +243,21 @@ git pull
 node src/install.js
 ```
 
-Sans risque : vos clés, votre port et vos réglages sont conservés ; les hooks et la barre d'état ne sont jamais dupliqués ; `settings.json` est sauvegardé avant modification. Redémarrez Claude Code ensuite.
+Safe: your keys, port and settings are kept, hooks and the status bar are never duplicated, `settings.json` is backed up before any change. Restart Claude Code afterwards.
 
-### Le fichier de config
+### The config file
 
-Tout est dans `~/.claude/claude-quota-relay/tokens.json` :
+Everything is in `~/.claude/claude-quota-relay/tokens.json` (the `.claude` folder may be elsewhere if you set the `CLAUDE_CONFIG_DIR` variable):
 
 ```jsonc
 {
   "port": 8787,
-  "switchAtPercent": 94,       // % de 5h au-delà duquel on préfère un autre compte
-  "sevenDayBlockPercent": 99,  // ne jamais utiliser un compte au-delà de ce % sur 7j
-  "waitAtSoftPercent": null,   // null = consommer jusqu'à 100 % avant d'attendre
-  "maxWaitMs": 604800000,      // attente maximale d'une requête (7 jours)
-  "serverErrorMaxMs": 900000,  // durée de retry sur panne Anthropic 5xx (15 min ; 0 = coupé)
-  "livePollMs": 0,             // sonde continue (0 = coupée : quotas rafraîchis à chaque requête)
+  "switchAtPercent": 94,       // 5h % beyond which another account is preferred
+  "sevenDayBlockPercent": 99,  // never use an account beyond this % over 7 days
+  "waitAtSoftPercent": null,   // null = use up to 100% before waiting
+  "maxWaitMs": 604800000,      // maximum wait for a request (7 days)
+  "serverErrorMaxMs": 900000,  // retry duration on an Anthropic outage (15 min; 0 = off)
+  "livePollMs": 0,             // continuous checking (0 = off)
   "tokens": [
     { "name": "compte-1", "token": "sk-ant-oat01-…", "enabled": true },
     { "name": "compte-2", "token": "sk-ant-oat01-…", "enabled": true }
@@ -370,46 +265,39 @@ Tout est dans `~/.claude/claude-quota-relay/tokens.json` :
 }
 ```
 
-Les blocs `compaction`, `workflowGuard` et `overage` sont ajoutés automatiquement. Le bloc `overage` pilote les crédits d'usage supplémentaire (`{ "use": false, "maxPercent": 100 }` par défaut — voir plus haut) ; réglez-le avec `cqr credits` plutôt qu'à la main.
+The `compaction`, `workflowGuard` and `overage` (credits) blocks are added automatically; set them with `cqr` commands rather than by hand.
 
-### Les timeouts (pourquoi l'attente marche)
+### The timeouts (why waiting works)
 
-Retenir une requête plusieurs heures ne marche que grâce à ces variables, posées par l'installeur dans `settings.json` :
+Holding a request for several hours only works thanks to these variables, set by the installer in `settings.json`:
 
-| Variable | Valeur | Rôle |
+| Variable | Value | Role |
 |---|---|---|
-| `ANTHROPIC_BASE_URL` | `http://127.0.0.1:8787` | fait passer Claude Code par le programme |
-| `API_TIMEOUT_MS` | 7 jours | délai maximum d'une requête |
-| `CLAUDE_STREAM_IDLE_TIMEOUT_MS` | 7 jours | **la plus importante** : sinon toute requête en attente meurt au bout de 5 min |
-| `CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS` | 7 jours | laisse les **sous-agents** attendre aussi |
-| `CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS` | 2 min | garde-fou bas niveau, déjà couvert par le signal du programme |
-| `CLAUDE_CODE_MAX_RETRIES` | 15 | tentatives de Claude Code quand le programme ne répond plus (~6 min au lieu de ~3) : le temps de le relancer |
+| `ANTHROPIC_BASE_URL` | `http://127.0.0.1:8787` | sends Claude Code through `cqr` |
+| `API_TIMEOUT_MS` | 7 days | maximum duration of a request |
+| `CLAUDE_STREAM_IDLE_TIMEOUT_MS` | 7 days | the most important: without it, any waiting request dies after 5 min |
+| `CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS` | 7 days | lets sub-agents wait too |
+| `CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS` | 2 min | low-level safeguard |
+| `CLAUDE_CODE_MAX_RETRIES` | 15 | Claude Code attempts if `cqr` stops answering (about 6 min) |
 
-L'installeur règle aussi `statusLine.refreshInterval` à 10 s : la barre d'état vérifie alors toutes les 10 s que le programme tourne, et le relance s'il est mort (sauf après `cqr stop`).
+The installer also sets the status bar to check every 10 s that `cqr` is running, and to restart it if it died (except after `cqr stop`).
 
-### Sécurité
+### Limits
 
-- `tokens.json`, `state.json` et les journaux sont **ignorés par git** : jamais commités par erreur.
-- Vos clés ne quittent jamais votre machine : le programme n'écoute que sur `127.0.0.1` (votre ordinateur seul).
-- Les journaux masquent toujours les clés.
-- Seul le compactage gratuit, coupé par défaut, envoie du texte de conversation à un tiers : voir sa section plus haut.
+- A non-streaming request landing right at full saturation may be cut and replayed.
+- If the computer goes to sleep during a wait, Claude Code cuts its request on wake-up and redoes it; `cqr` holds it again. Beyond 60 minutes without reaching Anthropic, the error is passed on.
+- The 7-day protection only kicks in after the account's first response.
+- The Workflow tool has its own delay (about 18 min per sub-agent) that `cqr` cannot extend: start a big workflow when at least one account has quota (`cqr preflight`).
 
-### Limites honnêtes
-
-- Une requête **non-streaming** tombant pile en pleine saturation peut être coupée puis rejouée.
-- Si l'ordinateur se **met en veille** pendant une attente, Claude Code coupe lui-même sa requête au réveil et la refait : le programme la retient de nouveau. Au-delà de 60 min sans pouvoir joindre Anthropic, l'erreur remonte.
-- La protection sur les 7 jours ne s'active qu'après une première réponse du compte.
-- L'outil **Workflow** a son propre délai (~18 min par sous-agent) que le relais ne peut pas prolonger. Lancez un gros workflow quand au moins un compte a du quota (`cqr preflight`).
-
-### Désinstaller
+### Uninstall
 
 ```bash
-node src/uninstall.js          # retire nos réglages, garde tokens.json et la commande cqr
-node src/uninstall.js --purge  # retire tout, y compris tokens.json et la commande cqr
+node src/uninstall.js          # removes cqr's settings, keeps tokens.json and the cqr command
+node src/uninstall.js --purge  # removes everything, including tokens.json and the cqr command
 ```
 
-Redémarrez Claude Code ensuite.
+Uninstalling stops `cqr`, removes its variables and hooks from `settings.json`, restores your original status bar if you had one, and deletes the `/auth*` commands. A backup of `settings.json` is kept. Restart Claude Code afterwards: it goes back to a direct connection.
 
-## Licence
+## License
 
-MIT — voir [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).

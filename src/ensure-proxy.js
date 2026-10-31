@@ -20,7 +20,17 @@ function confPath(dir) {
     return fs.existsSync(cles) ? cles : ancien;
   } catch (e) { return ancien; }
 }
-try { PORT = JSON.parse(fs.readFileSync(confPath(DIR), "utf8")).port || 8787; } catch (e) {}
+// Meme regle que lib.isPlaceholder, recopiee (meme raison). Un test garde la parite.
+function isPlaceholder(t) { return !t || !t.token || /^(PASTE|REMPLACE|<)/i.test(t.token); }
+// J7B-020 / DR-271 : sans aucun compte (jeton non fictif), cqr est installe mais eteint : ce hook ne lance rien.
+// Fichier absent, illisible ou sans liste de comptes -> comportement d'avant (on ne casse pas un poste dont le fichier
+// est en cours d'ecriture) : AUCUN_COMPTE reste false.
+let AUCUN_COMPTE = false;
+try {
+  const conf = JSON.parse(fs.readFileSync(confPath(DIR), "utf8"));
+  PORT = conf.port || 8787;
+  if (Array.isArray(conf.tokens) && !conf.tokens.some((t) => !isPlaceholder(t))) AUCUN_COMPTE = true;
+} catch (e) {}
 
 function ping() {
   return new Promise((res) => {
@@ -32,6 +42,7 @@ function ping() {
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 (async () => {
+  if (AUCUN_COMPTE) { process.exit(0); }
   if (await ping()) { process.exit(0); }
   if (!fs.existsSync(PROXY)) { process.exit(0); }
   try {

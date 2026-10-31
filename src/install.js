@@ -7,6 +7,7 @@
  *   2. Creates tokens.json (interactive token entry, or placeholders if non-interactive)
  *   3. Patches <claude-config>/settings.json:
  *        - env: ANTHROPIC_BASE_URL + the timeouts that make the "hold until reset" behaviour work
+ *          (only when at least one real account exists -- J7B-020, DR-271; cli.js wires it at the first account)
  *        - env: ANTHROPIC_AUTH_TOKEN = first real token (Claude Code needs a token to start;
  *               the proxy rewrites the Authorization header per request anyway)
  *        - hooks.SessionStart: starts the proxy automatically on every session (portable autostart)
@@ -63,16 +64,7 @@ const COMPACTION_DEFAULT = {
 const OVERAGE_DEFAULT = { use: false, maxPercent: 100 };
 let LIVE_POLL_MIGRATED = false; // signale, en fin d'install, que la sonde continue a ete coupee
 
-// Timeouts injected into settings.json env. These are what let a held request survive until a 5h
-// window resets instead of being cut. CLAUDE_STREAM_IDLE_TIMEOUT_MS is the critical one (the CLI's
-// semantic idle watchdog defaults to a 5-minute floor that SSE keepalive does NOT reset).
-const TIMEOUTS = {
-  API_TIMEOUT_MS: "605400000",                    // ~7 days, overall HTTP request timeout
-  CLAUDE_STREAM_IDLE_TIMEOUT_MS: "605400000",      // ~7 days, semantic stream idle (THE fix)
-  CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS: "605400000",// ~7 days, subagent stall watchdog
-  CLAUDE_BYTE_STREAM_IDLE_TIMEOUT_MS: "120000",    // 2 min, byte-level idle (fed by 20s keepalive)
-  CLAUDE_CODE_MAX_RETRIES: "15",                   // ~6 min de patience si le relais est mort (defaut 10 = ~3 min), DR-012
-};
+// Timeouts : voir lib.TIMEOUTS (posees par lib.brancherSettings, seulement quand un compte existe).
 const STATUSLINE_REFRESH_S = 10; // la statusline tourne toutes les 10 s, meme pendant ces tentatives : elle sert de gardien du relais
 
 function arg(name, def) {
@@ -145,12 +137,12 @@ function patchSettings(conf) {
     backupName = p.basename(bak);
   }
   settings.env = settings.env || {};
-  settings.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:" + PORT;
-  for (const [k, v] of Object.entries(TIMEOUTS)) settings.env[k] = v;
-  // DR-048 : Claude Code ajoute a chaque requete son type (x-claude-code-request-class) et le motif d'un compactage ; le journal les note.
-  // Posee seulement si elle est ABSENTE : une valeur choisie par l'utilisateur est a lui (la desinstallation ne retire que "1").
-  if (!("CLAUDE_CODE_GATEWAY_HINT_HEADERS" in settings.env)) settings.env.CLAUDE_CODE_GATEWAY_HINT_HEADERS = "1";
+  // J7B-020 / DR-271 : sans compte, cqr est installe mais pas branche (ni adresse locale, ni delais) ; cli.js le branche au
+  // premier compte (lib.brancherPremierCompte). Une valeur deja presente n'est pas touchee : on la signale seulement.
   const tok = firstRealToken(conf);
+  if (tok) lib.brancherSettings(settings, PORT);
+  const staleBaseUrl = !tok && settings.env.ANTHROPIC_BASE_URL ? settings.env.ANTHROPIC_BASE_URL : null;
+  // DR-048 : CLAUDE_CODE_GATEWAY_HINT_HEADERS est posee par lib.brancherSettings, donc seulement avec un compte.
   if (tok) settings.env.ANTHROPIC_AUTH_TOKEN = tok;
   // Reseau d'entreprise : si cette variable est deja presente (ex. api.anthropic.com bloque,
   // l'utilisateur passe par son propre relais), on ne la touche pas -- le proxy la lira lui-meme
@@ -177,7 +169,7 @@ function patchSettings(conf) {
   const sl = setupStatusline(settings);
 
   fs.writeFileSync(SETTINGS, JSON.stringify(settings, null, 2));
-  return { hasToken: !!tok, backupName, hooksAdded, statusline: sl, targetApiUrl };
+  return { hasToken: !!tok, backupName, hooksAdded, statusline: sl, targetApiUrl, staleBaseUrl };
 }
 
 // Add our quota status line. If the user already has one, WRAP it (save the original so our
@@ -298,10 +290,12 @@ async function main() {
   ok("fichiers du proxy copiés (" + COPY_FILES.length + ")");
   ok("comptes : " + tokensLine);
   if (res.backupName) info("settings.json sauvegardé -> " + res.backupName);
-  ok("Claude Code configuré : routage, timeouts" + (res.hooksAdded ? ", hooks" : "") + " (tout automatique)");
+  if (res.hasToken) ok("Claude Code configuré : routage, timeouts" + (res.hooksAdded ? ", hooks" : "") + " (tout automatique)");
+  else ok("Claude Code configuré : " + (res.hooksAdded ? "hooks" : "hooks déjà en place") + ", sans routage (aucun compte : cqr installé, éteint)");
+  if (res.staleBaseUrl) warn("settings.json contient déjà ANTHROPIC_BASE_URL = " + res.staleBaseUrl + " alors qu'aucun compte n'est configuré : laissé tel quel, mais Claude Code pointera sur un port muet tant que vous n'avez pas ajouté de compte (cqr add)");
   ok("statusline " + (res.statusline === "kept" ? "déjà en place" : res.statusline === "wrapped" ? "ajoutée (la vôtre est conservée)" : "ajoutée"));
   ok("commande `cqr` " + (alias.skipped ? "scripts prêts" : alias.changed ? "ajoutée à votre PATH" : "déjà disponible"));
-  const restarted = restartProxyIfRunning();
+  const restarted = res.hasToken ? restartProxyIfRunning() : null; // sans compte : eteint, rien a relancer
   if (restarted === true) ok("proxy redémarré sur le nouveau code (sinon il aurait continué avec l'ancien)");
   else if (restarted === false) warn("le proxy tournait mais n'a pas pu redémarrer — faites-le à la main : cqr restart");
   if (res.targetApiUrl) ok("réseau d'entreprise détecté (ANTHROPIC_TARGET_API_URL = " + res.targetApiUrl + ") — le proxy passera automatiquement par là");
@@ -309,6 +303,7 @@ async function main() {
   section("Prochaines étapes");
   if (!res.hasToken) {
     console.log("  1. " + bold("Redémarrez Claude Code") + ", puis lancez : " + bold("cqr login <nom>") + " pour chaque compte.");
+    info("cqr installé, éteint : il démarrera au premier compte (cqr add)");
   } else {
     console.log("  1. " + bold("Redémarrez Claude Code") + " (nécessaire pour prendre en compte les nouveaux réglages).");
   }

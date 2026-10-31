@@ -1104,7 +1104,7 @@ if (require.main === module) {
       if (t.enabled && !isPlaceholder(t)) setTimeout(() => probeToken(conf0, i), 500 + i * 2000);
     });
     // DR-297 : lecture des noms et domaines de l'entreprise une fois, ici (PowerShell prend ~4 s), pas au milieu d'un compactage ; l'alerte se voit des le demarrage
-    if ((conf0.compaction && conf0.compaction.free && conf0.compaction.free.enabled === true) || String(process.env.OPENROUTER_API_KEY || "").trim()) { try { freeModule().entreprisePrechauffer(); } catch (e) {} setTimeout(() => { // active, ou cle posee (l'activation viendra par `cqr compact gratuit on`, sans redemarrage)
+    if ((conf0.compaction && conf0.compaction.free && conf0.compaction.free.enabled === true) || (() => { try { return freeModule().cleOR(conf0.compaction).key; } catch (e) { return ""; } })()) { try { freeModule().entreprisePrechauffer(); } catch (e) {} setTimeout(() => { // active, ou cle posee (l'activation viendra par `cqr compact gratuit on`, sans redemarrage)
       try { freeModule().entreprisePrechauffer(); setTimeout(() => { try { const r = freeModule().entreprise(); log("COMPACT-GRATUIT", "masque-entreprise", "noms=" + r.noms.length, "domaines=" + r.domaines.length, ...r.alertes.map((a) => "alerte=" + tag(a, 60))); } catch (e) { log("COMPACT-GRATUIT", "masque-entreprise", "alerte=lecture-impossible"); } }, 6000); } catch (e) { log("COMPACT-GRATUIT", "masque-entreprise", "alerte=lecture-impossible"); }
     }, 1000); }
     // rafraichissement periodique pour TOUS les comptes -> statusline "live" (voir plus haut)

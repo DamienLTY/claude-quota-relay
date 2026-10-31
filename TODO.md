@@ -77,3 +77,12 @@ Tâches de fond lancées le 2026-10-01 (sous-agents `ouvrier`, fichiers disjoint
 - [x] 2026-10-30 DR-016 : `/auth-use <n>` remplace `/auth-1`/`/auth-2` (preuve : `npm test` code 0, relecteur ACCEPTABLE, installé ici, `use "#3"` -> compte 3). Commit 0fa69c1, poussé vers DamienLTY/claude-quota-relay (59358e1, par worktree propre : arbre etabli sale par une autre session). Reste : réinstaller sur l'autre PC.
 - [x] 2026-10-31 DR-018 + DR-020 : 429 d'un épinglé ou demandé ne remonte plus ; `/auth-use` = `cqr bascule` sans épingler (preuve : npm test rc 0, 76 PASS ; mutations M1-M4 ; relecteur ACCEPTABLE ; installé ici, compte 3 débasculé). Reste : réinstaller sur l'autre PC. Non fait : test de la branche crédits.
 - [x] 2026-10-31 DR-019 : /auth, /auth-auto, /auth-reset posées par l'installeur (preuve : uninstall.test PASS, 4 commandes dans ~/.claude/commands après install).
+
+## DR-022 — README public + clé OpenRouter (plan plans/2026-10-31-readme-public-cle-openrouter.md)
+- [x] DR-022 A1 cleOR (env || compaction.free.key) dans free-compact.js, plan.key, secrets
+- [x] DR-022 A2 proxy.js:1107 préchauffe si clé de config
+- [x] DR-022 A3 cqr compact gratuit cle <clé>|off, status source masquée, message on, aide
+- [x] DR-022 A4 test clé de config utilisée, jamais en clair, priorité env ; npm test 0 (preuve : 88 PASS rc 0, mutation tombée, relecteur ACCEPTABLE)
+- [x] DR-022 A5 CHANGELOG + version 0.26.0
+- [x] DR-022 B6-8 README.fr.md + README.md anglais, sans etabli, grep = 0
+- [ ] DR-022 B9 revue relecteur puis push subtree

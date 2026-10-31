@@ -352,7 +352,13 @@ const retryMs = () => envMs("CQR_FREE_COMPACT_RETRY_MS", 2000); // attente entre
 const ancreGraceRepliMs = () => envMs("CQR_FREE_COMPACT_ANCRE_GRACE_REPLI_MS", 10000); // le resume a echoue : l'ancre n'a que ce delai avant le repli journal
 const ancreGraceMs = () => envMs("CQR_FREE_COMPACT_ANCRE_GRACE_MS", 60000); // une fois le resume pret, l'ancre n'a plus que ce delai (puis sa requete est coupee, le resume part seul)
 const holdMs = () => envMs("CQR_FREE_COMPACT_HOLD_MS", DEFAULT_HOLD_MS);
-const hasKey = () => !!String(process.env.OPENROUTER_API_KEY || "").trim();
+// DR-022 : la cle OpenRouter = la variable d'environnement (prioritaire) puis compaction.free.key de la config ; jamais affichee ni journalisee
+const cleOR = (cc) => {
+  const e = String(process.env.OPENROUTER_API_KEY || "").trim();
+  if (e) return { key: e, source: "env" };
+  const c = String((cc && cc.free && cc.free.key) || "").trim();
+  return c ? { key: c, source: "config" } : { key: "", source: null };
+};
 // CQR_FREE_COMPACT_URL n'est honoree que vers la machine elle-meme : sur un autre hote, la variable partirait avec la conversation
 // et la cle. Ignoree -> l'adresse d'OpenRouter, et le relais le dit (urlIgnoree), sans jamais ecrire l'adresse.
 function endpoint() {
@@ -386,14 +392,15 @@ function decide(req, getConf) { // getConf : la config ne se lit que pour un vra
   const journal = (repli) => ({ go: true, kind: rec.kind, cfg, variante: "journal", repli, text: "", secrets: [], invalide: V.invalide });
   const repli = (raison) => cfg.fallback === "journal" && demande !== "gratuit" ? journal(raison) : no(raison); // un repli rend le journal, sauf demande explicite de Claude
   if (V.variante === "journal") return journal(null); // aucun appel : ni cle ni service requis
-  if (!hasKey()) return repli("cle-absente");
+  const cle = cleOR(cc);
+  if (!cle.key) return repli("cle-absente");
   if (Date.now() < blockedUntil) return repli("blocage");
   // DR-297, DR-393 : noms et domaines de l'entreprise, en plus des noms de la config. Liste illisible ou pas prete : rien ne part au modele
   // gratuit (repli). Liste vide : on continue, avec l'alerte (plan.masqueAlertes).
   const ent = ENT.charger();
   if (ent.repli) return repli(ent.repli);
   cfg.names = [...new Set([...cfg.names, ...ent.noms, ...ent.domaines])];
-  const secrets = [process.env.OPENROUTER_API_KEY, ...(Array.isArray(conf && conf.tokens) ? conf.tokens.map((t) => t && t.token) : [])]
+  const secrets = [cle.key, ...(Array.isArray(conf && conf.tokens) ? conf.tokens.map((t) => t && t.token) : [])]
     .map((v) => String(v == null ? "" : v).trim()).filter((v) => v.length >= 8).sort((a, b) => b.length - a.length); // le plus long d'abord
   let text, note;
   if (V.variante === "court") {
@@ -426,7 +433,7 @@ function decide(req, getConf) { // getConf : la config ne se lit que pour un vra
   }
   text = "[Consigne : " + note + "]\n\n" + text;
   if (Math.ceil(text.length / 3.5) > MAX_TOKENS_EST) return repli("trop-gros"); // meme estimation que compaction.js, legerement pessimiste
-  return Object.assign({ go: true, kind: rec.kind, cfg, text, secrets, masqueAlertes: ent.alertes, variante: V.variante, ancre: V.ancre, invalide: V.invalide, maxTokens: V.variante === "court" ? Math.max(3000, V.courtMax + 200) : 8000 }, endpoint()); // court (DR-115) : 3000 fixe (la place du bloc <analysis> avant le <summary>), sauf si court_max_jetons le depasse : il + 200
+  return Object.assign({ go: true, kind: rec.kind, cfg, key: cle.key, text, secrets, masqueAlertes: ent.alertes, variante: V.variante, ancre: V.ancre, invalide: V.invalide, maxTokens: V.variante === "court" ? Math.max(3000, V.courtMax + 200) : 8000 }, endpoint()); // court (DR-115) : 3000 fixe (la place du bloc <analysis> avant le <summary>), sauf si court_max_jetons le depasse : il + 200
 }
 
 // ----- appel -----
@@ -520,7 +527,7 @@ async function run(plan, body, io) {
     for (;;) {
       if (stop && stop()) throw Object.assign(new Error("grace"), { raison: "grace" }); // l'ancre a depasse sa grace : plus aucun appel
       cnt.n++;
-      r = await post(plan.url, { "content-type": "application/json", "authorization": "Bearer " + String(process.env.OPENROUTER_API_KEY).trim() }, reqBody, Math.max(1, deadline - Date.now()), onReq);
+      r = await post(plan.url, { "content-type": "application/json", "authorization": "Bearer " + plan.key }, reqBody, Math.max(1, deadline - Date.now()), onReq);
       const t = transitoire(r.status, r.body);
       if (!t) return r;
       if (cnt.n >= ESSAIS_MAX) throw Object.assign(new Error(t), { raison: t });
@@ -580,4 +587,4 @@ function sendSummary(res, body, text, stream) {
     ev("message_stop", { type: "message_stop" }));
 }
 
-module.exports = { entreprise: ENT.charger, entreprisePrechauffer: ENT.prechauffer, INVITE, RAPPEL, manque, MOTIFS_SOURCE, MAQUETTE, REEL, MOT_DE_PASSE, holdMs, readVariante, tailMessages, journalSummary, texteUtile, longueurConversation, seuilResume, MIN_RESUME_COURT, SEUIL_CONVERSATION_COURTE, maskSecrets, makeMasker, renderConversation, recognize, resolveConfig, reglageCompactage, decide, validate, run, sendSummary };
+module.exports = { cleOR, entreprise: ENT.charger, entreprisePrechauffer: ENT.prechauffer, INVITE, RAPPEL, manque, MOTIFS_SOURCE, MAQUETTE, REEL, MOT_DE_PASSE, holdMs, readVariante, tailMessages, journalSummary, texteUtile, longueurConversation, seuilResume, MIN_RESUME_COURT, SEUIL_CONVERSATION_COURTE, maskSecrets, makeMasker, renderConversation, recognize, resolveConfig, reglageCompactage, decide, validate, run, sendSummary };

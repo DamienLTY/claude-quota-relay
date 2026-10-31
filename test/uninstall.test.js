@@ -13,6 +13,9 @@ const CFG = fs.mkdtempSync(p.join(os.tmpdir(), "cqr-uninstall-"));
 const IDIR = p.join(CFG, "claude-quota-relay");
 const SETTINGS = p.join(CFG, "settings.json");
 fs.writeFileSync(SETTINGS, JSON.stringify({ env: { FOO: "bar" }, statusLine: { type: "command", command: "echo MINE" } }));
+// J7B-020 : sans compte, l'installeur ne branche pas settings.json ; ce test verifie le retrait de ce qu'il pose, donc il y a un compte.
+fs.mkdirSync(IDIR, { recursive: true });
+fs.writeFileSync(p.join(IDIR, "tokens.json"), JSON.stringify({ port: 8787, tokens: [{ name: "a", token: FAKE, enabled: true }] }));
 // DR-016 : anciennes commandes figees a 2 comptes ; une /auth-2 qui n'est pas la notre reste
 const CMDS = p.join(CFG, "commands");
 fs.mkdirSync(CMDS);

@@ -23,6 +23,7 @@ setVariante("court"); // les scenarios d'origine portent sur la conversation ent
 const PORT_A = 8820, MOCK_ANTH = 8821, MOCK_OR = 8822, PORT_B = 8823, PORT_C = 8824, PORT_D = 8825, PORT_E = 8826;
 const FAKE = "sk-ant-oat01-FAKE-TEST-TOKEN-not-real-000000";
 const FAKE_OR_KEY = "FAKE-OR-KEY-pour-le-test-9f8e7d";
+const FAKE_CFG = ["FAKE", "CFG", "KEY", "pour", "le", "test", "1a2b3c"].join("-"); // cle de config factice, assemblee a l'execution (DR-022)
 const CFG_TOKEN = ["cfgtok", "Zv8Lq2Rm5Xd7Pw"].join("-"); // jeton de la config des relais d'essai : aucun motif ne le reconnait, seule sa valeur exacte le masque
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -650,6 +651,18 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
         pl = withH("gratuit", { fallback: "journal" }); assert.deepStrictEqual([pl.go, pl.raison], [false, "cle-absente"], "gratuit en panne : repli sur Claude payant meme si fallback=journal (J5-025)");
         pl = withH(undefined, { fallback: "journal" }); assert.strictEqual(pl.variante, "journal", "sans en-tete, fallback=journal garde son effet");
         process.env.OPENROUTER_API_KEY = FAKE_OR_KEY; }
+      // DR-022 : cle de config (compaction.free.key), l'environnement reste prioritaire
+      { const F = fresh(), dec = (free) => F.decide({ url: "/v1/messages", headers: AUTO, body: { messages: [{ role: "user", content: "bonjour" }, { role: "assistant", content: "ok" }, { role: "user", content: FC.INVITE + " fin" }] } }, () => confIn(free));
+        delete process.env.OPENROUTER_API_KEY;
+        let pl = dec({ key: "  " + FAKE_CFG + " " }); assert.ok(pl.go === true && pl.key === FAKE_CFG, "cle de config : le detour part avec elle (espaces coupes)");
+        assert.ok(pl.secrets.includes(FAKE_CFG), "cle de config : dans les secrets a masquer");
+        assert.deepStrictEqual(F.cleOR(confIn({ key: FAKE_CFG }).compaction), { key: FAKE_CFG, source: "config" }, "cleOR : config");
+        pl = dec({ key: "" }); assert.deepStrictEqual([pl.go, pl.raison], [false, "cle-absente"], "aucune cle : repli cle-absente");
+        pl = dec(); assert.deepStrictEqual([pl.go, pl.raison], [false, "cle-absente"], "pas de free.key : repli cle-absente");
+        assert.deepStrictEqual(F.cleOR({}), { key: "", source: null }, "cleOR : rien");
+        process.env.OPENROUTER_API_KEY = FAKE_OR_KEY;
+        pl = dec({ key: FAKE_CFG }); assert.strictEqual(pl.key, FAKE_OR_KEY, "env + config : l'environnement est prioritaire");
+        assert.ok(pl.secrets.includes(FAKE_OR_KEY), "env + config : la cle d'environnement est masquee"); }
       // J5-9 etape 15 (J5-053, J5-054, J5-057) : ~/.etabli/reglages.json GENERAL ; seule une valeur EXPLICITE agit, sans fichier rien ne change.
       { const F = fresh(), put = (o) => fs.writeFileSync(REGLAGES_FILE, typeof o === "string" ? o : JSON.stringify(o)), rm = () => { try { fs.unlinkSync(REGLAGES_FILE); } catch (e) {} };
         const dec = (free, conf) => F.decide({ url: "/v1/messages", headers: AUTO, body: { messages: [{ role: "user", content: "bonjour" }, { role: "assistant", content: "ok" }, { role: "user", content: FC.INVITE + " fin" }] } }, () => conf || confIn(free));
@@ -1075,13 +1088,43 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
       r = cli("compact", "gratuit", "noms", "Alice, Bob ,Alice");
       assert.deepStrictEqual(conf().compaction.free.names, ["Alice", "Bob"], "cli noms : liste nettoyee et dedoublonnee");
       r = cli("compact", "gratuit", "status");
-      assert.ok(/ACTIVÉ/.test(r.stdout) && r.stdout.includes("Alice, Bob") && /présente dans ce terminal/.test(r.stdout), "cli status : actif, noms, cle presente (sans la montrer)");
+      assert.ok(/ACTIVÉ/.test(r.stdout) && r.stdout.includes("Alice, Bob") && /OPENROUTER_API_KEY \(environnement, prioritaire\)/.test(r.stdout), "cli status : actif, noms, cle d\'environnement presente (sans la montrer)");
       for (const c of [["compact", "gratuit", "on"], ["compact", "gratuit", "status"], ["compact", "gratuit", "noms", "xyz"], ["compact"]]) { const o = cli(...c); assert.ok(!(o.stdout + o.stderr).includes(FAKE) && !(o.stdout + o.stderr).includes(FAKE_OR_KEY) && !/"tokens"/.test(o.stdout), "cli " + c.join(" ") + " : ni jeton, ni cle, ni fichier"); }
       assert.ok(/gratuit\s*:\s*ACTIVÉ/.test(cli("compact").stdout), "cli compact : la ligne gratuit apparait");
       cli("compact", "gratuit", "noms", "");
       assert.deepStrictEqual(conf().compaction.free.names, [], "cli noms \"\" : liste videe");
       r = cli("compact", "gratuit", "off");
       assert.strictEqual(conf().compaction.free.enabled, false, "cli off : coupe");
+      // DR-022 : cle enregistree (env SANS OPENROUTER_API_KEY), jamais en clair
+      { const env2 = Object.assign({}, process.env); delete env2.OPENROUTER_API_KEY;
+        const cliS = (...a) => cp.spawnSync(process.execPath, [p.join(DIR_C, "cli.js"), ...a], { encoding: "utf8", windowsHide: true, env: env2 });
+        const clair = (o) => (o.stdout + o.stderr).includes(FAKE_CFG);
+        r = cliS("compact", "gratuit", "status");
+        assert.ok(/absente -- cqr compact gratuit cle/.test(r.stdout), "cle : status sans cle dit absente : " + r.stdout);
+        r = cliS("compact", "gratuit", "cle", FAKE_CFG);
+        assert.strictEqual(r.status, 0, "cle : sortie 0 : " + r.stderr);
+        assert.strictEqual(conf().compaction.free.key, FAKE_CFG, "cle : ecrite dans compaction.free.key");
+        assert.ok(!clair(r) && /historique/.test(r.stdout), "cle : jamais en clair, rappel de l'historique");
+        r = cliS("compact", "gratuit", "status");
+        assert.ok(/enregistrée \(/.test(r.stdout) && !clair(r), "cle : status dit enregistree, sans la cle : " + r.stdout);
+        r = cliS("compact", "gratuit", "on");
+        assert.ok(!clair(r) && /enregistrée/.test(r.stdout), "cle : on le dit, sans la cle");
+        assert.ok(!clair(cliS("compact")), "cle : cqr compact ne la montre pas");
+        const avant = fs.readFileSync(p.join(DIR_C, "tokens.json"), "utf8");
+        for (const mauvaise of [[""], ["ab"], ["avec espace"], ["a b c d e f g h"]]) {
+          r = cliS("compact", "gratuit", "cle", ...mauvaise);
+          assert.strictEqual(r.status, 1, "cle refusee " + JSON.stringify(mauvaise) + " : sortie 1");
+          assert.strictEqual(fs.readFileSync(p.join(DIR_C, "tokens.json"), "utf8"), avant, "cle refusee : config inchangee");
+        }
+        r = cliS("compact", "gratuit", "cle");
+        assert.strictEqual(r.status, 1, "cle sans argument : sortie 1");
+        r = cliS("compact", "gratuit", "cle", "off");
+        assert.strictEqual(r.status, 0, "cle off : sortie 0");
+        assert.ok(!("key" in conf().compaction.free), "cle off : effacee");
+        assert.strictEqual(conf().tokens[0].token, FAKE, "cle : les jetons sont intacts");
+        r = cliS("compact", "gratuit", "status");
+        assert.ok(/absente -- cqr compact gratuit cle/.test(r.stdout), "cle off : status dit absente");
+        cliS("compact", "gratuit", "off"); }
       // noms : moins de 3 caracteres refuse, rien n'est ecrit
       cli("compact", "gratuit", "noms", "Alice,Bob");
       r = cli("compact", "gratuit", "noms", "Carole,xy");
