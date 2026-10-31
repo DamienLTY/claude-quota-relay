@@ -416,3 +416,66 @@ Réserve : le `system` vide final n'est observé qu'en `claude -p --resume`. En 
 **Ce qui change.** `commands/auth-use.md` (`/auth-use 3`) lance `cqr use "#3"`. Nouvelle forme `#rang` dans `cqr use` (`src/cli.js`, case `use`) : au premier essai, `cqr use 2` avait épinglé le compte *nommé* « 2 » au lieu du 3e, car les noms sont des chiffres. `src/install.js` pose la commande et retire `auth-1.md`/`auth-2.md` s'ils mentionnent `claude-quota-relay` ; `src/uninstall.js` retire `auth-use.md`.
 
 **Preuve.** `test/cli-commands.test.js` (bloc DR-016) et `test/uninstall.test.js` verts ; sur ce PC, `use "#3"` → « ÉPINGLÉ -> 3 », `use "#7"` → « Compte introuvable », puis `cqr auto`. L'autre PC aura la commande à sa prochaine installation.
+
+## DR-017 — Le réglage général d'etabli pilote le détour du compactage
+
+**Type** : technique · **État** : codé le 2026-10-30 (J5-9 étape 15), installation après revue
+
+**Constat.** etabli (J5-9) fait lire au relais `fonctions.compactage` du réglage général `~/.etabli/reglages.json` (etabli J5-054 : général seulement ; J5-057 : un profil écrit compte). `gratuit` explicite active le détour sans `compaction.free.enabled` ; `claude` ou `desactive` le coupent ; sans valeur explicite, rien ne change. Les crédits (`overage`) n'en dépendent jamais (etabli J5-053, DR-241). `cqr compact off` garde la main (etabli:DR-066).
+
+**Question posée et réponse citée (2026-10-30).**
+- « Ton réglage dit « compactage : Claude » (ou désactivé), mais une séance envoie l'en-tête x-cqr-resume: gratuit pour demander un résumé gratuit. Qui gagne ? » → « *Le réglage (Recommandé)* — Le réglage général gagne : le résumé reste écrit par Claude. Cohérent avec aujourd'hui, où l'en-tête ne relance déjà pas un détour coupé. C'est ce que l'agent a codé. »
+
+**Ce qui change.** `src/free-compact.js` (`reglageCompactage`, `reglagesFile`, branché dans `decide()`) ; tests `test/free-compact.test.js` (variable `CQR_REGLAGES_FILE`).
+
+## DR-018 — Le 429 « would exceed your account's rate limit » ne doit plus arriver au client
+
+**Type** : correction · **État** : codé et installé sur ce PC le 2026-10-31 (avec DR-019, DR-020)
+
+**Demande citée.** « *Arriver a attraper cette erreur et faire en sorte qu'elle passe à un moment : API Error: Request rejected (429) · This request would exceed your account's rate limit. Please try again later.* »
+
+**Constat (ce PC, 2026-10-31).** Aucun 429 dans `proxy.log` (qui couvre depuis le 2026-10-30 16:37), aucune erreur d'API récente dans les transcrits. Trois chemins rendent encore un 429 brut au client (`src/proxy.js`, `forward(..., lastResort=true)`) : compte épinglé (`forceIndex`, `pickRoute`), compte demandé par requête (`x-cqr-compte`, J5-018), attente plafonnée à `maxWaitMs` (6 h, `enterWait`). Le compte 3 est épinglé ici depuis le 2026-10-30 21:35 (`/auth-use 3`, session 1adffe38).
+
+**Questions posées et réponses citées (2026-10-31).**
+- « Où as-tu vu ce message 429 ? » → « *Sur l'autre PC* »
+- « Quand le compte épinglé reçoit ce 429, que doit faire le relais ? » → réponse libre : « *Basculer sur un autre compte mais ne pas forcément revenir.* »
+- « Une requête mise en attente abandonne après 6 h et renvoie l'erreur. On garde cette limite ? » → « *Garder 6 h* — Au-delà, Claude Code aurait de toute façon coupé la connexion. »
+
+- Round 2. « Je comprends que sur ce 429, l'épinglage saute : le relais repasse en mode automatique […]. C'est bien ça ? » → réponse libre : « *non pas mode auto, celui-ci pourrais laisser l'agent sur le même compte, forcer l'usage d'un autre compte dispo et avec du quota. ca partira sur un autre compte automatiquement plus tard.* » Lecture de l'agent : l'épinglage se **déplace** sur un autre compte qui a du quota (jamais celui qui vient de refuser) ; il se déplacera de nouveau au prochain 429.
+- « Même règle pour une requête qui demande un compte précis (x-cqr-compte) ? » → « *Oui, basculer aussi* — Sur un 429, cette requête repart sur le compte choisi par la politique normale. »
+- « Comment trouver la cause sur l'autre PC ? » → réponse libre : « *Donne moi un prompt a donner à un agent sur l'autre PC* »
+
+**Source** : demande directe de l'utilisateur, grill du 2026-10-31.
+
+## DR-019 — Toutes les commandes /auth* posées par l'installeur
+
+**Type** : correction · **État** : tranché (2026-10-31)
+
+**Constat.** L'utilisateur : « *AUSSI, la commande auth-auto n'existe plus ou pas* ». Sur ce PC, `/auth`, `/auth-auto` et `/auth-reset` existent, mais posées à la main (`~/.claude/commands/`, 2026-09-06) : seul `/auth-use` est installé par le dépôt (DR-016).
+
+**Question posée et réponse citée (2026-10-31).** « Où manque-t-elle ? » → « *Sur l'autre PC* — je mets /auth, /auth-auto et /auth-reset dans le dépôt, et l'installeur les pose comme /auth-use. »
+
+**Source** : demande directe de l'utilisateur.
+
+## DR-020 — /auth-use bascule sans épingler
+
+**Type** : correction · **État** : tranché (2026-10-31)
+
+**Constat cité de l'utilisateur.** « *./auth-use X force l'usage d'un compte jusqu'à 100% et n'autorise plus a switcher sur un autre compte si le quota atteind le maximum. il faudrais mettre en place que cette commande ne force pas un compte indéfiniement, ca switch juste sur le compte, l'utilise et switch ailleurs une fois usé selon les conditions déjà mis en place dans cqr* » (révise DR-016 sur ce point : `/auth-use` épinglait par `cqr use`).
+
+**Questions posées et réponses citées (2026-10-31).**
+- « Et la commande de terminal « cqr use » ? » → « *Garder l'épinglage* — « cqr use 5 » reste un vrai épinglage pour les mesures (le banc J4-6 l'a utilisé). Seule /auth-use devient douce, via une nouvelle commande « cqr bascule ». »
+- « Pour l'épinglage qui reste (« cqr use »), sur un 429 : l'épinglage se déplace sur un autre compte qui a du quota ? » → « *Oui, il se déplace* — Aucun 429 n'arrive plus au client, même avec un compte épinglé. » (confirme DR-018)
+
+**Source** : demande directe de l'utilisateur.
+
+**Suite de DR-018 et DR-020 — questions ouvertes du plan `plans/2026-10-31-429-epingle.md`, réponses citées (2026-10-31).**
+- « Ce PC est réglé sur 7 jours (et non 6 h comme je l'avais dit). Que fait-on ? » → « *Garder 7 jours* » (corrige la réponse « Garder 6 h » de DR-018, donnée sur une information fausse de l'agent).
+- « Épinglé qui reçoit un 429, plus aucun forfait, crédits autorisés ? » → « *Crédits, sans épingler* — Cette requête passe sur les crédits (règle normale), mais l'épinglage ne va pas sur le compte à crédits. »
+- « Pendant l'attente, chaque requête épinglée prend un 429 avant d'attendre. On l'accepte ? » → « *Oui, accepter* »
+- « Le compte 3, épinglé dur par l'ancien /auth-use 3 : le transformer en simple bascule après l'installation ? » → « *Oui, transformer* »
+- Par défaut de l'agent, non questionnés : pas de fenêtre Windows au déplacement (ligne `EPINGLE deplace` au journal), pas de changement de version, `cqr bascule` ne prévient pas si le compte visé est en pause (le `status` qui suit le montre).
+
+**Diagnostic de l'autre PC (rapport de son agent, collé par l'utilisateur le 2026-10-31).** Tous les 429 sont passés par le chemin « compte épinglé » : relais 0.24.0 (`59358e1`), session bien routée par le relais (`ANTHROPIC_BASE_URL` 8788), 0 ligne `REJECTED`/`WAIT`/`x-cqr-compte`. Preuves citées : « RESP 429 token=4 classe=subagent session=d8b8601b … "retry-after":"2114" … 5h-status":"rejected" … 5h-utilization":"1.0", alors que PROBE 1/2/5/6 5h=0% » (31/10 07:14 UTC), puis « RESP 429 token=2 classe=main session=f73676fc … "retry-after":"14982" » (08:40 UTC), chaque fois après un `/auth-use` (4 à 21:07, 2 à 07:16, 3 à 08:41). Une quinzaine d'erreurs entre le 30/10 22:01 et le 31/10 01:13 UTC, hors journal (tourné). État : `forceIndex=2` (compte « 3 ») toujours posé. Un `/auth-use auto` tapé à 08:40 n'a pas désépinglé (`#auto` → « Compte introuvable ») : c'est `/auth-auto` qui désépingle. Confirme la cause visée par DR-020.
+
+**Preuve (DR-018 à DR-020, 2026-10-31).** `test/epingle-429.test.js` : S1 à S4 en FAIL sur l'ancien `proxy.js`, 5/5 PASS après ; mutations M1 à M4 font chacune tomber leur scénario ; `cli-commands` en FAIL sur l'ancien `cli.js` (« Commande inconnue : bascule »), PASS après. `npm test` code 0, 76 PASS, 0 FAIL. Relecteur ACCEPTABLE ; son constat 1 corrigé (l'épinglage ne se déplace que si l'épinglé est encore en pause, `src/proxy.js` `attempt`) ; constat 2 non corrigé : la branche « crédits » (épinglage qui ne va pas sur un compte à crédits) n'a pas de test. Installé ici (`cmp` vides, relais redémarré en 0.24.0), puis `cqr bascule "#3"` : plus de `forceIndex`.

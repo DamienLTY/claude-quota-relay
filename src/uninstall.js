@@ -61,7 +61,10 @@ if (s) {
   ok("variables d'env + hooks (autostart/mémoire/garde-fou) retirés de settings.json (sauvegarde conservée)");
 }
 
-try { fs.unlinkSync(p.join(CONFIG_DIR, "commands", "auth-use.md")); ok("commande /auth-use retirée"); } catch (e) {} // absente : deja retiree
+for (const f of ["auth.md", "auth-auto.md", "auth-reset.md", "auth-use.md"]) {
+  try { fs.unlinkSync(p.join(CONFIG_DIR, "commands", f)); } catch (e) {} // absente : deja retiree
+}
+ok("commandes /auth* retirées");
 
 if (PURGE) {
   try { setupPath.removeAlias(INSTALL_DIR, process.env.CQR_SKIP_PATH_REGISTER ? { skipRegister: true } : undefined); ok("`cqr` retiré du PATH"); } catch (e) {}

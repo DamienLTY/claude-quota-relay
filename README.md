@@ -65,7 +65,8 @@ Le reste est optionnel :
 cqr help                 # liste toutes les commandes
 cqr list                 # liste les comptes (clés masquées)
 cqr start | stop | restart   # gère le programme (stop = arrêt voulu : la barre d'état ne le relance pas)
-cqr use <nom>            # force un compte précis
+cqr use <nom>            # force un compte précis ; un 429 sur ce compte déplace l'épinglage sur un compte qui a du quota (DR-018)
+cqr bascule <nom>        # passe sur ce compte sans l'épingler, comme /auth-use (DR-020)
 cqr auto                 # revient au choix automatique
 ```
 
@@ -211,6 +212,12 @@ Ancre Nemotron (DR-170, DR-176, DR-177, `src/ancre.js`, grâce réglable par `CQ
 **Mesure et délai, différents de ceux d'openrouter-relay** : la tête et la queue sont mesurées en caractères du rendu texte ici, et par `sizeOf` (texte plus appels d'outils) dans openrouter-relay, donc les coupes diffèrent légèrement d'un relais à l'autre. Délai d'attente : 240 s ici (DR-123), 200 s dans openrouter-relay (DR-120).
 
 Réglages avancés, dans `compaction.free` de `tokens.json` : `model` (défaut `nvidia/nemotron-3.5-super-vl:free`), `kinds` (`["auto","manual"]`), `timeoutMs` (240000), `minSummaryChars` (1500), `names`.
+
+### Pour etabli : `cqr quota --json` et les en-têtes `x-cqr-*` (J5-6)
+
+`cqr quota --json` imprime les quotas de chaque compte (5 h, 7 jours, âge du relevé) et les réglages du détour gratuit, en JSON, en lecture seule et sans aucun jeton. `outils/passer.mjs` s'en sert pour choisir qui écrit un résumé. Deux en-têtes de requête, valables pour cette seule requête (rien n'est écrit dans la config ni l'état) :
+- `x-cqr-compte: <nom>` : envoie la requête par ce compte. Compte inconnu, coupé, épuisé ou au-dessus des seuils : l'en-tête est ignoré, la politique normale s'applique, et le journal le dit ; un 429 sur ce compte : la requête repart sur la politique normale ;
+- `x-cqr-resume: claude|gratuit` : choisit qui écrit le résumé. `claude` : Claude l'écrit, sans détour gratuit. `gratuit` : si le détour gratuit échoue, Claude écrit quand même le résumé, même avec `fallback` = `journal`. Autre valeur : ignorée.
 
 ### La statusline (barre d'état)
 

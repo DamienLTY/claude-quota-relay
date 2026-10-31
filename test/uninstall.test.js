@@ -23,7 +23,7 @@ fs.writeFileSync(p.join(CMDS, "auth-2.md"), "autre chose");
 const ri = cp.spawnSync(process.execPath, [INSTALLER, "--no-interactive", "--config-dir", CFG], { encoding: "utf8", env: ENV });
 assert.strictEqual(ri.status, 0, "install exits 0: " + (ri.stderr || ""));
 assert.ok(fs.existsSync(p.join(IDIR, "bin", "cqr")), "install created the cqr wrapper");
-assert.ok(fs.existsSync(p.join(CMDS, "auth-use.md")), "install pose /auth-use");
+for (const f of ["auth.md", "auth-auto.md", "auth-reset.md", "auth-use.md"]) assert.ok(fs.existsSync(p.join(CMDS, f)), "install pose " + f + " (DR-019)");
 assert.ok(!fs.existsSync(p.join(CMDS, "auth-1.md")), "install retire l'ancienne /auth-1 de cqr");
 assert.ok(fs.existsSync(p.join(CMDS, "auth-2.md")), "install garde une /auth-2 qui n'est pas de cqr");
 
@@ -46,7 +46,7 @@ assert.strictEqual(s1.env.CLAUDE_CODE_GATEWAY_HINT_HEADERS, undefined, "env.CLAU
 assert.ok(!s1.hooks || !JSON.stringify(s1.hooks).includes("memory-hook.js"), "our hooks removed");
 assert.ok(fs.existsSync(p.join(IDIR, "tokens.json")), "soft uninstall keeps tokens.json");
 assert.ok(fs.existsSync(p.join(IDIR, "bin", "cqr")), "soft uninstall keeps the cqr wrapper (still usable)");
-assert.ok(!fs.existsSync(p.join(CMDS, "auth-use.md")), "uninstall retire /auth-use");
+for (const f of ["auth.md", "auth-auto.md", "auth-reset.md", "auth-use.md"]) assert.ok(!fs.existsSync(p.join(CMDS, f)), "uninstall retire " + f);
 
 // --- purge: removes the whole install dir (incl. bin/ wrappers) ---
 const r2 = cp.spawnSync(process.execPath, [UNINSTALLER, "--config-dir", CFG, "--purge"], { encoding: "utf8", env: ENV });

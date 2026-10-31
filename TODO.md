@@ -74,4 +74,6 @@ Tâches de fond lancées le 2026-10-01 (sous-agents `ouvrier`, fichiers disjoint
 - [ ] Ménage `%TEMP%` des essais DR-012 (sans jeton) : `cqr-stress`, `cqr-retry`, `cqr-statusline-essai`, `cqr-essai-reel`, `cqr-probe-job-console.ps1`.
 
 - [x] 2026-10-06 (preuve : 9 fichiers COPY_FILES = src/ par cmp, port 8787 nouveau PID, 6 comptes listes par `cli.js status`), sous-agent ouvrier en fond : reinstallation de la copie ~/.claude/claude-quota-relay (retard sur le depot) ; fini quand les fichiers installes = src/ et que `cqr status` repond apres redemarrage.
-- [x] 2026-10-30 DR-016 : `/auth-use <n>` remplace `/auth-1`/`/auth-2` (preuve : `npm test` code 0, relecteur ACCEPTABLE, installé ici, `use "#3"` -> compte 3). Reste : commit, puis réinstaller sur l'autre PC.
+- [x] 2026-10-30 DR-016 : `/auth-use <n>` remplace `/auth-1`/`/auth-2` (preuve : `npm test` code 0, relecteur ACCEPTABLE, installé ici, `use "#3"` -> compte 3). Commit 0fa69c1, poussé vers DamienLTY/claude-quota-relay (59358e1, par worktree propre : arbre etabli sale par une autre session). Reste : réinstaller sur l'autre PC.
+- [x] 2026-10-31 DR-018 + DR-020 : 429 d'un épinglé ou demandé ne remonte plus ; `/auth-use` = `cqr bascule` sans épingler (preuve : npm test rc 0, 76 PASS ; mutations M1-M4 ; relecteur ACCEPTABLE ; installé ici, compte 3 débasculé). Reste : réinstaller sur l'autre PC. Non fait : test de la branche crédits.
+- [x] 2026-10-31 DR-019 : /auth, /auth-auto, /auth-reset posées par l'installeur (preuve : uninstall.test PASS, 4 commandes dans ~/.claude/commands après install).

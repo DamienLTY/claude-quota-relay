@@ -375,4 +375,13 @@ const ALLOWED = { status: "allowed", u: 0 };
   clearOverload(st, "inconnu"); // ne doit pas planter
 }
 
-console.log("PASS — proxy decideCompaction: switch/threshold/resume/dry-run/strip/disabled/cooldown + pickRoute model-aware threshold + reserve ceiling + credits (overage) + backoff surcharge 529");
+// DR-020 : etat laisse par `cqr bascule` (activeIndex = b, pas de forceIndex) : la politique normale sert b tant qu'il est sain
+{
+  const conf = twoTokens(); conf.compaction = { enabled: false }; // seuil = switchAtPercent (94)
+  const apresBascule = (h5b, exhaustedB) => ({ activeIndex: 1, exhausted: exhaustedB ? { b: Date.now() + 3600e3 } : {}, pct: { a: { h5: 10 }, b: { h5: h5b } }, reset5h: {}, reset7d: {} });
+  assert.strictEqual(pickRoute(conf, apresBascule(50), null).idx, 1, "DR-020 : b a 50% -> le compte choisi sert");
+  assert.strictEqual(pickRoute(conf, apresBascule(95), null).idx, 0, "DR-020 : b a 95% -> il bascule une fois use");
+  assert.strictEqual(pickRoute(conf, apresBascule(50, true), null).idx, 0, "DR-020 : b epuise -> bascule");
+}
+
+console.log("PASS — proxy decideCompaction: switch/threshold/resume/dry-run/strip/disabled/cooldown + pickRoute model-aware threshold + reserve ceiling + credits (overage) + backoff surcharge 529 + etat apres bascule (DR-020)");

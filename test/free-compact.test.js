@@ -11,6 +11,8 @@ const ANC = require("../src/ancre.js");
 const SRC = p.join(__dirname, "..", "src");
 const VARIANTE_FILE = p.join(os.tmpdir(), "cqr-compactage-" + process.pid + ".json"); // jamais le vrai ~/.etabli/compactage.json
 process.env.CQR_COMPACTAGE_FILE = VARIANTE_FILE;
+const REGLAGES_FILE = p.join(os.tmpdir(), "cqr-reglages-" + process.pid + ".json"); // J5-9 : jamais le vrai ~/.etabli/reglages.json ; absent = comportement d'avant
+process.env.CQR_REGLAGES_FILE = REGLAGES_FILE;
 const ENT_DIR = fs.mkdtempSync(p.join(os.tmpdir(), "cqr-entreprise-")); // DR-297 : jamais la vraie liste de l'entreprise ni PowerShell ; test/entreprise.test.js couvre ce masquage
 fs.writeFileSync(p.join(ENT_DIR, "config.json"), JSON.stringify({ names: [], internes: [] }));
 process.env.CQR_ENTREPRISE_DIR = ENT_DIR; process.env.NODE_ENV = "test"; // CQR_POWERSHELL* ne valent que dans les tests
@@ -648,6 +650,47 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
         pl = withH("gratuit", { fallback: "journal" }); assert.deepStrictEqual([pl.go, pl.raison], [false, "cle-absente"], "gratuit en panne : repli sur Claude payant meme si fallback=journal (J5-025)");
         pl = withH(undefined, { fallback: "journal" }); assert.strictEqual(pl.variante, "journal", "sans en-tete, fallback=journal garde son effet");
         process.env.OPENROUTER_API_KEY = FAKE_OR_KEY; }
+      // J5-9 etape 15 (J5-053, J5-054, J5-057) : ~/.etabli/reglages.json GENERAL ; seule une valeur EXPLICITE agit, sans fichier rien ne change.
+      { const F = fresh(), put = (o) => fs.writeFileSync(REGLAGES_FILE, typeof o === "string" ? o : JSON.stringify(o)), rm = () => { try { fs.unlinkSync(REGLAGES_FILE); } catch (e) {} };
+        const dec = (free, conf) => F.decide({ url: "/v1/messages", headers: AUTO, body: { messages: [{ role: "user", content: "bonjour" }, { role: "assistant", content: "ok" }, { role: "user", content: FC.INVITE + " fin" }] } }, () => conf || confIn(free));
+        const confSansFree = () => ({ compaction: { enabled: true }, tokens: [{ name: "x", token: CFG_TOKEN }] });
+        const R = FC.reglageCompactage, rf = (o) => { put(o); return R(REGLAGES_FILE); };
+        rm();
+        assert.strictEqual(R(REGLAGES_FILE), null, "reglages : fichier absent, rien d'explicite");
+        assert.strictEqual(R(undefined), null, "reglages : pas de fichier fourni");
+        assert.strictEqual(rf({ fonctions: { compactage: "gratuit" } }), "gratuit", "fonctions.compactage gratuit");
+        assert.strictEqual(rf({ fonctions: { compactage: "claude" } }), "claude", "fonctions.compactage claude");
+        assert.strictEqual(rf({ fonctions: { compactage: "desactive" } }), "desactive", "fonctions.compactage desactive");
+        assert.strictEqual(rf({ profil: "gratuit" }), "gratuit", "profil ecrit gratuit : explicite (J5-057)");
+        assert.strictEqual(rf({ profil: "equilibre" }), "gratuit", "profil ecrit equilibre : gratuit");
+        assert.strictEqual(rf({ profil: "claude" }), "claude", "profil ecrit claude : claude");
+        assert.strictEqual(rf({ profil: "claude", fonctions: { compactage: "gratuit" } }), "gratuit", "la fonction l'emporte sur le profil");
+        for (const bad of [{ fonctions: { compactage: "n'importe quoi" }, profil: "claude" }, { profil: "inconnu" }, {}, [], "null", "pas du json", { fonctions: [] }]) assert.strictEqual(rf(bad), null, "valeur inconnue ou fichier invalide : null " + JSON.stringify(bad));
+        put(JSON.stringify({ fonctions: { compactage: "claude" }, pad: "x".repeat(70000) })); assert.strictEqual(R(REGLAGES_FILE), null, "fichier trop gros : null");
+        // sans fichier : decisions identiques a avant
+        rm();
+        assert.strictEqual(dec().go, true, "sans fichier : detour actif comme avant");
+        assert.deepStrictEqual([dec({ enabled: false }).go, dec({ enabled: false }).quiet], [false, true], "sans fichier : detour coupe reste coupe, silencieux");
+        assert.strictEqual(dec(null, confSansFree()).go, false, "sans fichier : compaction.free absent reste coupe");
+        // gratuit explicite : compaction.free actif sans compaction.free.enabled ; compaction.enabled (DR-066) garde la main
+        put({ fonctions: { compactage: "gratuit" } });
+        assert.strictEqual(dec(null, confSansFree()).go, true, "gratuit explicite : le detour part sans compaction.free.enabled");
+        assert.strictEqual(dec({ enabled: false }).go, true, "gratuit explicite : le reglage etabli l'emporte sur free.enabled=false");
+        { const c = confSansFree(); c.compaction.enabled = false; const pl = dec(null, c); assert.deepStrictEqual([pl.go, pl.raison], [false, "compaction-coupee"], "gratuit explicite ne passe pas outre cqr compact off (DR-066)"); }
+        // claude / desactive explicite : Claude ecrit le resume, rien n'est journalise
+        for (const v of ["claude", "desactive"]) { put({ fonctions: { compactage: v } });
+          const pl = dec(); assert.deepStrictEqual([pl.go, pl.raison, pl.quiet], [false, "reglage-etabli", true], v + " explicite : resume natif de Claude Code, silencieux");
+          assert.strictEqual(dec({ fallback: "journal" }).go, false, v + " : meme avec fallback=journal, Claude sert"); }
+        put({ profil: "claude" }); assert.strictEqual(dec().go, false, "profil claude ecrit : Claude sert");
+        put({ profil: "equilibre" }); assert.strictEqual(dec(null, confSansFree()).go, true, "profil equilibre ecrit : gratuit");
+        // l'overage n'est jamais pilote par les reglages etabli (J5-053) ; reglage illisible : comportement d'avant
+        put({ fonctions: { compactage: "claude", overage: "oui" }, overage: true, profil: "claude" }); assert.ok(!("overage" in dec()), "l'overage ne vient pas des reglages etabli");
+        put("pas du json"); assert.strictEqual(dec().go, true, "fichier illisible : comportement d'avant");
+        // x-cqr-resume reste prioritaire (par requete)
+        put({ fonctions: { compactage: "claude" } });
+        { const pl = F.decide({ url: "/v1/messages", headers: Object.assign({}, AUTO, { "x-cqr-resume": "gratuit" }), body: { messages: [{ role: "user", content: "a" }, { role: "user", content: FC.INVITE + " fin" }] } }, () => confIn()); assert.strictEqual(pl.go, false, "reglage claude : x-cqr-resume=gratuit ne force pas le detour (reglage explicite, vie privee)"); }
+        rm(); }
+      console.log("PASS — J5-9 reglages etabli : valeur explicite seule agit (gratuit / claude / desactive / profil), sans fichier comportement d'avant, DR-066 et overage intacts");
 
       // duree du blocage : vide, non numerique, nulle ou negative = ignoree, les 10 minutes par defaut valent
       for (const v of ["", "0", "-5", "abc", "   "]) {

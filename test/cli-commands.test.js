@@ -179,5 +179,31 @@ const conf = () => JSON.parse(fs.readFileSync(p.join(DIR, "tokens.json"), "utf8"
   assert.strictEqual(run("use", "#0").status, 1, "#0 -> erreur");
 }
 
+// DR-020 : "bascule" (= /auth-use) devient le compte actif SANS epingler ; l'epinglage existant part, `exhausted` reste
+{
+  const sp = p.join(DIR, "state.json");
+  const etat = () => JSON.parse(fs.readFileSync(sp, "utf8"));
+  fs.writeFileSync(p.join(DIR, "tokens.json"), JSON.stringify({ port: 8787, tokens: ["2", "3", "1"].map((name) => ({ name, token: FAKE, enabled: true })) }));
+  fs.writeFileSync(sp, JSON.stringify({ activeIndex: 0, forceIndex: 0, exhausted: { "1": Date.now() + 3600e3 }, pct: {}, reset5h: {}, reset7d: {} }));
+  const exh = etat().exhausted["1"];
+  const bs = run("bascule", "#3");
+  assert.strictEqual(bs.status, 0, "bascule #3 : code 0 (" + bs.stderr.trim() + ")");
+  assert.ok(/-> 1 /.test(bs.stdout), "bascule #3 = 3e de la liste (nomme \"1\")");
+  let e = etat();
+  assert.strictEqual(e.activeIndex, 2, "bascule : activeIndex = 2");
+  assert.strictEqual(e.forceIndex, undefined, "bascule : l'epinglage est retire");
+  assert.strictEqual(e.exhausted["1"], exh, "bascule : exhausted intact");
+  const avantErr = fs.readFileSync(sp, "utf8");
+  assert.strictEqual(run("bascule", "#4").status, 1, "bascule #4 hors liste -> erreur");
+  assert.strictEqual(run("bascule", "#0").status, 1, "bascule #0 -> erreur");
+  assert.strictEqual(fs.readFileSync(sp, "utf8"), avantErr, "les deux erreurs ne changent pas l'etat");
+  assert.strictEqual(run("use", "#3").status, 0, "use #3 : code 0");
+  assert.strictEqual(etat().forceIndex, 2, "use epingle toujours (non-regression)");
+  assert.ok(run("help").stdout.includes("cqr bascule"), "help mentionne cqr bascule");
+  const md = fs.readFileSync(p.join(__dirname, "..", "commands", "auth-use.md"), "utf8");
+  assert.ok(md.includes('bascule "#$ARGUMENTS"'), "auth-use.md appelle bascule");
+  assert.ok(!md.includes('use "#$ARGUMENTS"'), "auth-use.md n'appelle plus use");
+}
+
 fs.rmSync(DIR, { recursive: true, force: true });
-console.log("PASS — cqr help lists commands; quota --json sans jeton, lecture seule; compact dynamic on auto-enables compaction; unknown -> help; derniere compaction visible; credits on/off/max + etat par compte");
+console.log("PASS — cqr help lists commands; quota --json sans jeton, lecture seule; compact dynamic on auto-enables compaction; unknown -> help; derniere compaction visible; credits on/off/max + etat par compte ; bascule sans epingler (DR-020)");

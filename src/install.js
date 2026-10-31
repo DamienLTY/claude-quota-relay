@@ -235,7 +235,8 @@ async function main() {
   // DR-016 : /auth-use <n> remplace les /auth-1, /auth-2 poses a la main (figes a 2 comptes) ; on ne retire que les notres.
   const CMD_DIR = p.join(CONFIG_DIR, "commands");
   fs.mkdirSync(CMD_DIR, { recursive: true });
-  fs.copyFileSync(p.join(REPO_ROOT, "commands", "auth-use.md"), p.join(CMD_DIR, "auth-use.md"));
+  // DR-019 : toutes les commandes /auth* du depot (l'autre PC n'avait pas /auth-auto, posee a la main ici)
+  for (const f of fs.readdirSync(p.join(REPO_ROOT, "commands"))) fs.copyFileSync(p.join(REPO_ROOT, "commands", f), p.join(CMD_DIR, f));
   for (const old of ["auth-1.md", "auth-2.md"]) {
     const f = p.join(CMD_DIR, old);
     try { if (fs.readFileSync(f, "utf8").includes("claude-quota-relay")) fs.unlinkSync(f); } catch (e) {} // absente : rien a retirer

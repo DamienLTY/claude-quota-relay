@@ -6,6 +6,7 @@
  *   cqr list                   liste les tokens (masques)
  *   cqr quota --json           quotas par compte en JSON (lecture seule, sans jeton)
  *   cqr use <nom|index|#rang>  EPINGLE le token actif (effet immediat, ignore regles+attente)
+ *   cqr bascule <nom|index|#rang>  passe sur ce compte sans l'epingler (/auth-use)
  *   cqr auto                   revient au mode automatique (failover + waiting)
  *   cqr reset                  oublie l'etat "epuise" (re-essaie tous les tokens)
  *   cqr set <nom> <token>      renseigne/ecrase le token d'un compte (script/manuel, sans prompt)
@@ -282,12 +283,20 @@ switch (cmd) {
     c.tokens.forEach((t, i) => console.log(`[${i}] ${t.name}  ${t.enabled ? "on" : "off"}  ${mask(t.token)}`));
     break;
   }
-  case "use": {
+  case "use": case "bascule": {
     const c = readConf(); const s = readState();
     // DR-016 : "#3" = 3e de `cqr list`, jamais pris pour un nom (les comptes s'appellent souvent "1", "2"…)
     let idx = /^#\d+$/.test(a1 || "") ? Number(a1.slice(1)) - 1 : c.tokens.findIndex((t) => t.name === a1);
     if (idx < 0 && /^\d+$/.test(a1)) idx = Number(a1);
     if (idx < 0 || idx >= c.tokens.length) { console.error("Compte introuvable :", a1); process.exit(1); }
+    if (cmd === "bascule") {
+      // DR-020 : /auth-use bascule sans epingler. Le compte devient l'actif ; la politique normale (hysteresis de pickRoute,
+      // seuils) le garde tant qu'il est sain, puis bascule ailleurs. L'epinglage existant est retire, `exhausted` reste.
+      s.activeIndex = idx; delete s.forceIndex;
+      writeState(s);
+      console.log("BASCULE -> " + c.tokens[idx].name + " (mode automatique : le relais le garde tant qu'il a du quota, puis bascule selon sa politique). `cqr use` pour épingler.");
+      break;
+    }
     s.activeIndex = idx; s.forceIndex = idx;
     if (s.exhausted) delete s.exhausted[c.tokens[idx].name];
     writeState(s);
@@ -605,6 +614,7 @@ function printHelp() {
     "Proxy",
     "  cqr start | stop | restart démarre / arrête / redémarre le proxy",
     "  cqr use <nom|index|#rang>  force un compte précis (#3 = 3e de la liste)",
+    "  cqr bascule <nom|index|#rang> passe sur ce compte sans l'épingler (/auth-use)",
     "  cqr auto                   revient au choix automatique",
     "  cqr reset                  oublie l'état 'épuisé' (re-teste tout)",
     "",

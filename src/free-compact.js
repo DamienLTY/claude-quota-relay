@@ -222,6 +222,23 @@ function recognize(url, headers, body) {
   return { kind };
 }
 
+// ----- reglages etabli (J5-9 etape 15 ; J5-053, J5-054, J5-057) -----
+// Reglage GENERAL ~/.etabli/reglages.json (CQR_REGLAGES_FILE pour les tests), relu a chaque compactage reconnu ; jamais de reglage de projet ici.
+// Rend "gratuit", "desactive" ou "claude" si la valeur est EXPLICITE (fonctions.compactage, sinon profil ecrit : claude -> claude, gratuit/equilibre -> gratuit),
+// sinon null. Fichier absent, illisible, trop gros ou valeur inconnue : null (repli muet, comportement d'avant). Regle recopiee de openrouter-relay/src/compactage.js
+// (ce paquet est publie seul : pas de dependance a outils/reglages.mjs). L'overage n'est JAMAIS pilote par ces reglages (DR-241, J5-053).
+function reglageCompactage(file) {
+  try {
+    if (!file || fs.statSync(file).size > MAX_FICHIER) return null;
+    const j = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (!j || typeof j !== "object" || Array.isArray(j)) return null;
+    const f = j.fonctions && typeof j.fonctions === "object" ? j.fonctions.compactage : undefined;
+    if (f !== undefined) return ["gratuit", "desactive", "claude"].includes(f) ? f : null;
+    return { gratuit: "gratuit", equilibre: "gratuit", claude: "claude" }[j.profil] || null;
+  } catch (e) { return null; }
+}
+const reglagesFile = () => process.env.CQR_REGLAGES_FILE || path.join(os.homedir(), ".etabli", "reglages.json");
+
 // ----- configuration compaction.free -----
 function resolveConfig(f) {
   f = f && typeof f === "object" ? f : {};
@@ -358,6 +375,10 @@ function decide(req, getConf) { // getConf : la config ne se lit que pour un vra
   // "gratuit" : un echec du detour retombe sur Claude meme avec fallback=journal. Toute autre valeur est ignoree. Jamais d'ecriture de config.
   const demande = hv(req.headers && req.headers["x-cqr-resume"]);
   if (demande === "claude") return no("demande-client");
+  // reglage etabli explicite : claude/desactive = Claude ecrit le resume (silencieux) ; gratuit = detour actif meme sans compaction.free.enabled
+  const reglage = reglageCompactage(reglagesFile());
+  if (reglage === "claude" || reglage === "desactive") return no("reglage-etabli", true);
+  if (reglage === "gratuit") cfg.enabled = true;
   if (!cfg.enabled) return no("reglage-coupe", true);
   if (!cc.enabled) return no("compaction-coupee"); // DR-066 : cqr compact off coupe tout ; absent = coupe, comme pour le proxy
   if (!cfg.kinds.includes(rec.kind)) return no("type-non-liste");
@@ -559,4 +580,4 @@ function sendSummary(res, body, text, stream) {
     ev("message_stop", { type: "message_stop" }));
 }
 
-module.exports = { entreprise: ENT.charger, entreprisePrechauffer: ENT.prechauffer, INVITE, RAPPEL, manque, MOTIFS_SOURCE, MAQUETTE, REEL, MOT_DE_PASSE, holdMs, readVariante, tailMessages, journalSummary, texteUtile, longueurConversation, seuilResume, MIN_RESUME_COURT, SEUIL_CONVERSATION_COURTE, maskSecrets, makeMasker, renderConversation, recognize, resolveConfig, decide, validate, run, sendSummary };
+module.exports = { entreprise: ENT.charger, entreprisePrechauffer: ENT.prechauffer, INVITE, RAPPEL, manque, MOTIFS_SOURCE, MAQUETTE, REEL, MOT_DE_PASSE, holdMs, readVariante, tailMessages, journalSummary, texteUtile, longueurConversation, seuilResume, MIN_RESUME_COURT, SEUIL_CONVERSATION_COURTE, maskSecrets, makeMasker, renderConversation, recognize, resolveConfig, reglageCompactage, decide, validate, run, sendSummary };

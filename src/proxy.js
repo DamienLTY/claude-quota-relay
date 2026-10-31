@@ -641,10 +641,23 @@ function serve(creq, cres) {
 
       const demande = hv1(creq.headers["x-cqr-compte"]);
       const infoDemande = {};
-      const route = pickRoute(conf, state, bodyObj, demande, infoDemande);
+      let route = pickRoute(conf, state, bodyObj, demande, infoDemande);
       if (infoDemande.refus && !ctx.compteIgnore) { ctx.compteIgnore = true; log("x-cqr-compte ignore compte=" + tag(demande, 20) + " raison=" + infoDemande.refus); }
       if (demande && !route.parRequete && !ctx.compteIgnore) { ctx.compteIgnore = true; log("x-cqr-compte ignore (inconnu ou coupe) compte=" + tag(demande, 20)); }
       if (route.none) { try { cres.writeHead(502); cres.end("proxy: aucun token configuré"); } catch (x) {} return; }
+
+      // DR-018 : l'epingle vient de refuser CETTE requete (vrai http429, voir forward). L'epinglage se deplace sur le
+      // compte que la politique normale choisit (l'epingle, en cooldown, en est exclu). S'il ne reste que l'attente ou
+      // les credits, la requete les suit et l'epinglage ne bouge pas ; l'epingle redevenu sain reprend la requete.
+      if (route.forced && !route.parRequete && ctx.epingle429 === (conf.tokens[route.idx] || {}).name
+        && ((state.exhausted || {})[ctx.epingle429] || 0) > now()) { // cooldown echu (apres une attente) : l'epingle reprend
+        const libre = pickRoute(conf, Object.assign({}, state, { forceIndex: null }), bodyObj);
+        if (libre.wait || libre.overage) route = libre;
+        else if (libre.idx != null && libre.idx !== route.idx) {
+          log("EPINGLE deplace", ctx.epingle429, "->", conf.tokens[libre.idx].name, "(http429 sur le compte epingle)");
+          state.forceIndex = libre.idx; route = { idx: libre.idx, forced: true };
+        }
+      }
 
       if (route.wait) return enterWait(conf, state, route);
 
@@ -676,8 +689,8 @@ function serve(creq, cres) {
       // doit continuer de recevoir ses battements pendant qu'Anthropic prepare sa reponse --
       // sinon une reponse lente ou une connexion morte le fait couper. Ils s'arretent a la reponse.
       refreshOthers(conf, route.idx, state); // en tache de fond : garde la barre d'etat juste
-      // forced (pin manuel) -> pas de failover/attente, on rend le resultat brut
-      forward(conf, route.idx, route.forced === true, compactInfo);
+      // forced (pin manuel ou x-cqr-compte) -> pas de failover/attente, on rend le resultat brut, SAUF un vrai 429 (DR-018)
+      forward(conf, route.idx, route.parRequete ? "demande" : route.forced ? "epingle" : false, compactInfo);
     }
 
     function enterWait(conf, state, route) {
@@ -719,6 +732,9 @@ function serve(creq, cres) {
       }, sleep);
     }
 
+    // lastResort (3e argument) dit d'ou vient le compte : false = mode auto ; true = plafond d'attente (enterWait, le 429 est
+    // rendu au client) ; "epingle" = state.forceIndex ; "demande" = en-tete x-cqr-compte. Seul un vrai http429 sur "epingle" ou
+    // "demande" repart sur un autre compte (DR-018) ; tous les autres refus d'un compte impose sont rendus tels quels.
     function forward(conf, idx, lastResort, compactInfo) {
       if (clientGone) return;
       const state = readState();
@@ -914,7 +930,8 @@ function serve(creq, cres) {
         const authFail = pres.statusCode === 401 || pres.statusCode === 403;
         const overloaded = pres.statusCode === 529; // serveur Anthropic surcharge : rien a voir avec le quota
 
-        if ((rejected || authFail || overloaded) && !lastResort) {
+        const repli429 = pres.statusCode === 429 && (lastResort === "epingle" || lastResort === "demande"); // DR-018
+        if ((rejected || authFail || overloaded) && (!lastResort || repli429)) {
           // 429 SANS retry-after NI reset 5h = transitoire (surcharge, requete trop grosse...)
           // -> cooldown court, surtout pas 5h (sinon on bloque un compte encore frais)
           const transient = overloaded || (!authFail && q.retryAfterMs == null && q.r5 == null);
@@ -925,6 +942,7 @@ function serve(creq, cres) {
           st.exhausted = st.exhausted || {}; st.exhausted[tok.name] = until;
           writeState(st);
           log(authFail ? "AUTHFAIL" : overloaded ? "OVERLOADED(529) x" + st.overload[tok.name].n : (transient ? "REJECTED(transitoire)" : "REJECTED"), tok.name, "http" + pres.statusCode, "-> cooldown jusqu'a", new Date(until).toISOString());
+          if (lastResort === "epingle") ctx.epingle429 = tok.name; // DR-018 : attempt() deplace l'epinglage
           pres.resume(); // draine
           // re-pick (un autre token frais, sinon WAIT)
           return attempt();
