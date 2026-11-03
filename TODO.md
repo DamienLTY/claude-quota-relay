@@ -85,4 +85,6 @@ Tâches de fond lancées le 2026-10-01 (sous-agents `ouvrier`, fichiers disjoint
 - [x] DR-022 A4 test clé de config utilisée, jamais en clair, priorité env ; npm test 0 (preuve : 88 PASS rc 0, mutation tombée, relecteur ACCEPTABLE)
 - [x] DR-022 A5 CHANGELOG + version 0.26.0
 - [x] DR-022 B6-8 README.fr.md + README.md anglais, sans etabli, grep = 0
-- [ ] DR-022 B9 revue relecteur puis push subtree
+- [x] DR-022 B9 revue relecteur puis push subtree (preuve : relecteur ACCEPTABLE ; GitHub main = 4112be4 « Synchro depuis etabli 977ecd9cc5 », README.fr.md présent)
+
+- [x] 2026-10-31 DR-022 installé sur ce poste (preuve : installer.sh --reel --composants cqr RC 0, cli.js installé = dépôt par cmp, `cqr help` liste `gratuit cle`, proxy EN COURS port 8787). Reste : réinstaller sur l'autre PC.
