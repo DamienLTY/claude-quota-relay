@@ -31,7 +31,8 @@ During installation, `cqr` edits Claude Code's `~/.claude/settings.json` so that
 
 You hand this program login keys for your accounts. It is normal to want to know what it does with them.
 
-- **Your keys stay on your computer**, in a single file: `tokens.json`, in `~/.claude/claude-quota-relay/`. The file is ignored by git (it cannot be published by mistake). Logs always mask keys, and `cqr` never prints them in full.
+- **Your keys stay on your computer.** The reference file is `tokens.json`: `~/.etabli/cles/cqr-tokens.json` if that file exists, otherwise `~/.claude/claude-quota-relay/tokens.json` (the `.claude` folder may be elsewhere if you set `CLAUDE_CONFIG_DIR`). The file is ignored by git (it cannot be published by mistake). Logs always mask keys, and `cqr` never prints them in full. **But the first key is also copied in clear text into Claude Code's `settings.json`** (`ANTHROPIC_AUTH_TOKEN`), and each install and uninstall leaves a backup `settings.json.bak-<timestamp>` of the previous state, which contains the key as soon as it has been installed once. These backups are never purged, and uninstalling keeps the key on purpose. Delete the backups yourself when you no longer need them. Any program running in your session can read these files.
+- **A usage log is written**: `~/.delest/usage-YYYY-MM.jsonl`, one line per completed response, with the time, model, token counts (input, output, cache), stop reason, session id, account name and request class. It never contains message content or keys. Account names are written as is, so do not use an e-mail address as a name. A new file is started each month and none is ever deleted; with `CQR_USAGE_FILE`, a single file grows without limit. `CQR_SONDE=0` in the relay's environment turns it off; `CQR_USAGE_FILE` changes the file.
 - **It only listens on `127.0.0.1`**, meaning your computer alone. Nobody else on your network can connect to it.
 - **It only talks to three destinations**: Anthropic (`api.anthropic.com`), the company relay you specify yourself (the `ANTHROPIC_TARGET_API_URL` variable, see [Company network](#company-network)), and `openrouter.ai` only if you turn on free compaction (off by default, see [below](#free-compaction-optional-off-by-default)).
 - **No telemetry**, no statistics sent to the author, no account to create with the author.
@@ -247,7 +248,7 @@ Safe: your keys, port and settings are kept, hooks and the status bar are never 
 
 ### The config file
 
-Everything is in `~/.claude/claude-quota-relay/tokens.json` (the `.claude` folder may be elsewhere if you set the `CLAUDE_CONFIG_DIR` variable):
+Everything is in `~/.etabli/cles/cqr-tokens.json` if that file exists, otherwise in `~/.claude/claude-quota-relay/tokens.json` (the `.claude` folder may be elsewhere if you set the `CLAUDE_CONFIG_DIR` variable):
 
 ```jsonc
 {

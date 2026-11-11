@@ -47,6 +47,18 @@ const fs = require("fs"), os = require("os"), p = require("path"), http = requir
       assert.strictEqual(u.mod, https, "invalid URL -> default https");
       delete process.env.ANTHROPIC_TARGET_API_URL;
     }
+    {
+      // URL invalide AVEC identifiants : proxy.log ne doit jamais contenir le mot de passe.
+      process.env.ANTHROPIC_TARGET_API_URL = "http://admin:" + "Pa55-XYZ" + "@bad host.corp"; // factice, coupé pour scan-secrets
+      resolveUpstream();
+      const journal = fs.readFileSync(p.join(PURE, "proxy.log"), "utf8");
+      assert.ok(journal.includes("invalide"), "invalid URL is logged");
+      assert.ok(!journal.includes("Pa55-XYZ") && !journal.includes("admin:"), "credentials stripped from the logged URL");
+      process.env.ANTHROPIC_TARGET_API_URL = "http://admin:" + "Pa5/5" + "@h"; // factice : "/" dans le mot de passe
+      resolveUpstream();
+      assert.ok(!fs.readFileSync(p.join(PURE, "proxy.log"), "utf8").includes("Pa5/5"), "password with / never logged");
+      delete process.env.ANTHROPIC_TARGET_API_URL;
+    }
   } finally { try { fs.rmSync(PURE, { recursive: true, force: true }); } catch (e) {} }
 }
 

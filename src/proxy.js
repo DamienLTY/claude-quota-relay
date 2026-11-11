@@ -82,7 +82,7 @@ function resolveUpstream() {
     try {
       const u = new URL(target);
       return { host: u.hostname, port: Number(u.port) || (u.protocol === "http:" ? 80 : 443), mod: u.protocol === "http:" ? require("http") : https, pathPrefix: u.pathname.replace(/\/$/, "") };
-    } catch (e) { log("ANTHROPIC_TARGET_API_URL invalide, ignore :", target, e.message); }
+    } catch (e) { log("ANTHROPIC_TARGET_API_URL invalide, ignore :", e.message); } // jamais l'URL : elle peut porter un mot de passe
   }
   return { host: "api.anthropic.com", port: 443, mod: https, pathPrefix: "" };
 }

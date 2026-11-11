@@ -31,7 +31,8 @@ Au moment de l'installation, `cqr` modifie le fichier `~/.claude/settings.json` 
 
 Vous donnez à ce programme des clés de connexion à vos comptes. Il est normal de vouloir savoir ce qu'il en fait.
 
-- **Vos clés restent sur votre ordinateur**, dans un seul fichier : `tokens.json`, dans `~/.claude/claude-quota-relay/`. Ce fichier est ignoré par git (il ne peut pas être publié par erreur). Les journaux masquent toujours les clés, et `cqr` ne les affiche jamais en entier.
+- **Vos clés restent sur votre ordinateur.** Le fichier de référence est `tokens.json` : `~/.etabli/cles/cqr-tokens.json` si ce fichier existe, sinon `~/.claude/claude-quota-relay/tokens.json` (le dossier `.claude` peut être ailleurs si vous avez défini `CLAUDE_CONFIG_DIR`). Ce fichier est ignoré par git (il ne peut pas être publié par erreur). Les journaux masquent toujours les clés, et `cqr` ne les affiche jamais en entier. **Mais la première clé est aussi recopiée en clair dans le `settings.json` de Claude Code** (`ANTHROPIC_AUTH_TOKEN`), et chaque installation et désinstallation laisse une sauvegarde `settings.json.bak-<horodatage>` de l'état précédent, qui contient la clé dès qu'elle a été installée une fois. Ces sauvegardes ne sont jamais purgées, et la désinstallation garde la clé volontairement. Supprimez les sauvegardes vous-même quand vous n'en avez plus besoin. Tout programme lancé dans votre session peut lire ces fichiers.
+- **Un journal d'usage est écrit** : `~/.delest/usage-AAAA-MM.jsonl`, une ligne par réponse complète, avec l'heure, le modèle, les nombres de jetons (entrée, sortie, cache), la raison d'arrêt, l'identifiant de session, le nom du compte et la classe de requête. Il ne contient jamais le contenu des messages ni les clés. Les noms de compte sont écrits tels quels : n'y mettez pas d'adresse e-mail. Un nouveau fichier est ouvert chaque mois, et aucun n'est jamais supprimé ; avec `CQR_USAGE_FILE`, un seul fichier grossit sans fin. `CQR_SONDE=0` dans l'environnement du relais le coupe ; `CQR_USAGE_FILE` change le fichier.
 - **Il n'écoute que sur `127.0.0.1`**, c'est-à-dire votre ordinateur seul. Personne d'autre sur votre réseau ne peut s'y connecter.
 - **Il ne parle qu'à trois destinataires** : Anthropic (`api.anthropic.com`), le relais d'entreprise que vous indiquez vous-même (variable `ANTHROPIC_TARGET_API_URL`, voir [Réseau d'entreprise](#réseau-dentreprise)), et `openrouter.ai` uniquement si vous activez le compactage gratuit (coupé par défaut, voir [plus bas](#compactage-gratuit-option-coupée-par-défaut)).
 - **Aucune télémétrie**, aucune statistique envoyée à l'auteur, aucun compte à créer chez lui.
@@ -247,7 +248,7 @@ Sans risque : vos clés, votre port et vos réglages sont conservés, les hooks 
 
 ### Le fichier de config
 
-Tout est dans `~/.claude/claude-quota-relay/tokens.json` (le dossier `.claude` peut être ailleurs si vous avez défini la variable `CLAUDE_CONFIG_DIR`) :
+Tout est dans `~/.etabli/cles/cqr-tokens.json` si ce fichier existe, sinon dans `~/.claude/claude-quota-relay/tokens.json` (le dossier `.claude` peut être ailleurs si vous avez défini la variable `CLAUDE_CONFIG_DIR`) :
 
 ```jsonc
 {
