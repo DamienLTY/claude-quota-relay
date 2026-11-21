@@ -133,7 +133,7 @@ function patchSettings(conf) {
     const raw = fs.readFileSync(SETTINGS, "utf8").replace(/^﻿/, "");
     try { settings = JSON.parse(raw); } catch (e) { throw new Error("settings.json n'est pas un JSON valide — corrigez-le ou déplacez-le, puis relancez.\n  " + e.message); }
     const bak = SETTINGS + ".bak-" + Date.now();
-    fs.writeFileSync(bak, raw);
+    fs.writeFileSync(bak, raw, { mode: 0o600 }); // le jeton y est en clair
     backupName = p.basename(bak);
   }
   settings.env = settings.env || {};

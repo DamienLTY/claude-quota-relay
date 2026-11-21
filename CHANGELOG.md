@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.26.1
+
+Audit de securite n°2 (deux MEDIUM).
+
+- **Hote et origine controles** : le relais repond 403, sans corps, a toute requete dont l'en-tete `Host` n'est pas `127.0.0.1:<port>`, `localhost:<port>` ou `[::1]:<port>`, et a toute requete qui porte un en-tete `Origin` (navigateur). Protege contre le DNS rebinding ; Claude Code et les sondes `curl`/`http.get` vers `127.0.0.1` ne changent pas. `/__proxy_health` est protege de la meme facon.
+- **Sauvegardes en 0600** : `settings.json.bak-*` et `writeSettings` sont ecrits en `mode: 0o600` (sans effet sous Windows).
+- **Tests** : `test/hote-origine.test.js`, `test/droits-sauvegardes.test.js`.
+
 ## 0.26.0
 
 Cle OpenRouter enregistrable et README public refait (DR-022).

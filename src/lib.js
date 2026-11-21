@@ -144,7 +144,7 @@ function debrancherSettings(settings) {
 }
 
 // Ecriture de settings.json : fichier temporaire dans le meme dossier puis rename, comme writeConf.
-function writeSettings(sp, s) { const tmp = sp + ".tmp-" + process.pid; try { fs.writeFileSync(tmp, JSON.stringify(s, null, 2)); fs.renameSync(tmp, sp); } catch (e) { try { fs.unlinkSync(tmp); } catch (e2) {} throw e; } }
+function writeSettings(sp, s) { const tmp = sp + ".tmp-" + process.pid; try { fs.writeFileSync(tmp, JSON.stringify(s, null, 2), { mode: 0o600 }); fs.renameSync(tmp, sp); } catch (e) { try { fs.unlinkSync(tmp); } catch (e2) {} throw e; } }
 
 // Lit settings.json ; rend null (et dit quoi faire sur stderr) s'il est illisible ou n'est pas du JSON.
 function readSettingsOuMessage(sp, quoi) {

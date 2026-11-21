@@ -30,7 +30,7 @@ try { cp.execFileSync(process.execPath, [p.join(INSTALL_DIR, "cli.js"), "stop"],
 let s = null;
 if (fs.existsSync(SETTINGS)) {
   const raw = fs.readFileSync(SETTINGS, "utf8").replace(/^﻿/, "");
-  fs.writeFileSync(SETTINGS + ".bak-" + Date.now(), raw);
+  fs.writeFileSync(SETTINGS + ".bak-" + Date.now(), raw, { mode: 0o600 });
   try { s = JSON.parse(raw); } catch (e) { console.error("  ! settings.json n'est pas un JSON valide — laissé tel quel (sauvegarde conservée)."); }
 }
 if (s) {

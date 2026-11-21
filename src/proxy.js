@@ -523,6 +523,13 @@ function decideCompaction(conf, state, bodyObj, prevActive, newIdx, ctx, switchi
 function serve(creq, cres) {
   // sans ecouteur, une erreur d'ecriture sur la reponse (client parti) tuait le relais (DR-012)
   cres.on("error", (e) => log("CLIENT res error", e.message));
+  // Audit 2 M1 : Host hors 127.0.0.1/localhost/[::1] + port d'ecoute = DNS rebinding ; Origin = un navigateur (Claude Code n'en envoie pas). 403 sans detail.
+  const port = creq.socket && creq.socket.localPort, hote = String(creq.headers.host || "").toLowerCase();
+  if (creq.headers.origin !== undefined || !port || ![ "127.0.0.1:" + port, "localhost:" + port, "[::1]:" + port ].includes(hote)) {
+    log("REFUSE hote/origine", "host=" + JSON.stringify(creq.headers.host || ""), "origin=" + (creq.headers.origin !== undefined));
+    cres.writeHead(403, { "content-length": "0" }); cres.end(); creq.resume();
+    return;
+  }
   if (creq.url === "/__proxy_health") {
     cres.writeHead(200, { "content-type": "application/json" });
     cres.end(JSON.stringify({ ok: true, ts: ts(), state: readState() }));
