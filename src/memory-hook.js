@@ -7,7 +7,7 @@
  * keeps the project's long-running context without re-reading everything.
  *
  * Since 0.21.0 (DR-050, DR-060) the file is a FACTUAL STATE built WITHOUT any model: last 5
- * commits, uncommitted files, the "En cours" section of TODO.md, last 5 decisions of
+ * commits, uncommitted files, (the "En cours" section of TODO.md only with CQR_MEMORY_TODO=1, DR-988), last 5 decisions of
  * REGISTRE-DECISIONS.md, then a "Notes" section that nothing rewrites. No Haiku call, no quota,
  * no drift: every line comes from a file or from git, and says so.
  *
@@ -202,6 +202,11 @@ function sectionTodo(cwd) {
   return shown.join("\n");
 }
 
+// DR-988 (etape 12) : la section « En cours (TODO.md) » n'est plus ecrite. Elle lisait la PREMIERE section « En cours » du
+// fichier (souvent une vieille section sans case ouverte) : fausse, et jalon injecte maintenant les cases ouvertes. Pour la
+// remettre : CQR_MEMORY_TODO=1 dans l'environnement du hook, ou cette constante a true. Les « Dernieres decisions » restent (DR-060).
+const GARDER_TODO = process.env.CQR_MEMORY_TODO === "1";
+
 // Les 5 dernieres lignes `| DR-xxx | type | question | reponse | ... |` du registre, question tronquee.
 // En mode sous-projet avec `prefixe`, les lignes `| <prefixe>-001` comptent aussi.
 function sectionRegistre(cwd, prefixe) {
@@ -220,7 +225,7 @@ function buildFacts(cwd, ignores, sub) {
   const all = [
     ["Derniers commits", hasGit ? sectionCommits(cwd, sub) : null],
     ["Fichiers non commités", hasGit ? sectionNonCommites(cwd, ignores, sub) : null],
-    ["En cours (TODO.md)", sectionTodo(docs)],
+    ["En cours (TODO.md)", GARDER_TODO ? sectionTodo(docs) : null],
     ["Dernières décisions (REGISTRE-DECISIONS.md)", sectionRegistre(docs, sub && sub.fm.prefixe)],
   ];
   return all.filter((s) => s[1]);

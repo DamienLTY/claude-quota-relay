@@ -198,6 +198,20 @@ cqr compact gratuit status                      # check the state (the key is ne
 
 Only automatic and manual (`/compact`) compactions go through this path; emergency compactions stay with Claude. `proxy.log` records each case on one line (`COMPACT-GRATUIT ok…` or `repli…`), never the content. Advanced settings (model, timeout) are in the `compaction.free` block of `tokens.json`.
 
+## Early compaction while sub-agents run (optional, off by default)
+
+When your main conversation waits for background sub-agents and its context is close to Claude Code's automatic-compaction threshold, the reports would be read right before the compaction swallows them. With this option, `cqr` raises the usage it reports at the end of the turn, so Claude Code compacts **before** it reads the reports. Nothing is sent to a third party.
+
+```bash
+cqr compact anticipe on        # reads modelSettings.<model>.autoCompactWindow from settings.json (numbers only)
+cqr compact anticipe ratio 0.9 # share of the real threshold (default 0.94; real threshold = window - 33 000)
+cqr compact anticipe status    # state, windows, trigger point
+cqr compact anticipe off
+```
+
+- Only main-thread requests with a background sub-agent running are touched; everything else passes byte for byte.
+- The reported usage written in Claude Code's transcript is higher than the real one at each trigger (`ANTICIPE gonfle` lines in `proxy.log` give the gap). The usage journal of `cqr` keeps the real numbers.
+
 ## Troubleshooting
 
 ### My two accounts always show the same quota

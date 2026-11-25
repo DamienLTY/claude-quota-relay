@@ -69,7 +69,8 @@ console.log("PASS — proxy.resolveUpstream: default, https custom, http custom 
 // corporate user would set. ---
 (async () => {
   const SRC = p.join(__dirname, "..", "src");
-  const PROXY_PORT = 8794, RELAY_PORT = 8795;
+  const freePort = () => new Promise((ok, ko) => { const s = require("net").createServer(); s.on("error", ko); s.listen(0, "127.0.0.1", () => { const n = s.address().port; s.close(() => ok(n)); }); });
+  const PROXY_PORT = await freePort(), RELAY_PORT = await freePort(); // ports libres : 8795 sert a un autre processus de la machine
   const FAKE = "sk-ant-oat01-FAKE-TEST-TOKEN-not-real-000000";
   const DIR = fs.mkdtempSync(p.join(os.tmpdir(), "cqr-upstream-"));
   for (const f of ["proxy.js", "compaction.js", "lib.js"]) fs.copyFileSync(p.join(SRC, f), p.join(DIR, f));

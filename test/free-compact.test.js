@@ -22,6 +22,7 @@ const setVariante = (v, extra) => fs.writeFileSync(VARIANTE_FILE, JSON.stringify
 setVariante("court"); // les scenarios d'origine portent sur la conversation entiere ; les variantes ont leurs scenarios
 const PORT_A = 8820, MOCK_ANTH = 8821, MOCK_OR = 8822, PORT_B = 8823, PORT_C = 8824, PORT_D = 8825, PORT_E = 8826;
 const FAKE = "sk-ant-oat01-FAKE-TEST-TOKEN-not-real-000000";
+const HOME_VIDE = fs.mkdtempSync(p.join(os.tmpdir(), "cqr-home-vide-")); // dossier personnel sans coffre : 'sans cle' doit rester sans cle
 const FAKE_OR_KEY = "FAKE-OR-KEY-pour-le-test-9f8e7d";
 const FAKE_CFG = ["FAKE", "CFG", "KEY", "pour", "le", "test", "1a2b3c"].join("-"); // cle de config factice, assemblee a l'execution (DR-022)
 const CFG_TOKEN = ["cfgtok", "Zv8Lq2Rm5Xd7Pw"].join("-"); // jeton de la config des relais d'essai : aucun motif ne le reconnait, seule sa valeur exacte le masque
@@ -379,7 +380,7 @@ function writeConf(dir, port, compaction) {
 async function startRelay(dir, port, withKey, withoutModule, envExtra) {
   for (const f of ["proxy.js", "compaction.js", "lib.js", ...(withoutModule ? [] : ["free-compact.js", "entreprise.js", "ancre.js"])]) fs.copyFileSync(p.join(SRC, f), p.join(dir, f));
   const env = Object.assign({}, process.env, { CQR_UPSTREAM_HOST: "127.0.0.1", CQR_UPSTREAM_PORT: String(MOCK_ANTH), CQR_UPSTREAM_HTTP: "1", CQR_NO_POPUP: "1", CQR_FREE_COMPACT_URL: "http://127.0.0.1:" + MOCK_OR + "/api/v1/chat/completions", CQR_FREE_COMPACT_BLOCK_MS: "400", CQR_FREE_COMPACT_RETRY_MS: "30" }, envExtra);
-  if (withKey) env.OPENROUTER_API_KEY = FAKE_OR_KEY; else delete env.OPENROUTER_API_KEY; // jamais la vraie cle de la machine
+  if (withKey) env.OPENROUTER_API_KEY = FAKE_OR_KEY; else { delete env.OPENROUTER_API_KEY; env.HOME = env.USERPROFILE = HOME_VIDE; } // jamais la vraie cle de la machine, ni celle de son coffre (DR-969)
   const child = cp.spawn(process.execPath, [p.join(dir, "proxy.js")], { env, stdio: "ignore", windowsHide: true });
   let up = false; for (let i = 0; i < 40; i++) { if (await health(port)) { up = true; break; } await sleep(150); }
   assert.ok(up, "le relais d'essai (port " + port + ") doit demarrer");
@@ -552,7 +553,9 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
       const b = snap(), r = await ask(PORT_A, compactBody(), AUTO);
       assert.deepStrictEqual(snap(), { anth: b.anth, or: b.or + (mode === "nosummary" ? 1 : 6) }, "repli journal " + mode + " : Nemotron 1 essai (6 sur surcharge ou contenu vide : DR-127), Claude AUCUN appel");
       isJournal(r, "repli journal " + mode);
-      assert.ok(new RegExp("COMPACT-GRATUIT ok motif=auto variante=journal entree=[1-9]\\d* sortie=[1-9]\\d* duree=\\d+s essais=" + (mode === "nosummary" ? 1 : 6) + " repli=" + raison).test(logOf(DIR_A)), "repli journal " + mode + " : ligne COMPACT-GRATUIT avec la raison " + raison);
+      const reLigne = new RegExp("COMPACT-GRATUIT ok motif=auto variante=journal entree=[1-9]\\d* sortie=[1-9]\\d* duree=\\d+s essais=" + (mode === "nosummary" ? 1 : 6) + " repli=" + raison);
+      for (let k = 0; k < 40 && !reLigne.test(logOf(DIR_A)); k++) await sleep(50); // le relais rend la reponse AVANT d'ecrire la ligne du journal (proxy.js : sendSummary puis log) : on lui laisse 2 s
+      assert.ok(reLigne.test(logOf(DIR_A)), "repli journal " + mode + " : ligne COMPACT-GRATUIT avec la raison " + raison + " (fin du journal : " + logOf(DIR_A).split("\n").filter((l) => /COMPACT-GRATUIT/.test(l)).slice(-3).join(" | ").slice(0, 400) + ")");
     }
     // blocage : un appel dans la fenetre n'atteint ni Nemotron ni Claude, il rend le journal
     await after(500); orMode = "500"; await ask(PORT_A, compactBody(), AUTO); orMode = "ok"; // l'echec qui pose le blocage
@@ -648,18 +651,36 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
         pl = withH("gratuit"); assert.strictEqual(pl.go, true, "gratuit : le detour part");
         assert.strictEqual(withH("gratuit", { enabled: false }).go, false, "gratuit ne passe JAMAIS outre un detour coupe (vie privee : reglage de l'utilisateur)");
         delete process.env.OPENROUTER_API_KEY;
+        const homeSave = [process.env.HOME, process.env.USERPROFILE]; process.env.HOME = process.env.USERPROFILE = HOME_VIDE; // sans coffre (DR-969)
         pl = withH("gratuit", { fallback: "journal" }); assert.deepStrictEqual([pl.go, pl.raison], [false, "cle-absente"], "gratuit en panne : repli sur Claude payant meme si fallback=journal (J5-025)");
         pl = withH(undefined, { fallback: "journal" }); assert.strictEqual(pl.variante, "journal", "sans en-tete, fallback=journal garde son effet");
+        [process.env.HOME, process.env.USERPROFILE] = homeSave;
         process.env.OPENROUTER_API_KEY = FAKE_OR_KEY; }
       // DR-022 : cle de config (compaction.free.key), l'environnement reste prioritaire
       { const F = fresh(), dec = (free) => F.decide({ url: "/v1/messages", headers: AUTO, body: { messages: [{ role: "user", content: "bonjour" }, { role: "assistant", content: "ok" }, { role: "user", content: FC.INVITE + " fin" }] } }, () => confIn(free));
         delete process.env.OPENROUTER_API_KEY;
+        const homeSave = [process.env.HOME, process.env.USERPROFILE]; process.env.HOME = process.env.USERPROFILE = HOME_VIDE; // sans coffre (DR-969)
         let pl = dec({ key: "  " + FAKE_CFG + " " }); assert.ok(pl.go === true && pl.key === FAKE_CFG, "cle de config : le detour part avec elle (espaces coupes)");
         assert.ok(pl.secrets.includes(FAKE_CFG), "cle de config : dans les secrets a masquer");
         assert.deepStrictEqual(F.cleOR(confIn({ key: FAKE_CFG }).compaction), { key: FAKE_CFG, source: "config" }, "cleOR : config");
         pl = dec({ key: "" }); assert.deepStrictEqual([pl.go, pl.raison], [false, "cle-absente"], "aucune cle : repli cle-absente");
         pl = dec(); assert.deepStrictEqual([pl.go, pl.raison], [false, "cle-absente"], "pas de free.key : repli cle-absente");
-        assert.deepStrictEqual(F.cleOR({}), { key: "", source: null }, "cleOR : rien");
+        assert.deepStrictEqual(F.cleOR({}), { key: "", source: null }, "cleOR : rien (coffre absent : comportement d'avant)");
+        // DR-969 : 3e repli, le coffre d'etabli (dossier cles, fichier openrouter-cles.txt) ; faux dossier personnel jetable, fausse cle
+        const FAKE_COFFRE = ["FAKE", "COFFRE", "KEY", "pour", "le", "test", "4d5e6f"].join("-");
+        const HOME_COFFRE = fs.mkdtempSync(p.join(os.tmpdir(), "cqr-home-coffre-")), FICHIER_COFFRE = p.join(HOME_COFFRE, ".etabli", "cles", "openrouter-cles.txt");
+        fs.mkdirSync(p.dirname(FICHIER_COFFRE), { recursive: true });
+        fs.writeFileSync(FICHIER_COFFRE, "﻿# commentaire\r\n\r\n  " + FAKE_COFFRE + "  nom\r\nSECONDE-CLE-jamais-prise\r\n");
+        process.env.HOME = process.env.USERPROFILE = HOME_COFFRE;
+        assert.deepStrictEqual(F.cleOR({}), { key: FAKE_COFFRE, source: "coffre" }, "cleOR : coffre quand env et config sont vides (1re cle, commentaires et BOM ignores)");
+        pl = dec(); assert.ok(pl.go === true && pl.key === FAKE_COFFRE && pl.secrets.includes(FAKE_COFFRE), "cle du coffre : le detour part avec elle, masquee");
+        assert.strictEqual(F.cleOR(confIn({ key: FAKE_CFG }).compaction).source, "config", "config avant coffre");
+        process.env.OPENROUTER_API_KEY = FAKE_OR_KEY;
+        assert.deepStrictEqual(F.cleOR({}), { key: FAKE_OR_KEY, source: "env" }, "env avant coffre");
+        delete process.env.OPENROUTER_API_KEY;
+        fs.writeFileSync(FICHIER_COFFRE, "# rien\n");
+        assert.deepStrictEqual(F.cleOR({}), { key: "", source: null }, "coffre sans cle : rien");
+        [process.env.HOME, process.env.USERPROFILE] = homeSave; fs.rmSync(HOME_COFFRE, { recursive: true, force: true });
         process.env.OPENROUTER_API_KEY = FAKE_OR_KEY;
         pl = dec({ key: FAKE_CFG }); assert.strictEqual(pl.key, FAKE_OR_KEY, "env + config : l'environnement est prioritaire");
         assert.ok(pl.secrets.includes(FAKE_OR_KEY), "env + config : la cle d'environnement est masquee"); }
@@ -807,12 +828,14 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
       // correctifs de revue : repli journal sans cle, invite fusionnee, coupe, balises, run sans rejet, bornes du fichier de variante
       { const dec = (free) => { const F = fresh(); return F.decide({ url: "/v1/messages", headers: AUTO, body: { messages: [{ role: "user", content: "a" }, { role: "user", content: FC.INVITE + " fin" }] } }, () => confIn(free)); };
         delete process.env.OPENROUTER_API_KEY; fs.writeFileSync(VARIANTE_FILE, JSON.stringify({ variante: "hybride", ancre: false }));
+        const homeSave = [process.env.HOME, process.env.USERPROFILE]; process.env.HOME = process.env.USERPROFILE = HOME_VIDE; // sans coffre (DR-969)
         const pj = dec({ fallback: "journal" });
         assert.ok(pj.go && pj.variante === "journal" && pj.repli === "cle-absente", "cle absente + fallback journal : journal, raison cle-absente : " + JSON.stringify(pj).slice(0, 150));
         const pc = dec({ fallback: "claude" });
         assert.ok(!pc.go && pc.raison === "cle-absente", "cle absente + fallback claude : Claude sert");
         const pn = dec({ fallback: "journal", kinds: ["manual"] });
         assert.ok(!pn.go && pn.raison === "type-non-liste", "type non liste : Claude sert, meme en fallback journal");
+        [process.env.HOME, process.env.USERPROFILE] = homeSave;
         process.env.OPENROUTER_API_KEY = FAKE_OR_KEY; }
       { const SECRET = "CRITICAL: Respond with TEXT ONLY";
         const body = { messages: [{ role: "user", content: "QUESTION-AVANT" }, { role: "assistant", content: "REPONSE-AVANT" },
@@ -928,13 +951,22 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
             assert.ok(eb.messages[0].content.includes("[user] migre le module X") && eb.messages[0].content.includes("[appel Read] {\"file\":\"x.js\"}") && eb.messages[0].content.includes("[résultat] RESULTAT-OUTIL"), "ancre : la vue de la conversation");
             assert.ok(!eb.messages[0].content.includes(FC.INVITE), "ancre : l'invite de compactage ne part pas");
             assert.ok(r.text.indexOf("Rapport de session") < r.text.indexOf(marque) && r.text.indexOf(marque) < r.text.indexOf("</summary>") && r.text.trimEnd().endsWith("</summary>"), "ancre : apres le resume, avant </summary>");
-            for (const s of ["- R1: Jamais de push sans accord", "- [in_progress] ecrire les tests", "- DR-9: ancre seule", "- step: module lu", "  - verify: npm test", "  - artifact: src/x.js", "- demande : migre le module"]) assert.ok(r.text.includes(s), "ancre : " + s);
+            for (const s of ["- R1: Jamais de push sans accord", "- [in_progress] ecrire les tests", "- DR-9: ancre seule", "- step: module lu", "  - verify: npm test", "  - artifact: src/x.js"]) assert.ok(r.text.includes(s), "ancre : " + s);
+            assert.ok(!r.text.includes("- demande :") && !r.text.includes("## Recovery Pointers"), "ancre : plus de demandes recopiees (DR-988 b), le journal jalon les garde"); 
             assert.deepStrictEqual([r.ancre[0], /^car=\d+$/.test(r.ancre[1])], ["ancre=ok", true], "ancre : etat au journal"); }
           // un <summary> cite dans <analysis> : l'ancre est dans ce que Claude Code extrait (analyse retiree, puis premier <summary>)
           { const F = fresh(); orMode = "cite"; ancreMode = "ok";
             const r = await F.run(planA(F), bodyA(), {}); orMode = "ok";
             const lu = /<summary>([\s\S]*?)<\/summary>/.exec(r.text.replace(/<analysis>[\s\S]*?<\/analysis>/, ""));
             assert.ok(r.ok && r.ancre[0] === "ancre=ok" && lu && lu[1].includes("Rapport de session") && lu[1].includes(marque), "ancre : avec un <summary> cite dans <analysis>, l'ancre est dans le resume lu par Claude Code"); }
+          // DR-988 b (etape 12) : plus de « demande : » ni de titre vide ; le reste de l'ancre est intact
+          { const t = "I\n\n## Applicable Rules (verbatim — do not rewrite)\n- R1: aa bb\n## Recovery Pointers\n- demande : x\n- demande : y\n## Decisions (verbatim)\n- d: e";
+            assert.strictEqual(FC.sansDemandes(t), "I\n\n## Applicable Rules (verbatim — do not rewrite)\n- R1: aa bb\n## Decisions (verbatim)\n- d: e", "demandes et titre retires, regles et decisions intactes");
+            assert.strictEqual(FC.sansDemandes("I\n\n## Recovery Pointers\n- demande : x"), "", "plus aucune section : ancre vide");
+            assert.strictEqual(FC.sansDemandes("I\n\n## Recovery Pointers\n- demande : x\n- autre : y"), "I\n\n## Recovery Pointers\n- autre : y", "une ligne qui n'est pas une demande garde le titre"); }
+          { const F = fresh(); orMode = "ok"; ancreMode = "ok"; const b = bodyA();
+            const r = await F.run(F.decide({ url: "/v1/messages", headers: AUTO, body: b }, () => confIn()), b, {});
+            assert.ok(r.ok && r.ancre[0] === "ancre=ok" && r.text.includes("- R1: Jamais de push sans accord") && !r.text.includes("demande :"), "ancre bout en bout : regles gardees, demandes retirees"); }
           // echecs de l'extraction : le resume est rendu sans ancre, la raison est lisible, aucun blocage
           for (const [mode, raison] of [["400", "http-400"], ["empty", "texte-vide"], ["length", "finish-length"], ["json", "json-illisible"], ["vide", "vide"], ["hang", "delai"]]) {
             const { F, r } = await apres(mode, mode === "hang" ? { free: { timeoutMs: 500 } } : undefined);
@@ -1096,7 +1128,7 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
       r = cli("compact", "gratuit", "off");
       assert.strictEqual(conf().compaction.free.enabled, false, "cli off : coupe");
       // DR-022 : cle enregistree (env SANS OPENROUTER_API_KEY), jamais en clair
-      { const env2 = Object.assign({}, process.env); delete env2.OPENROUTER_API_KEY;
+      { const env2 = Object.assign({}, process.env, { HOME: HOME_VIDE, USERPROFILE: HOME_VIDE }); delete env2.OPENROUTER_API_KEY; // HOME_VIDE : pas de coffre (DR-969)
         const cliS = (...a) => cp.spawnSync(process.execPath, [p.join(DIR_C, "cli.js"), ...a], { encoding: "utf8", windowsHide: true, env: env2 });
         const clair = (o) => (o.stdout + o.stderr).includes(FAKE_CFG);
         r = cliS("compact", "gratuit", "status");
@@ -1124,6 +1156,12 @@ const CONF = (free, extra) => Object.assign({ enabled: true, dryRun: false, mode
         assert.strictEqual(conf().tokens[0].token, FAKE, "cle : les jetons sont intacts");
         r = cliS("compact", "gratuit", "status");
         assert.ok(/absente -- cqr compact gratuit cle/.test(r.stdout), "cle off : status dit absente");
+        // DR-969 : cle du coffre (faux dossier personnel), source dite « coffre », jamais en clair
+        const HOME_C2 = fs.mkdtempSync(p.join(os.tmpdir(), "cqr-home-coffre2-")), COFFRE_C2 = ["FAKE", "COFFRE", "CLI", "pour", "le", "test", "7a8b9c"].join("-");
+        fs.mkdirSync(p.join(HOME_C2, ".etabli", "cles"), { recursive: true }); fs.writeFileSync(p.join(HOME_C2, ".etabli", "cles", "openrouter-cles.txt"), COFFRE_C2 + "\n");
+        r = cp.spawnSync(process.execPath, [p.join(DIR_C, "cli.js"), "compact", "gratuit", "status"], { encoding: "utf8", windowsHide: true, env: Object.assign({}, env2, { HOME: HOME_C2, USERPROFILE: HOME_C2 }) });
+        assert.ok(/clé\s+: coffre \(/.test(r.stdout) && !(r.stdout + r.stderr).includes(COFFRE_C2), "cle du coffre : status dit coffre, sans la cle : " + r.stdout);
+        fs.rmSync(HOME_C2, { recursive: true, force: true });
         cliS("compact", "gratuit", "off"); }
       // noms : moins de 3 caracteres refuse, rien n'est ecrit
       cli("compact", "gratuit", "noms", "Alice,Bob");

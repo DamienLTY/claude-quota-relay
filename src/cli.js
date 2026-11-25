@@ -424,7 +424,8 @@ switch (cmd) {
         const s = JSON.parse(raw);
         s.env = s.env || {};
         s.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:" + newPort;
-        fs.writeFileSync(SETTINGS, JSON.stringify(s, null, 2));
+        fs.writeFileSync(SETTINGS, JSON.stringify(s, null, 2), { mode: 0o600 });
+        try { fs.chmodSync(SETTINGS, 0o600); } catch (e) { /* Windows ou FS sans modes : sans effet */ }
       }
       restartIfRunning("Port changé pour " + newPort + " (tokens.json + settings.json mis à jour)",
         "Pensez à redémarrer Claude Code : il lit le port depuis settings.json à son démarrage.");
@@ -487,6 +488,42 @@ switch (cmd) {
       else if (a2 === "off") { cc.dynamicThreshold = false; writeConf(c); console.log("Compaction dynamique désactivée : la réduction n'a lieu qu'au changement de compte. Effet immédiat."); }
       else console.error("Usage : cqr compact dynamic on|off");
     }
+    else if (a1 === "anticipe") {
+      // DR-980, DR-985 : releve l'usage rapporte en fin de tour quand l'agent principal attend des sous-agents de fond et que son
+      // contexte approche du seuil, pour que Claude Code compacte avant de relire les rapports. Eteint par defaut. Effet immediat.
+      const AN = require("./anticipe.js");
+      const an = cc.anticipe = Object.assign({ enabled: false, ratio: AN.RATIO_DEFAUT, fenetres: {}, cibles: {} }, cc.anticipe);
+      const montrer = () => {
+        console.log("ratio        :", an.ratio, "(du seuil réel de Claude Code = fenêtre - 33 000)");
+        const noms = Object.keys(an.fenetres || {});
+        if (!noms.length) console.log("fenêtres     : aucune -- `cqr compact anticipe on` les lit dans modelSettings.<modèle>.autoCompactWindow de settings.json");
+        for (const m of noms) console.log("fenêtre      :", m, an.fenetres[m], "-> seuil", AN.seuil(an.fenetres[m]), ", déclenchement", AN.declenchement(an.fenetres[m], an.ratio), ", cible", AN.cible(an.fenetres[m], m, c));
+      };
+      if (a2 === "on") {
+        // seuls les NOMBRES autoCompactWindow sont lus : settings.json porte un jeton, il n'est ni recopie ni affiche
+        const f = {};
+        let global = false;
+        try {
+          const st = JSON.parse(fs.readFileSync(lib.settingsPath(), "utf8"));
+          const ms = st && typeof st.modelSettings === "object" && st.modelSettings ? st.modelSettings : {};
+          for (const m of Object.keys(ms)) { const w = ms[m] && ms[m].autoCompactWindow; if (typeof w === "number" && w >= 100000) f[m.toLowerCase()] = w; }
+          global = typeof st.autoCompactWindow === "number";
+        } catch (e) { console.error("settings.json illisible ou absent (" + (e.code || e.name) + ") : aucune fenêtre lue."); }
+        an.fenetres = f; an.enabled = true; writeConf(c);
+        console.log("Compactage anticipé ACTIVÉ. Effet immédiat, aucun redémarrage.");
+        montrer();
+        if (!Object.keys(f).length) console.log("Sans fenêtre déclarée, aucune requête n'est candidate : rien ne se passera.");
+        if (global) console.log("autoCompactWindow global ignoré : seules les fenêtres par modèle (modelSettings) sont lues.");
+      }
+      else if (a2 === "off") { an.enabled = false; writeConf(c); console.log("Compactage anticipé désactivé (effet immédiat)."); }
+      else if (a2 === "ratio") {
+        const r = Number(a3);
+        if (!(r >= 0.5 && r <= 0.99)) { console.error("Usage : cqr compact anticipe ratio <0.5-0.99>"); process.exit(1); }
+        an.ratio = r; writeConf(c); console.log("Ratio = " + r + " (effet immédiat)."); montrer();
+      }
+      else if (a2 === "status" || !a2) { console.log("anticipé     :", an.enabled === true ? "ACTIVÉ" : "éteint (défaut)", "-- cqr compact anticipe on|off|ratio <0.5-0.99>|status"); montrer(); }
+      else { console.error("Usage : cqr compact anticipe on|off|ratio <0.5-0.99>|status"); process.exit(1); }
+    }
     else if (a1 === "memory") {
       const mf = p.join(process.cwd(), cc.memoryFile || ".cqr-memory.md");
       if (fs.existsSync(mf)) console.log(fs.readFileSync(mf, "utf8")); else console.log("(pas encore de fichier mémoire dans " + process.cwd() + ")");
@@ -500,7 +537,7 @@ switch (cmd) {
         console.log("Compactage gratuit ACTIVÉ : les compactages automatiques et manuels (/compact) de Claude Code sont écrits par Nemotron 3.5 Super VL (OpenRouter, offre gratuite de NVIDIA) au lieu de Claude ; au moindre échec, Claude reprend.");
         console.log("Le texte de la conversation part chez un tiers : jetons et mots de passe masqués, dossier personnel et noms remplacés par des repères (voir le README pour ce que NVIDIA peut en faire).");
         const cle = fc.cleOR(cc);
-        console.log(cle.key ? "Clé OpenRouter : " + (cle.source === "env" ? "OPENROUTER_API_KEY (environnement, prioritaire)." : "enregistrée (" + maskCle(cle.key) + ").") + " Effet immédiat, aucun redémarrage nécessaire."
+        console.log(cle.key ? "Clé OpenRouter : " + (cle.source === "env" ? "OPENROUTER_API_KEY (environnement, prioritaire)." : cle.source === "coffre" ? "coffre (" + maskCle(cle.key) + ")." : "enregistrée (" + maskCle(cle.key) + ").") + " Effet immédiat, aucun redémarrage nécessaire."
           : "Aucune clé OpenRouter : `cqr compact gratuit cle <clé>` (ou la variable OPENROUTER_API_KEY dans l'environnement du relais). Sans clé, Claude écrit les compactages. Effet immédiat, aucun redémarrage nécessaire.");
         if (!cc.enabled) console.log("compactage coupé : `cqr compact on` d'abord");
       }
@@ -533,7 +570,7 @@ switch (cmd) {
         console.log("délai        :", Math.round(r.timeoutMs / 1000) + "s, puis Claude reprend ; résumé d'au moins " + r.minSummaryChars + " caractères");
         console.log("noms masqués :", r.names.join(", ") || "aucun", "(en plus du dossier personnel et du nom d'utilisateur) -- cqr compact gratuit noms \"<a,b>\"");
         const cle = fc.cleOR(cc);
-        console.log("clé          :", cle.source === "env" ? "OPENROUTER_API_KEY (environnement, prioritaire)" : cle.source === "config" ? "enregistrée (" + maskCle(cle.key) + ")" : "absente -- cqr compact gratuit cle <clé>");
+        console.log("clé          :", cle.source === "env" ? "OPENROUTER_API_KEY (environnement, prioritaire)" : cle.source === "config" ? "enregistrée (" + maskCle(cle.key) + ")" : cle.source === "coffre" ? "coffre (" + maskCle(cle.key) + ")" : "absente -- cqr compact gratuit cle <clé>");
       }
       else { console.error('Usage : cqr compact gratuit on|off|status|cle <clé>|off|noms "<a,b>"'); process.exit(1); }
     }
@@ -555,7 +592,7 @@ switch (cmd) {
       const lc = lastCompactStr(readState());
       console.log("dernière :", lc ? lc + " -- détail dans proxy.log" : "aucune encore enregistrée (une ligne apparaîtra ici au 1er changement de compte compacté ; les compactions en place ne sont pas tracées -- voir proxy.log)");
     }
-    else console.error("Usage : cqr compact [status|on|off|dry-run|mode native|strip|keep <n>|cooldown <min>|threshold <modèle> <pct>|dynamic on|off|buffer <points>|clearatleast <tokens|off>|memory-dedup on|off|memory|gratuit on|off|status|noms]");
+    else console.error("Usage : cqr compact [status|on|off|dry-run|mode native|strip|keep <n>|cooldown <min>|threshold <modèle> <pct>|dynamic on|off|buffer <points>|clearatleast <tokens|off>|memory-dedup on|off|memory|anticipe on|off|ratio|status|gratuit on|off|status|noms]");
     break;
   }
   case "credits": case "credit": {
@@ -683,6 +720,7 @@ function printHelp() {
     "  cqr compact clearatleast <tok|off>     n'effacer que si ça vaut la cassure du cache",
     "  cqr compact memory-dedup on|off        mémoire : seulement si changée, ou à chaque tour",
     "  cqr compact dynamic on|off réduit sur le MÊME compte quand le contexte est gros",
+    "  cqr compact anticipe on|off|ratio <0.5-0.99>|status  compacte avant de relire les rapports de sous-agents (éteint par défaut)",
     "  cqr compact mode native|strip · keep <n> · cooldown <min> · buffer <pts> · memory",
     "  cqr compact gratuit on|off|status   compactages écrits par Nemotron gratuit (coupé par défaut)",
     "  cqr compact gratuit cle <clé>|off   clé OpenRouter enregistrée (OPENROUTER_API_KEY, si posée, reste prioritaire)",

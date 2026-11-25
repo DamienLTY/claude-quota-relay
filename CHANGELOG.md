@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.27.0
+
+Compactage anticipe (DR-980, DR-985) : compacter avant de relire les rapports des sous-agents de fond. **Eteint par defaut.**
+
+- **`cqr compact anticipe on|off|ratio <0.5-0.99>|status`** : quand le fil principal attend des sous-agents lances en arriere-plan (ou repris) et que son contexte atteint 94 % du seuil reel de Claude Code (fenetre - 33 000, soit 282 000 pour 333 000), le relais releve l'usage rapporte au `message_delta` de fin de tour (haut de `usage` et derniere iteration `message`). Claude Code compacte alors au controle d'avant la requete suivante : reveil par notification ou message de l'utilisateur. Prouve sur Claude Code 2.1.330 (essai du 23/11/2026). `on` lit seulement les nombres `modelSettings.<modele>.autoCompactWindow` de `settings.json` (jamais le fichier). Effet immediat, aucun redemarrage.
+- **Seules les requetes candidates sont touchees** : classe `main`, sans `x-claude-code-agent-id`, en flux, modele a fenetre connue, sous-agent de fond en cours. Flux non compresse demande pour elles seules ; tout le reste passe octet pour octet. La sonde de telemetrie lit toujours les vrais nombres d'Anthropic ; le gonflement s'ecrit dans le transcrit de Claude Code (telemetrie des lecteurs de transcrit un peu haute, chaque declenchement journalise `ANTICIPE gonfle`).
+- **Journal** : `ANTICIPE gonfle session=… model=… contexte=… declenchement=… cible=… agents=N`, `ANTICIPE sous-le-seuil …`. Nombres seulement.
+- **Correctif** : l'en-tete `Host` envoye a l'amont porte le port quand il n'est pas celui du protocole (un relais chaine ou un amont local le refusait).
+- **Nouveau module** `src/anticipe.js` (ajoute a la liste d'installation). Tests : `anticipe.test.js`, `anticipe-e2e.test.js`, `anticipe-cli.test.js`.
+
 ## 0.26.1
 
 Audit de securite n°2 (deux MEDIUM).

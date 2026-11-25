@@ -28,7 +28,7 @@ function setup(compaction) {
 function run(INSTALL, PROJ, event, sid, env) {
   return cp.spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify({ hook_event_name: event, cwd: PROJ, session_id: sid || "sess-1" }),
-    env: Object.assign({}, process.env, { CLAUDE_PROJECT_DIR: undefined }, { CQR_DIR: INSTALL }, env || {}),
+    env: Object.assign({}, process.env, { CLAUDE_PROJECT_DIR: undefined }, { CQR_DIR: INSTALL, CQR_MEMORY_TODO: "1" }, env || {}),
     encoding: "utf8",
   });
 }
@@ -491,4 +491,30 @@ const rows = (n, longue) => Array.from({ length: n }, (_, i) => "| DR-" + String
 }
 
 for (const T of roots) { try { fs.rmSync(T, { recursive: true, force: true }); } catch (e) {} }
+// --- 13. DR-988 (etape 12) : par defaut, plus de section « En cours (TODO.md) » ; le reste ne bouge pas ; CQR_MEMORY_TODO=1 la remet ---
+{
+  const { INSTALL, PROJ } = setup(enabled);
+  git(PROJ, "init", "-q");
+  for (let i = 1; i <= 3; i++) commit(PROJ, "commit n" + i);
+  fs.writeFileSync(p.join(PROJ, "TODO.md"), TODO);
+  fs.writeFileSync(p.join(PROJ, "REGISTRE-DECISIONS.md"), "# Registre\n\n| Ref | Type | Question |\n|---|---|---|\n" + rows(7, false));
+  fs.writeFileSync(p.join(PROJ, "nouveau.txt"), "x");
+  const mem = p.join(PROJ, ".cqr-memory.md");
+  fs.writeFileSync(mem, LEGACY);
+  const sans = { CQR_MEMORY_TODO: undefined }; // l'environnement du poste : variable absente
+  const r = run(INSTALL, PROJ, "SessionStart", "sess-d988", sans);
+  const m = lu(mem);
+  assert.strictEqual(r.status, 0);
+  assert.ok(section(m, "En cours") === null && !m.includes("tache ouverte A") && !injected(r).includes("tache ouverte A"), "defaut : ni la section ni les cases de la TODO, ni dans l'injection");
+  assert.ok(section(m, "Derniers commits").includes("commit n3") && section(m, "Fichiers non commités").includes("nouveau.txt"), "defaut : commits et fichiers non commites inchanges");
+  const reg = section(m, "Dernières décisions");
+  assert.ok(reg && reg.trim().split("\n").length === 5 && reg.includes("DR-007") && !reg.includes("DR-002"), "defaut : les 5 dernieres decisions restent : " + reg);
+  assert.ok(m.endsWith("## Notes\n" + LEGACY), "defaut : les notes sont recopiees a l'identique");
+  // contre-epreuve : la variable remet la section, identique a l'ancien rendu
+  const r2 = run(INSTALL, PROJ, "SessionStart", "sess-d988", { CQR_MEMORY_TODO: "1" });
+  const m2 = lu(mem);
+  assert.ok(section(m2, "En cours").includes("tache ouverte A") && section(m2, "En cours").includes("tache ouverte C"), "CQR_MEMORY_TODO=1 : la section revient");
+  assert.strictEqual(m2.replace(/## En cours[^\n]*\n[\s\S]*?(?=^## )/m, ""), m, "CQR_MEMORY_TODO=1 : seule cette section differe");
+}
+
 console.log("PASS — memory-hook.js (0.21.0, sans modele) : faits git/TODO/registre rebatis a SessionStart et PreCompact, Notes recopiees a l'identique (premier passage = ancien contenu), UserPromptSubmit ne reecrit rien, dossier sans git / sous-dossier / worktree / .git casse, exclusion par info/exclude (chemin resolu par git : worktree compris) sans toucher .gitignore, plafonds, dedup + reinjection apres compaction, SessionStart note l'injection, .orr-memory.md injecte en lecture seule, mode sous-projet 0.24.0 (liaison de session, memoire sous 0. MEMORY/projets/<id>/memoire, commits/non commites filtres au perimetre, TODO et registre du sous-projet, rebatissage au UserPromptSubmit apres liaison, plus de Voisins, contre-epreuve)");

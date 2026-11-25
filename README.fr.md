@@ -198,6 +198,20 @@ cqr compact gratuit status                       # vérifie l'état (la clé n'e
 
 Seuls les compactages automatiques et manuels (`/compact`) passent par ce circuit ; les compactages d'urgence restent chez Claude. `proxy.log` note chaque cas sur une ligne (`COMPACT-GRATUIT ok…` ou `repli…`), jamais le contenu. Les réglages avancés (modèle, délai) sont dans le bloc `compaction.free` de `tokens.json`.
 
+## Compactage anticipé pendant que des sous-agents travaillent (option, coupée par défaut)
+
+Quand la conversation principale attend des sous-agents de fond et que son contexte approche du seuil de compactage automatique de Claude Code, les rapports seraient lus juste avant que le compactage ne les avale. Avec cette option, `cqr` relève l'usage rapporté en fin de tour : Claude Code compacte **avant** de lire les rapports. Rien n'est envoyé à un tiers.
+
+```bash
+cqr compact anticipe on        # lit modelSettings.<modèle>.autoCompactWindow dans settings.json (les nombres seulement)
+cqr compact anticipe ratio 0.9 # part du seuil réel (défaut 0,94 ; seuil réel = fenêtre - 33 000)
+cqr compact anticipe status    # état, fenêtres, point de déclenchement
+cqr compact anticipe off
+```
+
+- Seules les requêtes du fil principal avec un sous-agent de fond en cours sont touchées ; tout le reste passe octet pour octet.
+- L'usage écrit dans le transcrit de Claude Code est plus haut que le réel à chaque déclenchement (les lignes `ANTICIPE gonfle` de `proxy.log` donnent l'écart). Le journal d'usage de `cqr` garde les vrais nombres.
+
 ## Dépannage
 
 ### Mes deux comptes montrent toujours le même quota

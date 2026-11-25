@@ -127,7 +127,7 @@ const PLACEHOLDERS = ["PASTE_TOKEN_FROM_claude_setup-token", "REMPLACE_MOI", "<m
 
   // ---------------- C3 : install.js sans compte, puis premier compte ----------------
   {
-    const ALL = ["proxy.js", "cli.js", "ensure-proxy.js", "lib.js", "compaction.js", "free-compact.js", "entreprise.js", "ancre.js", "sonde-sse.js", "memory-hook.js", "cqr-statusline.js", "cqr-workflow-guard.js"];
+    const ALL = ["proxy.js", "cli.js", "ensure-proxy.js", "lib.js", "compaction.js", "free-compact.js", "entreprise.js", "ancre.js", "sonde-sse.js", "memory-hook.js", "anticipe.js", "cqr-statusline.js", "cqr-workflow-guard.js"];
     const P = poste(SRC, []); const port = await freePort();
     fs.writeFileSync(P.settings, JSON.stringify({ env: { FOO: "bar" }, model: "opus" }, null, 2));
     // installation depuis le depot du test (src/ + package.json + commands/ + config/) ; pas de tokens.json -> emplacements fictifs
@@ -286,7 +286,7 @@ const PLACEHOLDERS = ["PASTE_TOKEN_FROM_claude_setup-token", "REMPLACE_MOI", "<m
         statusLine: { type: "command", command: "echo MA-LIGNE", padding: 0 },
         enabledPlugins: { "exemple@exemple": true },
       });
-      const norm = (s, P) => String(s).split(P.home).join("<HOME>").split(P.home.replace(/\\/g, "/")).join("<HOME>").replace(/\.bak-\d+/g, ".bak-N").replace(/[A-Za-z]:[\\/]+[^\s"']*cqr-eteint-[^\s"'\\/]+/g, "<HOME>");
+      const norm = (s, P) => String(s).split(P.home).join("<HOME>").split(P.home.replace(/\\/g, "/")).join("<HOME>").replace(/\.bak-\d+/g, ".bak-N").replace(/copiés \(\d+\)/g, "copiés (N)").replace(/[A-Za-z]:[\\/]+[^\s"']*cqr-eteint-[^\s"'\\/]+/g, "<HOME>");
       const IGNORE = new Set(["proxy.pid", "proxy.log", "proxy.out.log", "state.json", "statusline.json", "proxy.guard", "proxy.stopped",
         "package.json"]); // version et script test changent ; les copies .js installees aussi (code modifie depuis REF, DR-022) : tout le reste (settings, comptes, commandes) doit etre identique
       function arbre(dir, base, out, P) {

@@ -57,7 +57,8 @@ if (s) {
       ok("votre statusline d'origine a été restaurée");
     }
   } catch (e) {}
-  fs.writeFileSync(SETTINGS, JSON.stringify(s, null, 2));
+  fs.writeFileSync(SETTINGS, JSON.stringify(s, null, 2), { mode: 0o600 });
+  try { fs.chmodSync(SETTINGS, 0o600); } catch (e) { /* Windows ou FS sans modes : sans effet */ }
   ok("variables d'env + hooks (autostart/mémoire/garde-fou) retirés de settings.json (sauvegarde conservée)");
 }
 

@@ -357,8 +357,18 @@ const cleOR = (cc) => {
   const e = String(process.env.OPENROUTER_API_KEY || "").trim();
   if (e) return { key: e, source: "env" };
   const c = String((cc && cc.free && cc.free.key) || "").trim();
-  return c ? { key: c, source: "config" } : { key: "", source: null };
+  if (c) return { key: c, source: "config" };
+  const v = cleCoffre();
+  return v ? { key: v, source: "coffre" } : { key: "", source: null };
 };
+// DR-969 : 3e repli, la cle OpenRouter du coffre d'etabli (~/.etabli/cles/openrouter-cles.txt, comme openrouter-relay : une cle par
+// ligne, # = commentaire, la premiere sert). Fichier absent ou illisible : pas de cle (comportement d'avant). Jamais affichee ni journalisee.
+function cleCoffre() {
+  let t;
+  try { t = fs.readFileSync(path.join(os.homedir(), ".etabli", "cles", "openrouter-cles.txt"), "utf8"); } catch (e) { return ""; } // absent : repli sans cle
+  const l = t.replace(/^﻿/, "").split(/\r\n|\r|\n/).map((x) => x.trim()).find((x) => x && !x.startsWith("#"));
+  return l ? l.split(/\s+/)[0] : "";
+}
 // CQR_FREE_COMPACT_URL n'est honoree que vers la machine elle-meme : sur un autre hote, la variable partirait avec la conversation
 // et la cle. Ignoree -> l'adresse d'OpenRouter, et le relais le dit (urlIgnoree), sans jamais ecrire l'adresse.
 function endpoint() {
@@ -494,6 +504,23 @@ function transitoire(status, bodyText) {
 }
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Ancre allegee (DR-988 b, etape 12) : « ## Recovery Pointers » ne porte que des lignes `- demande : ...` (memoireExtraite) ; le journal
+// jalon garde les demandes, donc elles sont retirees, et le titre avec elles. (a, regles deja dans CLAUDE.md : abandonne, rejeu du 17:53 :
+// 1 regle sur 16 retrouvee mot pour mot, le modele les reformule ; voir docs/compactage/2026-11-22-retour-de-compactage.md.)
+// Pur : rend le texte de l'ancre sans ces lignes, ou "" s'il ne reste aucune section.
+function sansDemandes(ancre) {
+  const res = []; let titre = null, garde = 0; // titre : index du titre « Recovery Pointers » dans res
+  const fermer = () => { if (titre !== null && !garde) res.splice(titre, 1); titre = null; garde = 0; };
+  for (const l of String(ancre).split("\n")) {
+    if (/^## /.test(l)) { fermer(); if (/^## Recovery Pointers\b/.test(l)) titre = res.length; res.push(l); continue; }
+    if (titre !== null) { if (/^- demande : /.test(l)) continue; garde++; }
+    res.push(l);
+  }
+  fermer();
+  const t = res.join("\n");
+  return /^## /m.test(t) ? t : "";
+}
+
 // Fait le detour. Ne rejette jamais : { ok:true, text, ms } ou { ok:false, raison }. io.onReq recoit la requete sortante (pour
 // la couper si le client part), io.gone() dit si le client est parti. Une panne du service (HTTP, reseau, delai, reponse trop grosse) pose
 // le blocage ; un resume refuse (REFUS_QUALITE) ou un client parti, non.
@@ -510,6 +537,8 @@ async function run(plan, body, io) {
     clearTimeout(fin);
     if (!a.texte) return { text, ancre: ["ancre=absente", "raison=" + a.raison] };
     let t; try { t = masker.unmask(a.texte); } catch (e) { return { text, ancre: ["ancre=absente", "raison=" + (e.raison || "demasquage")] }; }
+    t = sansDemandes(t);
+    if (!t) return { text, ancre: ["ancre=absente", "raison=deja-connue"] };
     const out = AN.ajouterAncre(text, t, false);
     return out === text ? { text, ancre: ["ancre=absente", "raison=sans-balise"] } : { text: out, ancre: ["ancre=ok", "car=" + t.length] };
   };
@@ -587,4 +616,4 @@ function sendSummary(res, body, text, stream) {
     ev("message_stop", { type: "message_stop" }));
 }
 
-module.exports = { cleOR, entreprise: ENT.charger, entreprisePrechauffer: ENT.prechauffer, INVITE, RAPPEL, manque, MOTIFS_SOURCE, MAQUETTE, REEL, MOT_DE_PASSE, holdMs, readVariante, tailMessages, journalSummary, texteUtile, longueurConversation, seuilResume, MIN_RESUME_COURT, SEUIL_CONVERSATION_COURTE, maskSecrets, makeMasker, renderConversation, recognize, resolveConfig, reglageCompactage, decide, validate, run, sendSummary };
+module.exports = { cleOR, entreprise: ENT.charger, entreprisePrechauffer: ENT.prechauffer, INVITE, RAPPEL, manque, MOTIFS_SOURCE, MAQUETTE, REEL, MOT_DE_PASSE, holdMs, readVariante, tailMessages, journalSummary, texteUtile, longueurConversation, seuilResume, MIN_RESUME_COURT, SEUIL_CONVERSATION_COURTE, sansDemandes, maskSecrets, makeMasker, renderConversation, recognize, resolveConfig, reglageCompactage, decide, validate, run, sendSummary };

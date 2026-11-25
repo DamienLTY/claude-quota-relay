@@ -37,7 +37,7 @@ function warn(s) { console.log("  " + yellow("!") + " " + s); }
 const SRC_DIR = __dirname; // repo/src
 const REPO_ROOT = p.dirname(SRC_DIR);
 const EXAMPLE_TOKENS = p.join(REPO_ROOT, "config", "tokens.example.json");
-const COPY_FILES = ["proxy.js", "cli.js", "ensure-proxy.js", "lib.js", "compaction.js", "free-compact.js", "entreprise.js", "ancre.js", "sonde-sse.js", "memory-hook.js", "cqr-statusline.js", "cqr-workflow-guard.js"];
+const COPY_FILES = ["proxy.js", "cli.js", "ensure-proxy.js", "lib.js", "compaction.js", "free-compact.js", "entreprise.js", "ancre.js", "sonde-sse.js", "memory-hook.js", "anticipe.js", "cqr-statusline.js", "cqr-workflow-guard.js"];
 
 // Default workflow guard: warn (ask) before a Workflow when the freshest account is >=50% (5h),
 // because the Workflow tool's per-agent stall can't be extended by the relay.
@@ -168,7 +168,8 @@ function patchSettings(conf) {
 
   const sl = setupStatusline(settings);
 
-  fs.writeFileSync(SETTINGS, JSON.stringify(settings, null, 2));
+  fs.writeFileSync(SETTINGS, JSON.stringify(settings, null, 2), { mode: 0o600 }); // le jeton y est en clair
+  try { fs.chmodSync(SETTINGS, 0o600); } catch (e) { /* Windows ou FS sans modes : sans effet */ }
   return { hasToken: !!tok, backupName, hooksAdded, statusline: sl, targetApiUrl, staleBaseUrl };
 }
 

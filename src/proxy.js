@@ -60,6 +60,9 @@ function brancherSonde(pres, compte, reqHeaders) {
     pres.on("close", () => { if (!pres.complete) try { flux.destroy(); } catch (e) {} });
   } catch (e) {}
 }
+// Compactage anticipe (DR-980, DR-985) : module pur, charge a la demande ; absent ou en defaut = fonction inerte.
+let _anticipe;
+function anticipeModule() { if (_anticipe === undefined) { try { _anticipe = require("./anticipe.js"); } catch (e) { _anticipe = null; log("ANTICIPE module indisponible", e.code || e.name); } } return _anticipe; }
 function freeModule() { if (_free === undefined) { try { _free = require("./free-compact.js"); } catch (e) { _free = null; log("COMPACT-GRATUIT module indisponible", e.code || e.name); } } return _free; }
 
 const DIR = __dirname;
@@ -742,6 +745,25 @@ function serve(creq, cres) {
     // lastResort (3e argument) dit d'ou vient le compte : false = mode auto ; true = plafond d'attente (enterWait, le 429 est
     // rendu au client) ; "epingle" = state.forceIndex ; "demande" = en-tete x-cqr-compte. Seul un vrai http429 sur "epingle" ou
     // "demande" repart sur un autre compte (DR-018) ; tous les autres refus d'un compte impose sont rendus tels quels.
+    // Candidat au compactage anticipe : { mod, ratio, fenetre, cible, agents, model } ou null. Ne leve jamais.
+    function anticipeCandidat(conf) {
+      try {
+        const a = conf && conf.compaction && conf.compaction.anticipe;
+        if (!a || a.enabled !== true || !isStream || creq.method !== "POST" || String(creq.url).split("?")[0] !== "/v1/messages") return null;
+        const h = creq.headers;
+        if (hv1(h["x-claude-code-request-class"]) !== "main" || h["x-claude-code-agent-id"]) return null; // en-tetes absents = inerte
+        const mod = anticipeModule(); if (!mod) return null;
+        const fenetre = mod.fenetre(bodyObj && bodyObj.model, conf); if (!fenetre) return null;
+        const agents = mod.agentsEnCours(bodyObj.messages).size; if (!agents) return null;
+        return { mod, ratio: typeof a.ratio === "number" ? a.ratio : mod.RATIO_DEFAUT, fenetre, cible: mod.cible(fenetre, bodyObj.model, conf), agents, model: bodyObj.model, session: tag(h["x-claude-code-session-id"], 8) };
+      } catch (e) { return null; }
+    }
+    function surDecisionAnticipe(ant) {
+      return (d) => {
+        if (d.gonfle) log("ANTICIPE gonfle", "session=" + ant.session, "model=" + tag(ant.model, 60), "contexte=" + d.contexte, "declenchement=" + d.declenchement, "cible=" + d.cible, "agents=" + ant.agents);
+        else log("ANTICIPE sous-le-seuil", "contexte=" + d.contexte, "declenchement=" + d.declenchement);
+      };
+    }
     function forward(conf, idx, lastResort, compactInfo) {
       if (clientGone) return;
       const state = readState();
@@ -750,7 +772,8 @@ function serve(creq, cres) {
       ctx.tried.add(tok.name);
 
       const headers = Object.assign({}, creq.headers);
-      headers["host"] = UPSTREAM_HOST;
+      // Host = celui de l'amont, port compris s'il n'est pas celui du protocole : un amont local (relais chaine, mock) le refuse sinon.
+      headers["host"] = UPSTREAM_HOST + (UPSTREAM_PORT === (UPSTREAM === https ? 443 : 80) ? "" : ":" + UPSTREAM_PORT);
       headers["authorization"] = "Bearer " + tok.token;
       delete headers["x-api-key"];
       // we always send with an explicit content-length -> drop any chunked encoding from the client
@@ -784,6 +807,10 @@ function serve(creq, cres) {
       // en mode keepalive SSE on a deja envoye nos en-tetes sans content-encoding :
       // on force une reponse upstream non compressee pour pouvoir la relayer telle quelle
       if (ctx.sse) delete headers["accept-encoding"];
+      // Compactage anticipe : candidat = requete du fil principal, en flux, avec un sous-agent de fond en cours (DR-980).
+      // Le flux est alors demande non compresse pour que le Transform le lise ; toute autre requete n'est pas touchee.
+      const ant = anticipeCandidat(conf);
+      if (ant) delete headers["accept-encoding"];
 
       // Coupure PENDANT le corps de la reponse (cable ethernet debranche, bascule wifi, VPN qui
       // reconnecte) : le flux d'Anthropic s'arrete au milieu. Un simple pipe ne dit RIEN au client
@@ -798,7 +825,11 @@ function serve(creq, cres) {
         let relayed = 0, cut = false;
         // en-tetes retenues jusqu'au PREMIER octet : tant que rien n'est parti, la requete reste
         // rejouable avec ses propres en-tetes. (En SSE, holdOpen les a deja envoyees.)
-        const openOnce = () => { try { if (!cres.headersSent) cres.writeHead(pres.statusCode, pres.headers); } catch (x) {} };
+        // Anticipe : seulement une reponse 200 en flux non compresse (sinon octets intacts) ; content-length n'a plus de sens apres reecriture.
+        const ph = pres.headers, sseOk = pres.statusCode === 200 && /event-stream/i.test(String(ph["content-type"] || "")) && !ph["content-encoding"];
+        const tAnt = ant && sseOk ? ant.mod.transformeSSE({ ratio: ant.ratio, fenetre: ant.fenetre, cible: ant.cible, surDecision: surDecisionAnticipe(ant) }) : null;
+        const hdrs = tAnt ? Object.fromEntries(Object.entries(ph).filter(([k]) => k !== "content-length")) : ph;
+        const openOnce = () => { try { if (!cres.headersSent) cres.writeHead(pres.statusCode, hdrs); } catch (x) {} };
         pres.on("data", (c) => { relayed += c.length; ctx.sent = true; openOnce(); });
         pres.on("end", openOnce);
         const onCut = guard(function onCut(e) {
@@ -809,6 +840,7 @@ function serve(creq, cres) {
           // decompression...), il ne debranche plus rien et le corps tronque continue de
           // couler -- sans qu'aucun test ne bronche. `destroy` ne depend pas du branchement.
           pres.unpipe(cres); pres.destroy(); // surtout pas de end() propre sur un corps incomplet
+          if (tAnt) { try { tAnt.unpipe(cres); tAnt.destroy(); } catch (x) {} } // le Transform est un maillon de plus : le couper aussi
           // budget PROPRE aux coupures : celui des erreurs sans reponse (netBudgetLeft) repart a zero
           // des que des en-tetes arrivent, or ici ils arrivent a CHAQUE tentative -- il ne s'epuiserait jamais.
           if (!ctx.cutStart) ctx.cutStart = now();
@@ -827,8 +859,8 @@ function serve(creq, cres) {
         // selon la version de Node, une reponse tronquee emet "error", "aborted" ou juste
         // "close" : `complete` est le seul temoin fiable qu'on a bien recu tout le corps.
         pres.on("close", () => { if (!pres.complete) onCut(new Error("reponse upstream incomplete")); });
-        brancherSonde(pres, tok.name, creq.headers);
-        pres.pipe(cres);
+        brancherSonde(pres, tok.name, creq.headers); // reste sur pres : la sonde lit les VRAIS nombres d'Anthropic
+        if (tAnt) pres.pipe(tAnt).pipe(cres); else pres.pipe(cres);
       }
 
       let answered = false;
