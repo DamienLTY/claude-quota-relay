@@ -1,4 +1,5 @@
 // Tests for the compact status line (no network). Run: node test/statusline.test.js
+require("./_temp.js");
 const assert = require("assert");
 const fs = require("fs"), os = require("os"), p = require("path"), cp = require("child_process");
 const lib = require("../src/lib.js");

@@ -1,4 +1,5 @@
 // Tests for the workflow quota guard PreToolUse hook. Run: node test/guard.test.js
+require("./_temp.js");
 const assert = require("assert");
 const fs = require("fs"), os = require("os"), p = require("path"), cp = require("child_process");
 

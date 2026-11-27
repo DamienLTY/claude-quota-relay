@@ -3,6 +3,7 @@
 // Groupes : fonctions pures (rendu, reconnaissance, masquage, derive des motifs) / succes / non-detournement / repli / masquage /
 // client parti / delai avant le flux / adresse imposee a la machine / en process (blocage, reponse piegee, dossier) / commande cqr.
 // Run: node test/free-compact.test.js
+require("./_temp.js");
 const assert = require("assert");
 const fs = require("fs"), os = require("os"), p = require("path"), http = require("http"), cp = require("child_process");
 const FC = require("../src/free-compact.js");

@@ -2,6 +2,7 @@
 // FACTUAL STATE built from git, TODO.md and REGISTRE-DECISIONS.md, plus a "Notes" section nothing rewrites.
 // Real hook process, throwaway directories (with git, without git, worktree, broken .git).
 // Run: node test/memory-hook.test.js
+require("./_temp.js");
 const assert = require("assert");
 const fs = require("fs"), os = require("os"), p = require("path");
 const cp = require("child_process");

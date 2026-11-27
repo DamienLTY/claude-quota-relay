@@ -1,4 +1,5 @@
 // Ecriture atomique de tokens.json (revue securite M3) : une coupure en cours d'ecriture laisse l'ancien fichier intact.
+require("./_temp.js");
 const fs = require("fs"), os = require("os"), p = require("path");
 const assert = require("assert");
 const lib = require("../src/lib.js");
